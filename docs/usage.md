@@ -1,0 +1,615 @@
+# Usage Guide
+
+This guide covers installation, setup, and day-to-day usage of `tcli`
+for git signing, password management with `pass`, SSH authentication,
+and direct encryption/decryption.
+
+## Table of contents
+
+- [Installation](#installation)
+- [Key management](#key-management)
+- [Git signing](#git-signing)
+- [Password store (pass)](#password-store-pass)
+- [Encryption and decryption](#encryption-and-decryption)
+- [SSH agent](#ssh-agent)
+- [Hardware OpenPGP cards](#hardware-openpgp-cards)
+- [Passphrase handling](#passphrase-handling)
+- [Environment variables](#environment-variables)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Installation
+
+### From crates.io
+
+```
+cargo install tumpa-cli
+```
+
+The binary `tcli` is installed to `~/.cargo/bin/`. Make sure this
+directory is in your `PATH`.
+
+### From source
+
+```
+git clone https://github.com/tumpaproject/tumpa-cli
+cd tumpa-cli
+cargo build --release
+cp target/release/tcli ~/.local/bin/
+```
+
+### System dependencies
+
+`tcli` uses PC/SC for hardware OpenPGP card communication. If you
+don't use cards, you can skip this, but the build still requires the
+development headers.
+
+**Debian / Ubuntu:**
+
+```
+sudo apt install pkg-config libpcsclite-dev pcscd
+sudo systemctl enable --now pcscd.socket
+```
+
+**Fedora / RHEL:**
+
+```
+sudo dnf install pkg-config pcsc-lite-devel pcsc-lite
+sudo systemctl enable --now pcscd.socket
+```
+
+**Arch Linux:**
+
+```
+sudo pacman -S pkg-config pcsclite
+sudo systemctl enable --now pcscd.socket
+```
+
+**macOS:**
+
+No extra packages needed. The PC/SC framework (CryptoTokenKit) is
+built in.
+
+---
+
+## Key management
+
+`tcli` reads keys from the [tumpa](https://github.com/tumpaproject/tumpa)
+keystore at `~/.tumpa/keys.db`. Keys are created and managed through
+the tumpa desktop application.
+
+### Listing keys
+
+```
+$ tcli --list-keys
+pub A85FF376759C994A8A1168D8D8219C8C43F6C5E1 Kushal Das <kushal@fedoraproject.org>
+sec 5794A58891584E513386AA6EF2F491FA8C62645C Fire Cat <cat@cat.se>
+```
+
+Lines starting with `sec` are keys you own (have the secret key for).
+Lines starting with `pub` are other people's public keys.
+
+### GnuPG-compatible listing
+
+For scripts that parse GnuPG's colon-delimited output:
+
+```
+tcli --list-keys --with-colons
+tcli --list-keys --with-colons <FINGERPRINT>
+tcli --list-secret-keys --with-colons
+```
+
+### Using a different keystore
+
+```
+tcli --keystore /path/to/other/keys.db --list-keys
+```
+
+Or set the environment variable:
+
+```
+export TUMPA_KEYSTORE=/path/to/other/keys.db
+```
+
+---
+
+## Git signing
+
+### One-time setup
+
+Tell git to use `tcli` instead of `gpg`:
+
+```
+git config --global gpg.program tcli
+```
+
+Set your signing key (use the fingerprint from `tcli --list-keys`):
+
+```
+git config --global user.signingkey <FINGERPRINT>
+```
+
+Enable automatic commit signing:
+
+```
+git config --global commit.gpgsign true
+```
+
+### Signing commits
+
+With `commit.gpgsign = true`, every commit is signed automatically:
+
+```
+git commit -m "my change"
+```
+
+To sign a single commit without the global setting:
+
+```
+git commit -S -m "signed commit"
+```
+
+### Signing tags
+
+```
+git tag -s -m "release v1.0" v1.0
+```
+
+### Verifying
+
+```
+git verify-commit HEAD
+git verify-tag v1.0
+git log --show-signature
+```
+
+The `%G?` format shows `G` for commits with a valid, trusted signature:
+
+```
+git log --pretty="format:%H %G?"
+```
+
+### How it works
+
+When git calls `tcli` for signing, it:
+
+1. Checks if a connected OpenPGP card holds the signing key
+2. If yes, signs using the card (prompts for card PIN via pinentry)
+3. If no card, signs using the software key from the keystore
+   (prompts for passphrase via pinentry)
+
+For verification, `tcli` looks up the signer's certificate in the
+keystore by fingerprint or key ID extracted from the signature.
+
+### bump-tag compatibility
+
+[multiverse/bump-tag](https://github.com/SUNET/multiverse) works
+without any changes. `tcli` produces the `[GNUPG:]` status lines that
+git and bump-tag expect: `SIG_CREATED`, `GOODSIG`, `VALIDSIG`, and
+`TRUST_FULLY`.
+
+---
+
+## Password store (pass)
+
+[pass](https://www.passwordstore.org/) is the standard Unix password
+manager. It calls `gpg` for all encryption and decryption. `tcli` can
+replace `gpg` for `pass`.
+
+### Setup
+
+`pass` looks for `gpg2` (or `gpg`) in your `PATH`. The simplest
+approach is to create a symlink:
+
+```
+mkdir -p ~/bin
+ln -s $(which tcli) ~/bin/gpg2
+```
+
+Add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
+
+```bash
+export PATH="$HOME/bin:$PATH"
+```
+
+Alternatively, use an alias (works for interactive use but not all
+scripts):
+
+```bash
+alias gpg2=tcli
+```
+
+### Initializing the store
+
+```
+pass init <FINGERPRINT>
+```
+
+This creates `~/.password-store/` with a `.gpg-id` file containing
+your key fingerprint. All passwords will be encrypted to this key.
+
+For multiple recipients (e.g., a team):
+
+```
+pass init <FP1> <FP2> <FP3>
+```
+
+### Storing passwords
+
+```
+pass insert email/work
+```
+
+This prompts for the password (typed twice for confirmation). For
+non-interactive or multiline input:
+
+```
+echo "mypassword" | pass insert -m email/work
+```
+
+### Retrieving passwords
+
+```
+pass email/work
+```
+
+Prints the decrypted password to stdout. `tcli` automatically finds
+the right secret key and prompts for the passphrase via pinentry.
+
+### Generating passwords
+
+```
+pass generate sites/github 20
+```
+
+Generates a 20-character random password, encrypts it, and displays it.
+
+Without symbols:
+
+```
+pass generate -n sites/github 20
+```
+
+### Editing
+
+```
+pass edit email/work
+```
+
+Decrypts to a temp file, opens your `$EDITOR`, then reencrypts on save.
+
+### Other operations
+
+```
+pass ls                   # tree view of all entries
+pass find github          # search entry names
+pass grep admin           # search entry contents
+pass rm email/old         # delete an entry
+pass mv email/old email/new  # rename
+pass cp email/work email/backup  # copy
+```
+
+### Reencryption
+
+When you change the keys in `.gpg-id` (via `pass init` with different
+fingerprints), `pass` reencrypts all passwords to the new set of keys.
+`tcli` supports the `--decrypt --list-only` and `--list-keys --with-colons`
+commands that `pass` uses to detect which files need reencryption.
+
+---
+
+## Encryption and decryption
+
+`tcli` can be used directly for encryption and decryption, outside of
+git or `pass`.
+
+### Encrypting
+
+Encrypt from stdin to a file:
+
+```
+echo "secret data" | tcli -e -r <FINGERPRINT> -o secret.gpg
+```
+
+Encrypt a file:
+
+```
+tcli -e -r <FINGERPRINT> -o document.gpg document.txt
+```
+
+Encrypt to multiple recipients (any of them can decrypt):
+
+```
+tcli -e -r <FP1> -r <FP2> -r <FP3> -o shared.gpg data.txt
+```
+
+Produce ASCII-armored output:
+
+```
+tcli -e -a -r <FINGERPRINT> -o secret.asc document.txt
+```
+
+### Decrypting
+
+Decrypt to stdout:
+
+```
+tcli -d secret.gpg
+```
+
+Decrypt to a file:
+
+```
+tcli -d -o document.txt secret.gpg
+```
+
+`tcli` automatically determines which secret key can decrypt the
+message by inspecting the encrypted file's recipient key IDs. If your
+keystore contains the matching secret key, decryption proceeds after
+passphrase entry.
+
+Output files from decryption are created with `0600` permissions
+(owner read/write only).
+
+### Inspecting encrypted files
+
+To see which key IDs a file is encrypted for, without decrypting:
+
+```
+tcli --decrypt --list-only encrypted.gpg
+```
+
+Output:
+
+```
+gpg: public key is CCD470033AD77830
+```
+
+---
+
+## SSH agent
+
+`tcli` can serve as an SSH agent, providing authentication keys from
+the tumpa keystore and connected OpenPGP cards.
+
+### Starting the agent
+
+```
+tcli ssh-agent -H unix:///run/user/$(id -u)/tcli-agent.sock
+```
+
+The agent prints the `SSH_AUTH_SOCK` export line. Set it in your shell:
+
+```
+export SSH_AUTH_SOCK=/run/user/$(id -u)/tcli-agent.sock
+```
+
+For convenience, add to your shell profile:
+
+```bash
+export SSH_AUTH_SOCK="/run/user/$(id -u)/tcli-agent.sock"
+
+# Start the agent if not already running
+if ! ssh-add -L &>/dev/null; then
+    tcli ssh-agent -H "unix://$SSH_AUTH_SOCK" &
+    disown
+fi
+```
+
+### Listing keys
+
+```
+ssh-add -L
+```
+
+Shows all authentication-capable subkeys from your keystore in SSH
+public key format. Copy the output to `~/.ssh/authorized_keys` on
+remote hosts or add to GitHub/GitLab settings.
+
+### Connecting
+
+```
+ssh user@host
+```
+
+The agent signs the authentication challenge. On first use, pinentry
+prompts for the key passphrase. The passphrase is cached in memory for
+the lifetime of the agent process.
+
+### Supported algorithms
+
+| Key type | SSH algorithm | Status |
+|---|---|---|
+| Ed25519 | `ssh-ed25519` | Supported |
+| ECDSA P-256 | `ecdsa-sha2-nistp256` | Supported |
+| ECDSA P-384 | `ecdsa-sha2-nistp384` | Supported |
+| ECDSA P-521 | `ecdsa-sha2-nistp521` | Supported |
+| RSA 2048/4096 | `ssh-rsa` | Supported |
+
+### Security notes
+
+- The agent socket is created with `0600` permissions (owner only).
+- Passphrases are stored in memory using `Zeroizing<String>` and are
+  zeroed when removed from the cache or when the agent exits.
+- Using a TCP binding (`tcp://...`) is discouraged -- the agent
+  protocol has no authentication and anyone who can connect can request
+  signatures. A warning is printed if TCP is used.
+
+---
+
+## Hardware OpenPGP cards
+
+`tcli` supports YubiKey and other OpenPGP-compatible smart cards for
+signing, decryption, and SSH authentication.
+
+### How card priority works
+
+For every operation, `tcli` checks for a connected card first:
+
+1. **Signing:** calls `find_cards_for_key()` to see if any connected
+   card holds the signing key for the certificate. If found, the card
+   performs the signature. Otherwise, the software key is used.
+2. **SSH agent:** card-based authentication keys are listed alongside
+   software keys. Card keys are preferred when both are available.
+3. **Decryption:** currently uses software keys from the keystore.
+
+### PIN entry
+
+Card PINs are prompted via pinentry, the same way as software key
+passphrases. Set `TUMPA_PASSPHRASE` for non-interactive card PIN
+entry (e.g., in CI).
+
+---
+
+## Passphrase handling
+
+`tcli` needs a passphrase (for software keys) or PIN (for cards)
+whenever a secret key operation is performed.
+
+### Acquisition order
+
+1. **`TUMPA_PASSPHRASE` environment variable** -- if set, used
+   immediately. Suitable for scripting, CI/CD, and testing. Do not
+   use in production on shared systems (the variable is visible in
+   `/proc/<pid>/environ`).
+
+2. **`pinentry` program** -- `tcli` spawns the system's `pinentry`
+   (the same program GnuPG uses). This opens a GUI dialog on desktop
+   systems or a curses prompt in terminals. Override the program with
+   `PINENTRY_PROGRAM`:
+
+   ```
+   export PINENTRY_PROGRAM=/usr/bin/pinentry-gnome3
+   ```
+
+3. **Terminal prompt** -- if pinentry is not available, `tcli` falls
+   back to reading from the terminal via `rpassword`.
+
+### SSH agent caching
+
+In SSH agent mode, passphrases are cached in memory after first use
+and reused for subsequent signing requests. The cache is cleared if a
+signing operation fails (in case the passphrase was wrong). The cache
+is zeroed when the agent exits.
+
+---
+
+## Environment variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `TUMPA_KEYSTORE` | Path to the tumpa keystore database | `~/.tumpa/keys.db` |
+| `TUMPA_PASSPHRASE` | Passphrase / PIN for non-interactive use | (prompt) |
+| `PINENTRY_PROGRAM` | Path to the pinentry binary | `pinentry` |
+| `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `error` |
+
+---
+
+## Troubleshooting
+
+### "No key found for identifier: ..."
+
+The fingerprint or key ID you provided doesn't match any key in the
+tumpa keystore. Run `tcli --list-keys` to see available keys. Make
+sure the key was imported in the tumpa desktop app.
+
+### "No secret key found for key IDs: ..."
+
+The encrypted message is addressed to a key you don't have the secret
+for. Check `tcli --list-keys` -- only keys marked `sec` can decrypt.
+
+### "Failed to enumerate cards" or card errors
+
+Make sure `pcscd` is running:
+
+```
+sudo systemctl start pcscd.socket
+```
+
+And that your card reader is recognized:
+
+```
+pcsc_scan
+```
+
+### pinentry doesn't appear
+
+Check that `pinentry` is installed:
+
+```
+which pinentry
+```
+
+Install it if missing:
+
+```
+# Debian/Ubuntu
+sudo apt install pinentry-gnome3   # or pinentry-curses
+
+# Fedora
+sudo dnf install pinentry-gnome3
+
+# macOS
+brew install pinentry-mac
+```
+
+Set `PINENTRY_PROGRAM` if the binary has a non-standard name:
+
+```
+export PINENTRY_PROGRAM=/usr/local/bin/pinentry-mac
+```
+
+### pass says "encryption failed" or "decryption failed"
+
+Enable debug logging to see what `tcli` is doing:
+
+```
+RUST_LOG=debug pass show myentry 2>/tmp/tcli-debug.log
+cat /tmp/tcli-debug.log
+```
+
+Common causes:
+
+- The key fingerprint in `.gpg-id` doesn't match any key in the
+  tumpa keystore
+- The secret key's passphrase is wrong (pinentry will prompt again)
+- The key is revoked or expired
+
+### git says "failed to sign the data"
+
+1. Check that `gpg.program` is set correctly:
+
+   ```
+   git config --global gpg.program
+   ```
+
+2. Verify `tcli` can sign on its own:
+
+   ```
+   echo test | tcli -bsau <FINGERPRINT>
+   ```
+
+3. Make sure `user.signingkey` matches a key in the keystore:
+
+   ```
+   git config --global user.signingkey
+   tcli --list-keys
+   ```
+
+### Verifying the setup
+
+Quick end-to-end check:
+
+```
+# Sign and verify
+echo "hello" | tcli -bsau <FP> > /tmp/test.sig
+echo "hello" | tcli --verify /tmp/test.sig -
+
+# Encrypt and decrypt
+echo "secret" | tcli -e -r <FP> -o /tmp/test.gpg
+tcli -d /tmp/test.gpg
+
+# Clean up
+rm /tmp/test.sig /tmp/test.gpg
+```

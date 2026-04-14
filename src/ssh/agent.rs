@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use sha2::Digest;
 use ssh_agent_lib::agent::Session;
 use ssh_agent_lib::error::AgentError;
-use ssh_agent_lib::proto::{Identity, SignRequest};
+use ssh_agent_lib::proto::{Extension, Identity, SignRequest};
 use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, Signature};
 
@@ -13,10 +14,16 @@ use crate::pinentry;
 use crate::store;
 
 /// SSH agent backend serving keys from the tumpa keystore and OpenPGP cards.
+///
+/// Tracks connected card state between requests to detect card
+/// removal/reconnection and clear stale cached PINs.
 #[derive(Clone)]
 pub struct TumpaBackend {
     keystore_path: Option<PathBuf>,
     cache: Arc<Mutex<CredentialCache>>,
+    /// Maps card ident -> auth key fingerprint last seen on that card.
+    /// Used to detect card removal and key changes between requests.
+    card_state: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl TumpaBackend {
@@ -24,14 +31,80 @@ impl TumpaBackend {
         Self {
             keystore_path,
             cache: Arc::new(Mutex::new(CredentialCache::new())),
+            card_state: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Detect card removal or key changes since the last request.
+    ///
+    /// Compares the currently connected cards against the previously
+    /// seen state. If a card was removed or its auth key fingerprint
+    /// changed, the cached PIN for that card is cleared so the user
+    /// is prompted again via pinentry on next use.
+    fn detect_card_changes(&self) {
+        let current_cards = wecanencrypt::card::list_all_cards().unwrap_or_default();
+
+        let Ok(mut state) = self.card_state.lock() else {
+            return;
+        };
+        let Ok(mut cache) = self.cache.lock() else {
+            return;
+        };
+
+        // Build current map: ident -> auth_fp
+        let mut current: HashMap<String, String> = HashMap::new();
+        for card in &current_cards {
+            if let Ok(info) = wecanencrypt::card::get_card_details(Some(&card.ident)) {
+                if let Some(auth_fp) = info.authentication_fingerprint {
+                    current.insert(card.ident.clone(), auth_fp);
+                }
+            }
+        }
+
+        // Check for removed or changed cards
+        let previous_idents: Vec<String> = state.keys().cloned().collect();
+        for ident in &previous_idents {
+            match current.get(ident) {
+                None => {
+                    // Card was removed
+                    log::info!("Card {} removed, clearing cached PIN", ident);
+                    cache.remove(ident);
+                    state.remove(ident);
+                }
+                Some(new_fp) => {
+                    if let Some(old_fp) = state.get(ident) {
+                        if old_fp != new_fp {
+                            // Auth key changed (card swapped in same reader)
+                            log::info!(
+                                "Card {} auth key changed ({} -> {}), clearing cached PIN",
+                                ident,
+                                old_fp,
+                                new_fp
+                            );
+                            cache.remove(ident);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update state to current
+        *state = current;
     }
 }
 
 #[ssh_agent_lib::async_trait]
 impl Session for TumpaBackend {
+    async fn extension(&mut self, _extension: Extension) -> Result<Option<Extension>, AgentError> {
+        // OpenSSH probes for agent extensions; we don't support any.
+        // Return Ok(None) instead of the default error to avoid noisy logs.
+        Ok(None)
+    }
+
     async fn request_identities(&mut self) -> Result<Vec<Identity>, AgentError> {
         log::debug!("request_identities");
+
+        self.detect_card_changes();
 
         let mut identities = Vec::new();
 
@@ -39,13 +112,22 @@ impl Session for TumpaBackend {
         if let Ok(cards) = wecanencrypt::card::list_all_cards() {
             for card_summary in &cards {
                 // Get full card details to read the auth key
-                if let Ok(card_info) = wecanencrypt::card::get_card_details(Some(&card_summary.ident)) {
+                if let Ok(card_info) =
+                    wecanencrypt::card::get_card_details(Some(&card_summary.ident))
+                {
                     if let Some(ref auth_fp) = card_info.authentication_fingerprint {
                         log::debug!("Card {} has auth key {}", card_summary.ident, auth_fp);
-                        // We need the public key from the card - try to find it in keystore
+                        // We need the public key from the card - try to find it in keystore.
+                        // Card returns lowercase hex, keystore stores uppercase.
+                        let auth_fp_upper = auth_fp.to_uppercase();
                         if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
-                            if let Ok(Some(cert_data)) = keystore.find_by_subkey_fingerprint(auth_fp) {
-                                if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(&cert_data, Some(&card_summary.ident)) {
+                            if let Ok(Some(cert_data)) =
+                                keystore.find_by_subkey_fingerprint(&auth_fp_upper)
+                            {
+                                if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(
+                                    &cert_data,
+                                    Some(&card_summary.ident),
+                                ) {
                                     if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
                                         identities.push(Identity {
                                             pubkey: key_data,
@@ -64,9 +146,15 @@ impl Session for TumpaBackend {
         if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
             if let Ok(secret_keys) = keystore.list_secret_keys() {
                 for cert_info in &secret_keys {
-                    // Check if this key has an authentication subkey
+                    // Skip revoked keys
+                    if cert_info.is_revoked {
+                        continue;
+                    }
+
+                    // Check if this key has a non-revoked authentication subkey
                     let has_auth = cert_info.subkeys.iter().any(|sk| {
-                        matches!(sk.key_type, wecanencrypt::KeyType::Authentication) && !sk.is_revoked
+                        matches!(sk.key_type, wecanencrypt::KeyType::Authentication)
+                            && !sk.is_revoked
                     });
                     if !has_auth {
                         continue;
@@ -107,12 +195,48 @@ impl Session for TumpaBackend {
     async fn sign(&mut self, request: SignRequest) -> Result<Signature, AgentError> {
         log::debug!("sign request for pubkey {:?}", request.pubkey.algorithm());
 
-        // Try to find the matching key in the keystore
+        self.detect_card_changes();
+
+        // Check if a card holds this authentication key
+        if let Ok(cards) = wecanencrypt::card::list_all_cards() {
+            for card_summary in &cards {
+                if let Ok(card_info) =
+                    wecanencrypt::card::get_card_details(Some(&card_summary.ident))
+                {
+                    if let Some(ref auth_fp) = card_info.authentication_fingerprint {
+                        let auth_fp_upper = auth_fp.to_uppercase();
+                        if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
+                            if let Ok(Some(cert_data)) =
+                                keystore.find_by_subkey_fingerprint(&auth_fp_upper)
+                            {
+                                if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(
+                                    &cert_data,
+                                    Some(&card_summary.ident),
+                                ) {
+                                    if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
+                                        if key_data == request.pubkey {
+                                            // This card owns the key -- sign with it
+                                            return self
+                                                .sign_with_card(&card_summary.ident, &request)
+                                                .await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // No card match -- try software keys from keystore
         if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
             if let Ok(secret_keys) = keystore.list_secret_keys() {
                 for cert_info in &secret_keys {
+                    if cert_info.is_revoked {
+                        continue;
+                    }
                     if let Ok(cert_data) = keystore.export_cert(&cert_info.fingerprint) {
-                        // Check if this key's SSH pubkey matches the request
                         let comment = cert_info
                             .user_ids
                             .first()
@@ -145,6 +269,190 @@ impl Session for TumpaBackend {
 }
 
 impl TumpaBackend {
+    /// Sign an SSH authentication request using a hardware OpenPGP card.
+    ///
+    /// Retries up to 3 times if the PIN is wrong, prompting via pinentry
+    /// each time.
+    async fn sign_with_card(
+        &self,
+        card_ident: &str,
+        request: &SignRequest,
+    ) -> Result<Signature, AgentError> {
+        log::info!("Signing with card {}", card_ident);
+
+        const MAX_PIN_RETRIES: u32 = 3;
+        let sign_data = prepare_sign_data(request).ok_or(AgentError::Failure)?;
+
+        let mut last_error = String::new();
+
+        for attempt in 0..MAX_PIN_RETRIES {
+            // Get PIN -- check cache on first attempt, always prompt on retries
+            let pin = if attempt == 0 {
+                let cached = {
+                    let cache = self.cache.lock().map_err(|_| AgentError::Failure)?;
+                    cache.get(card_ident).cloned()
+                };
+                match cached {
+                    Some(p) => p,
+                    None => {
+                        let desc = format!("Enter PIN for card {}", card_ident);
+                        pinentry::get_passphrase(&desc, "Card PIN").map_err(|e| {
+                            log::error!("Failed to get card PIN: {}", e);
+                            AgentError::Failure
+                        })?
+                    }
+                }
+            } else {
+                // Clear bad PIN and re-prompt
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.remove(card_ident);
+                }
+                let desc = format!(
+                    "Wrong PIN for card {} (attempt {}/{}). Try again",
+                    card_ident,
+                    attempt + 1,
+                    MAX_PIN_RETRIES
+                );
+                pinentry::get_passphrase(&desc, "Card PIN").map_err(|e| {
+                    log::error!("Failed to get card PIN: {}", e);
+                    AgentError::Failure
+                })?
+            };
+
+            // Try the card operation
+            let result = match &request.pubkey {
+                KeyData::Rsa(_) => {
+                    let hash = match sign_data.hash_alg {
+                        wecanencrypt::SshHashAlgorithm::Sha256 => {
+                            wecanencrypt::card::CardHash::SHA256(
+                                sign_data
+                                    .data
+                                    .clone()
+                                    .try_into()
+                                    .map_err(|_| AgentError::Failure)?,
+                            )
+                        }
+                        wecanencrypt::SshHashAlgorithm::Sha512 => {
+                            wecanencrypt::card::CardHash::SHA512(
+                                sign_data
+                                    .data
+                                    .clone()
+                                    .try_into()
+                                    .map_err(|_| AgentError::Failure)?,
+                            )
+                        }
+                    };
+                    wecanencrypt::card::ssh_authenticate_for_hash_on_card(
+                        hash,
+                        pin.as_bytes(),
+                        Some(card_ident),
+                    )
+                }
+                _ => wecanencrypt::card::ssh_authenticate_on_card(
+                    &sign_data.data,
+                    pin.as_bytes(),
+                    Some(card_ident),
+                ),
+            };
+
+            match result {
+                Ok(raw_sig) => {
+                    // PIN worked -- cache it and return the signature
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.store(card_ident, pin);
+                    }
+                    return self.card_sig_to_ssh(&request.pubkey, &raw_sig, &sign_data);
+                }
+                Err(e) => {
+                    last_error = e.to_string();
+                    log::warn!(
+                        "Card auth attempt {}/{} failed: {}",
+                        attempt + 1,
+                        MAX_PIN_RETRIES,
+                        last_error
+                    );
+                }
+            }
+        }
+
+        // All retries exhausted
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.remove(card_ident);
+        }
+        log::error!(
+            "Card auth failed after {} attempts: {}",
+            MAX_PIN_RETRIES,
+            last_error
+        );
+        Err(AgentError::Failure)
+    }
+
+    /// Convert raw card signature bytes to an SSH `Signature`.
+    fn card_sig_to_ssh(
+        &self,
+        pubkey: &KeyData,
+        raw_sig: &[u8],
+        sign_data: &SignData,
+    ) -> Result<Signature, AgentError> {
+        match pubkey {
+            KeyData::Ed25519(_) => {
+                Signature::new(Algorithm::Ed25519, raw_sig.to_vec()).map_err(AgentError::other)
+            }
+            KeyData::Rsa(_) => Signature::new(sign_data.algorithm.clone(), raw_sig.to_vec())
+                .map_err(AgentError::other),
+            KeyData::Ecdsa(ecdsa) => {
+                let (curve, field_size) = match ecdsa {
+                    ssh_key::public::EcdsaPublicKey::NistP256(_) => {
+                        (ssh_key::EcdsaCurve::NistP256, 32)
+                    }
+                    ssh_key::public::EcdsaPublicKey::NistP384(_) => {
+                        (ssh_key::EcdsaCurve::NistP384, 48)
+                    }
+                    ssh_key::public::EcdsaPublicKey::NistP521(_) => {
+                        (ssh_key::EcdsaCurve::NistP521, 66)
+                    }
+                };
+
+                // Card returns r || s concatenated; extract and build SSH signature
+                let len = raw_sig.len();
+                let r = &raw_sig[0..len / 2];
+                let r = &r[r.len().saturating_sub(field_size)..];
+                let s = &raw_sig[len / 2..];
+                let s = &s[s.len().saturating_sub(field_size)..];
+
+                use sha2::digest::generic_array::GenericArray;
+                let sig: Signature = match curve {
+                    ssh_key::EcdsaCurve::NistP256 => p256::ecdsa::Signature::from_scalars(
+                        GenericArray::clone_from_slice(r),
+                        GenericArray::clone_from_slice(s),
+                    )
+                    .map_err(AgentError::other)?
+                    .try_into()
+                    .map_err(AgentError::other)?,
+                    ssh_key::EcdsaCurve::NistP384 => p384::ecdsa::Signature::from_scalars(
+                        GenericArray::clone_from_slice(r),
+                        GenericArray::clone_from_slice(s),
+                    )
+                    .map_err(AgentError::other)?
+                    .try_into()
+                    .map_err(AgentError::other)?,
+                    ssh_key::EcdsaCurve::NistP521 => p521::ecdsa::Signature::from_scalars(
+                        GenericArray::clone_from_slice(r),
+                        GenericArray::clone_from_slice(s),
+                    )
+                    .map_err(AgentError::other)?
+                    .try_into()
+                    .map_err(AgentError::other)?,
+                };
+                Ok(sig)
+            }
+            _ => {
+                log::error!("Unsupported key type for card signing");
+                Err(AgentError::Failure)
+            }
+        }
+    }
+
     async fn sign_with_software_key(
         &self,
         cert_data: &[u8],
@@ -162,11 +470,10 @@ impl TumpaBackend {
             Some(p) => p,
             None => {
                 let desc = format!("Enter passphrase for SSH key {}", key_description);
-                let pass = pinentry::get_passphrase(&desc, "Passphrase")
-                    .map_err(|e| {
-                        log::error!("Failed to get passphrase: {}", e);
-                        AgentError::Failure
-                    })?;
+                let pass = pinentry::get_passphrase(&desc, "Passphrase").map_err(|e| {
+                    log::error!("Failed to get passphrase: {}", e);
+                    AgentError::Failure
+                })?;
 
                 // Cache it
                 let mut cache = self.cache.lock().map_err(|_| AgentError::Failure)?;
@@ -178,20 +485,16 @@ impl TumpaBackend {
         // Determine what data to pass to ssh_sign_raw based on the algorithm
         let sign_data = prepare_sign_data(request).ok_or(AgentError::Failure)?;
 
-        let result = wecanencrypt::ssh_sign_raw(
-            cert_data,
-            &sign_data.data,
-            &passphrase,
-            sign_data.hash_alg,
-        )
-            .map_err(|e| {
-                log::error!("SSH signing failed: {}", e);
-                // Clear cached passphrase on failure (might be wrong password)
-                if let Ok(mut cache) = self.cache.lock() {
-                    cache.remove(fingerprint);
-                }
-                AgentError::Failure
-            })?;
+        let result =
+            wecanencrypt::ssh_sign_raw(cert_data, &sign_data.data, &passphrase, sign_data.hash_alg)
+                .map_err(|e| {
+                    log::error!("SSH signing failed: {}", e);
+                    // Clear cached passphrase on failure (might be wrong password)
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.remove(fingerprint);
+                    }
+                    AgentError::Failure
+                })?;
 
         // Convert wecanencrypt's result to ssh_key::Signature
         match result {

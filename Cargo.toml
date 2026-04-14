@@ -6,7 +6,7 @@ description = "OpenPGP operations and SSH agent backed by tumpa keystore."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/tumpaproject/tumpa-cli"
 readme = "README.md"
-keywords = ["openpgp", "encryption", "cryptography", "pgp", "gpg", "ssh", "git"]
+keywords = ["openpgp", "gpg", "encryption", "ssh", "pass"]
 categories = ["cryptography", "authentication"]
 
 [[bin]]

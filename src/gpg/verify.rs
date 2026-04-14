@@ -26,8 +26,8 @@ pub fn verify(
         .context("Failed to read data from stdin")?;
 
     // Read signature file
-    let sig_bytes = std::fs::read(sig_path)
-        .context(format!("Failed to read signature file {:?}", sig_path))?;
+    let sig_bytes =
+        std::fs::read(sig_path).context(format!("Failed to read signature file {:?}", sig_path))?;
 
     // Parse the detached signature to extract issuer info
     let detached_sig = parse_detached_signature(&sig_bytes)?;
@@ -60,8 +60,8 @@ pub fn verify(
     };
 
     // Verify the signature
-    let valid = wecanencrypt::verify_bytes_detached(&cert_data, &buffer, &sig_bytes)
-        .unwrap_or(false);
+    let valid =
+        wecanencrypt::verify_bytes_detached(&cert_data, &buffer, &sig_bytes).unwrap_or(false);
 
     if valid {
         // Get the issuer fingerprint from the signature for status output
@@ -78,11 +78,7 @@ pub fn verify(
         };
 
         // Human-readable output to stderr
-        writeln!(
-            err,
-            "tcli: Good signature by key {}",
-            verifier_fp
-        )?;
+        writeln!(err, "tcli: Good signature by key {}", verifier_fp)?;
         if let Some(uid) = cert_info.user_ids.first() {
             writeln!(err, "tcli: Signer: \"{}\"", uid.value)?;
         }
@@ -90,12 +86,7 @@ pub fn verify(
         // Git-parseable status output to stdout
         // https://github.com/git/git/blob/11c821f2f2a31e70fb5cc449f9a29401c333aad2/gpg-interface.c#L371
         if let Some(uid) = cert_info.user_ids.first() {
-            writeln!(
-                out,
-                "\n[GNUPG:] GOODSIG {} {}",
-                verifier_key_id,
-                uid.value
-            )?;
+            writeln!(out, "\n[GNUPG:] GOODSIG {} {}", verifier_key_id, uid.value)?;
         } else {
             writeln!(out, "\n[GNUPG:] GOODSIG {}", verifier_key_id)?;
         }

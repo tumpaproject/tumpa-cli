@@ -54,15 +54,17 @@ fn main() {
         Ok(Mode::ListKeysColon { key_ids }) => {
             gpg::keys::list_keys_colon(&key_ids, keystore_path.as_ref())
         }
-        Ok(Mode::ListSecretKeysColon) => {
-            gpg::keys::list_secret_keys_colon(keystore_path.as_ref())
-        }
+        Ok(Mode::ListSecretKeysColon) => gpg::keys::list_secret_keys_colon(keystore_path.as_ref()),
         Ok(Mode::ListConfig) => gpg::keys::list_config(),
         Ok(Mode::ListKeys) => list_keys(keystore_path.as_ref()),
         Ok(Mode::SshAgent { host }) => {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(ssh::run_agent(&host, keystore_path))
         }
+        Ok(Mode::SshExport {
+            key_id,
+            ssh_pubkey_file,
+        }) => ssh_export(&key_id, &ssh_pubkey_file, keystore_path.as_ref()),
         Ok(Mode::None) => {
             print_help();
             Ok(())
@@ -106,6 +108,29 @@ To list keys in the keystore:
 Keys are stored in ~/.tumpa/keys.db (managed by the tumpa desktop app).
 Hardware OpenPGP cards are tried first, then software keys from the keystore."
     );
+}
+
+fn ssh_export(
+    key_id: &str,
+    ssh_pubkey_file: &std::path::PathBuf,
+    keystore_path: Option<&std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let keystore = store::open_keystore(keystore_path)?;
+    let (cert_data, cert_info) = store::resolve_signer(&keystore, key_id)?;
+
+    let uid = cert_info
+        .user_ids
+        .first()
+        .map(|u| u.value.as_str())
+        .unwrap_or(&cert_info.fingerprint);
+    let ssh_pubkey = wecanencrypt::get_ssh_pubkey(&cert_data, Some(uid))
+        .map_err(|e| anyhow::anyhow!("Failed to export SSH public key: {}", e))?;
+    std::fs::write(ssh_pubkey_file, &ssh_pubkey)
+        .map_err(|e| anyhow::anyhow!("Failed to write {:?}: {}", ssh_pubkey_file, e))?;
+
+    eprintln!("Exported SSH public key to {:?}", ssh_pubkey_file);
+
+    Ok(())
 }
 
 fn list_keys(keystore_path: Option<&std::path::PathBuf>) -> anyhow::Result<()> {

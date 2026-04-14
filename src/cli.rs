@@ -13,7 +13,6 @@ use clap::Parser;
 #[clap(name = "tcli")]
 pub struct Args {
     // --- Signing ---
-
     /// Create a detached signature.
     #[clap(long, short = 'b')]
     pub detach_sign: bool,
@@ -27,13 +26,11 @@ pub struct Args {
     pub local_user: Option<String>,
 
     // --- Verification ---
-
     /// Verify a detached signature.
     #[clap(long, value_names = ["SIGNATURE_FILE"])]
     pub verify: Option<PathBuf>,
 
     // --- Encryption ---
-
     /// Encrypt mode.
     #[clap(short = 'e', long)]
     pub encrypt: bool,
@@ -43,13 +40,11 @@ pub struct Args {
     pub recipients: Vec<String>,
 
     // --- Decryption ---
-
     /// Decrypt mode.
     #[clap(short = 'd', long)]
     pub decrypt: bool,
 
     // --- Output ---
-
     /// Output ASCII-armored data.
     #[clap(long, short = 'a')]
     pub armor: bool,
@@ -59,7 +54,6 @@ pub struct Args {
     pub output: Option<PathBuf>,
 
     // --- Key listing ---
-
     /// List keys in the tumpa keystore.
     #[clap(long)]
     pub list_keys: bool,
@@ -77,24 +71,20 @@ pub struct Args {
     pub list_only: bool,
 
     // --- Positional ---
-
     /// Positional arguments (input files, "-" for stdin in verify mode).
     pub input_files: Vec<String>,
 
     // --- Keystore ---
-
     /// Path to tumpa keystore database. Defaults to ~/.tumpa/keys.db.
     #[clap(long, env = "TUMPA_KEYSTORE")]
     pub keystore: Option<PathBuf>,
 
     // --- SSH agent ---
-
     /// SSH agent subcommand.
     #[clap(subcommand)]
     pub subcmd: Option<SubCommand>,
 
     // --- GPG compatibility flags (accepted, ignored) ---
-
     #[clap(long, hide = true)]
     pub keyid_format: Option<String>,
 
@@ -145,6 +135,20 @@ pub enum SubCommand {
         #[clap(short = 'H', long)]
         host: String,
     },
+
+    /// Export the SSH public key for a given OpenPGP key.
+    ///
+    /// Extracts the authentication subkey and writes it in SSH
+    /// authorized_keys format.
+    ///
+    /// Example: tcli ssh-export FINGERPRINT ~/.ssh/id_openpgp.pub
+    SshExport {
+        /// Key fingerprint or key ID to export.
+        key_id: String,
+
+        /// Output file for the SSH public key.
+        ssh_pubkey_file: PathBuf,
+    },
 }
 
 pub enum Mode {
@@ -177,6 +181,10 @@ pub enum Mode {
     SshAgent {
         host: String,
     },
+    SshExport {
+        key_id: String,
+        ssh_pubkey_file: PathBuf,
+    },
     None,
 }
 
@@ -184,9 +192,19 @@ impl TryFrom<Args> for Mode {
     type Error = String;
 
     fn try_from(value: Args) -> Result<Self, Self::Error> {
-        // SSH agent subcommand
-        if let Some(SubCommand::SshAgent { host }) = value.subcmd {
-            return Ok(Mode::SshAgent { host });
+        // Subcommands
+        match value.subcmd {
+            Some(SubCommand::SshAgent { host }) => return Ok(Mode::SshAgent { host }),
+            Some(SubCommand::SshExport {
+                key_id,
+                ssh_pubkey_file,
+            }) => {
+                return Ok(Mode::SshExport {
+                    key_id,
+                    ssh_pubkey_file,
+                })
+            }
+            None => {}
         }
 
         // --list-config (pass uses this to query GPG groups)
@@ -224,9 +242,7 @@ impl TryFrom<Args> for Mode {
             if value.recipients.is_empty() {
                 return Err("Encryption requires at least one -r/--recipient".into());
             }
-            let output = value
-                .output
-                .ok_or("Encryption requires -o/--output")?;
+            let output = value.output.ok_or("Encryption requires -o/--output")?;
             let input = value.input_files.first().map(PathBuf::from);
             return Ok(Mode::Encrypt {
                 recipients: value.recipients,

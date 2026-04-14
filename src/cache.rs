@@ -28,12 +28,14 @@ impl CredentialCache {
         self.entries.get(key)
     }
 
-    /// Remove a cached credential (e.g., when card is reconnected).
+    /// Remove a cached credential (e.g., when passphrase is wrong).
     pub fn remove(&mut self, key: &str) {
         self.entries.remove(key);
     }
 
     /// Clear all cached credentials for a specific card ident.
+    /// Called when a card is disconnected/reconnected to force re-prompting the PIN.
+    #[allow(dead_code)]
     pub fn clear_card(&mut self, card_ident: &str) {
         self.entries.remove(card_ident);
     }
