@@ -14,7 +14,7 @@ OpenPGP cards first, then falls back to software keys stored in
 - **Signature verification** -- verify commits and tags with keys from the tumpa keystore
 - **OpenPGP card support** -- cards are tried first, software keys as fallback
 - **Passphrase handling** -- pinentry program, `TUMPA_PASSPHRASE` env var, or terminal prompt
-- **SSH agent** -- serve authentication subkeys from the keystore and connected cards *(planned)*
+- **SSH agent** -- serve authentication subkeys from the keystore and connected cards
 - **Compatible with [multiverse/bump-tag](https://github.com/SUNET/multiverse)** -- produces the `[GNUPG:]` status lines git expects
 
 ## Installation
@@ -99,6 +99,75 @@ tcli --keystore /path/to/keys.db --list-keys
 ```
 
 Or set `TUMPA_KEYSTORE` environment variable.
+
+## SSH agent
+
+`tcli` can run as an SSH agent, serving authentication subkeys from the
+tumpa keystore and any connected OpenPGP cards.
+
+### Starting the agent
+
+```
+tcli ssh-agent -H unix:///tmp/tcli.sock
+```
+
+This prints the `SSH_AUTH_SOCK` export line. In another terminal:
+
+```
+export SSH_AUTH_SOCK=/tmp/tcli.sock
+ssh-add -L    # list available keys
+ssh user@host # authenticate using a key from the keystore
+```
+
+### How it works
+
+- On `ssh-add -L`, the agent returns all authentication-capable subkeys
+  from the keystore, converted to SSH public key format.
+- On SSH login, the agent unlocks the matching secret key using pinentry
+  (the passphrase is cached in memory for the agent's lifetime).
+- Ed25519, ECDSA (P-256, P-384, P-521), and RSA software keys are all
+  supported for signing.
+- Card-based keys are also listed if the card's auth key fingerprint
+  is in the keystore.
+
+## Supported key types
+
+### GPG operations (git signing and verification)
+
+All cipher suites supported by the `wecanencrypt` library work for
+OpenPGP signing and verification:
+
+| Cipher suite | Signing algorithm | Notes |
+|---|---|---|
+| Cv25519 (default) | EdDSA (Ed25519) | Legacy v4 format, widely compatible |
+| Cv25519Modern | Ed25519 | RFC 9580 native format |
+| RSA 2048 | RSA | |
+| RSA 4096 | RSA | |
+| NIST P-256 | ECDSA | |
+| NIST P-384 | ECDSA | |
+| NIST P-521 | ECDSA | |
+
+When a hardware OpenPGP card is connected and holds the signing key,
+the card performs the operation regardless of algorithm.
+
+### SSH agent
+
+The agent serves authentication subkeys as SSH identities. All common
+SSH key types are listed:
+
+| OpenPGP algorithm | SSH key type | Software signing |
+|---|---|---|
+| Ed25519 | `ssh-ed25519` | Supported |
+| ECDSA P-256 | `ecdsa-sha2-nistp256` | Supported |
+| ECDSA P-384 | `ecdsa-sha2-nistp384` | Supported |
+| ECDSA P-521 | `ecdsa-sha2-nistp521` | Supported |
+| RSA 2048/4096 | `ssh-rsa` | Supported |
+
+Card-based SSH authentication works for all algorithms the card
+hardware supports.
+
+See [ADR 0001](docs/adr/0001-ssh-agent-support.md) for the full
+architectural rationale and algorithm details.
 
 ## How it works with bump-tag
 
