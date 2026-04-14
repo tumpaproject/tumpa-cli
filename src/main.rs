@@ -34,9 +34,10 @@ fn main() {
             keystore_path.as_ref(),
         ),
         Ok(Mode::ListKeys) => list_keys(keystore_path.as_ref()),
-        Ok(Mode::SshAgent { host: _ }) => {
-            eprintln!("SSH agent mode not yet implemented");
-            std::process::exit(1);
+        Ok(Mode::SshAgent { host }) => {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime");
+            rt.block_on(ssh::run_agent(&host, keystore_path))
         }
         Ok(Mode::None) => {
             print_help();

@@ -3214,7 +3214,11 @@ dependencies = [
  "dirs",
  "env_logger",
  "hex",
+ "libc",
  "log",
+ "p256",
+ "p384",
+ "p521",
  "pgp",
  "rpassword",
  "sha2",
@@ -3445,8 +3449,6 @@ dependencies = [
 [[package]]
 name = "wecanencrypt"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e27ac99bbf6bf9cb7e34c7a4627a31e313b4d01ee973397e5c6866334641708"
 dependencies = [
  "aes",
  "aes-kw",
@@ -3454,6 +3456,7 @@ dependencies = [
  "card-backend-pcsc",
  "chrono",
  "digest",
+ "ed25519-dalek",
  "hex",
  "hkdf",
  "openpgp-card",
