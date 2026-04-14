@@ -49,10 +49,7 @@ pub fn decrypt(
     }
 
     let cert_data = cert_data.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No secret key found for key IDs: {}",
-            key_ids.join(", ")
-        )
+        anyhow::anyhow!("No secret key found for key IDs: {}", key_ids.join(", "))
     })?;
     let cert_info = matched_info.unwrap();
 
@@ -100,17 +97,12 @@ pub fn decrypt(
 ///
 /// Produces output similar to `gpg --decrypt --list-only --keyid-format long`.
 /// Used by `pass` to detect whether reencryption is needed.
-pub fn decrypt_list_only(
-    input: &PathBuf,
-    keystore_path: Option<&PathBuf>,
-) -> Result<()> {
+pub fn decrypt_list_only(input: &PathBuf, _keystore_path: Option<&PathBuf>) -> Result<()> {
     let ciphertext =
         std::fs::read(input).context(format!("Failed to read encrypted file {:?}", input))?;
 
     let key_ids = wecanencrypt::bytes_encrypted_for(&ciphertext)
         .context("Failed to inspect encrypted message")?;
-
-    let keystore = store::open_keystore(keystore_path).ok();
 
     for kid in &key_ids {
         // pass parses: gpg: public key is ([A-F0-9]+)

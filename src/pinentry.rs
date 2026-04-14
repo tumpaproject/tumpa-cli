@@ -40,8 +40,14 @@ fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
         .spawn()
         .context(format!("Failed to spawn {}", pinentry_program))?;
 
-    let mut stdin = child.stdin.take().context("Failed to open pinentry stdin")?;
-    let stdout = child.stdout.take().context("Failed to open pinentry stdout")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("Failed to open pinentry stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to open pinentry stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Read the greeting

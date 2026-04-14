@@ -29,8 +29,8 @@ pub fn sign(
     let keystore = store::open_keystore(keystore_path)?;
     let (cert_data, cert_info) = store::resolve_signer(&keystore, signer_id)?;
 
-    let signature = try_sign_on_card(&buffer, &cert_data, &cert_info, &mut err)
-        .or_else(|card_err| {
+    let signature =
+        try_sign_on_card(&buffer, &cert_data, &cert_info, &mut err).or_else(|card_err| {
             log::info!("Card signing failed ({}), trying software key", card_err);
             sign_with_software_key(&buffer, &cert_data, &cert_info, &mut err)
         })?;
@@ -54,8 +54,8 @@ fn try_sign_on_card(
     err: &mut impl Write,
 ) -> Result<String> {
     // Check if any connected card has the signing key for this cert
-    let matches = wecanencrypt::card::find_cards_for_key(cert_data)
-        .context("Failed to enumerate cards")?;
+    let matches =
+        wecanencrypt::card::find_cards_for_key(cert_data).context("Failed to enumerate cards")?;
 
     // Find a card with a signing slot match
     for card_match in &matches {
@@ -80,12 +80,9 @@ fn try_sign_on_card(
 
             let pin = pinentry::get_passphrase(&desc, "Card PIN")?;
 
-            let signature = wecanencrypt::card::sign_bytes_detached_on_card(
-                data,
-                cert_data,
-                pin.as_bytes(),
-            )
-            .context("Card signing failed")?;
+            let signature =
+                wecanencrypt::card::sign_bytes_detached_on_card(data, cert_data, pin.as_bytes())
+                    .context("Card signing failed")?;
 
             writeln!(
                 err,
@@ -97,7 +94,10 @@ fn try_sign_on_card(
         }
     }
 
-    anyhow::bail!("No card found with signing key for {}", cert_info.fingerprint)
+    anyhow::bail!(
+        "No card found with signing key for {}",
+        cert_info.fingerprint
+    )
 }
 
 /// Sign using a software key from the tumpa keystore.

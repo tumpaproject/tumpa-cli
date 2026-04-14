@@ -8,10 +8,7 @@ use crate::store;
 ///
 /// `pass` parses this to find encryption subkey key IDs:
 ///   grep '^sub:...*e[a-zA-Z]*:' to extract encryption-capable subkey IDs.
-pub fn list_keys_colon(
-    key_ids: &[String],
-    keystore_path: Option<&PathBuf>,
-) -> Result<()> {
+pub fn list_keys_colon(key_ids: &[String], keystore_path: Option<&PathBuf>) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
 
     let certs = if key_ids.is_empty() {
@@ -98,9 +95,7 @@ pub fn list_keys_colon(
 /// List secret keys in colon-delimited format (GPG --list-secret-keys --with-colons).
 ///
 /// `pass` bash completion parses field 10 (UID) from these lines.
-pub fn list_secret_keys_colon(
-    keystore_path: Option<&PathBuf>,
-) -> Result<()> {
+pub fn list_secret_keys_colon(keystore_path: Option<&PathBuf>) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
     let certs = keystore.list_secret_keys()?;
 
