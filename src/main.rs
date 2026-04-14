@@ -33,10 +33,34 @@ fn main() {
             &signature_file,
             keystore_path.as_ref(),
         ),
+        Ok(Mode::Encrypt {
+            recipients,
+            output,
+            input,
+            armor,
+        }) => gpg::encrypt::encrypt(
+            input.as_ref(),
+            &output,
+            &recipients,
+            armor,
+            keystore_path.as_ref(),
+        ),
+        Ok(Mode::Decrypt { input, output }) => {
+            gpg::decrypt::decrypt(&input, output.as_ref(), keystore_path.as_ref())
+        }
+        Ok(Mode::DecryptListOnly { input }) => {
+            gpg::decrypt::decrypt_list_only(&input, keystore_path.as_ref())
+        }
+        Ok(Mode::ListKeysColon { key_ids }) => {
+            gpg::keys::list_keys_colon(&key_ids, keystore_path.as_ref())
+        }
+        Ok(Mode::ListSecretKeysColon) => {
+            gpg::keys::list_secret_keys_colon(keystore_path.as_ref())
+        }
+        Ok(Mode::ListConfig) => gpg::keys::list_config(),
         Ok(Mode::ListKeys) => list_keys(keystore_path.as_ref()),
         Ok(Mode::SshAgent { host }) => {
-            let rt = tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(ssh::run_agent(&host, keystore_path))
         }
         Ok(Mode::None) => {
@@ -70,6 +94,11 @@ To use with git:
   $ git config --global user.signingkey <FINGERPRINT>
   $ git config --global commit.gpgsign true
 
+To use with pass (password-store):
+
+  $ alias gpg={exe}
+  $ pass init <FINGERPRINT>
+
 To list keys in the keystore:
 
   $ tcli --list-keys
@@ -79,9 +108,7 @@ Hardware OpenPGP cards are tried first, then software keys from the keystore."
     );
 }
 
-fn list_keys(
-    keystore_path: Option<&std::path::PathBuf>,
-) -> anyhow::Result<()> {
+fn list_keys(keystore_path: Option<&std::path::PathBuf>) -> anyhow::Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
     let certs = keystore.list_certs()?;
 
@@ -98,10 +125,7 @@ fn list_keys(
             .map(|u| u.value.as_str())
             .unwrap_or("<no UID>");
 
-        println!(
-            "{} {} {}",
-            secret_marker, cert.fingerprint, uid
-        );
+        println!("{} {} {}", secret_marker, cert.fingerprint, uid);
     }
 
     Ok(())
