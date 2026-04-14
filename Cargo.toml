@@ -14,7 +14,7 @@ name = "tcli"
 path = "src/main.rs"
 
 [dependencies]
-wecanencrypt = { version = "0.7.0", features = ["keystore", "card"] }
+wecanencrypt = { path = "/home/kdas/code/learning/wecanencrypt", features = ["keystore", "card"] }
 pgp = "0.19"
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
