@@ -28,6 +28,7 @@ pub fn sign(
     // Open keystore and resolve the signer key
     let keystore = store::open_keystore(keystore_path)?;
     let (cert_data, cert_info) = store::resolve_signer(&keystore, signer_id)?;
+    store::ensure_cert_usable_for_signing(&cert_info)?;
 
     let signature = try_sign_on_card(&buffer, &cert_data, &cert_info, &mut err)
         .or_else(|card_err| {
