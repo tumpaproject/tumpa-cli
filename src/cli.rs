@@ -13,6 +13,7 @@ use clap::Parser;
 #[clap(name = "tcli")]
 pub struct Args {
     // --- Signing ---
+
     /// Create a detached signature.
     #[clap(long, short = 'b')]
     pub detach_sign: bool,
@@ -26,11 +27,13 @@ pub struct Args {
     pub local_user: Option<String>,
 
     // --- Verification ---
+
     /// Verify a detached signature.
     #[clap(long, value_names = ["SIGNATURE_FILE"])]
     pub verify: Option<PathBuf>,
 
     // --- Encryption ---
+
     /// Encrypt mode.
     #[clap(short = 'e', long)]
     pub encrypt: bool,
@@ -40,11 +43,13 @@ pub struct Args {
     pub recipients: Vec<String>,
 
     // --- Decryption ---
+
     /// Decrypt mode.
     #[clap(short = 'd', long)]
     pub decrypt: bool,
 
     // --- Output ---
+
     /// Output ASCII-armored data.
     #[clap(long, short = 'a')]
     pub armor: bool,
@@ -54,6 +59,7 @@ pub struct Args {
     pub output: Option<PathBuf>,
 
     // --- Key listing ---
+
     /// List keys in the tumpa keystore.
     #[clap(long)]
     pub list_keys: bool,
@@ -71,20 +77,24 @@ pub struct Args {
     pub list_only: bool,
 
     // --- Positional ---
+
     /// Positional arguments (input files, "-" for stdin in verify mode).
     pub input_files: Vec<String>,
 
     // --- Keystore ---
+
     /// Path to tumpa keystore database. Defaults to ~/.tumpa/keys.db.
     #[clap(long, env = "TUMPA_KEYSTORE")]
     pub keystore: Option<PathBuf>,
 
     // --- SSH agent ---
+
     /// SSH agent subcommand.
     #[clap(subcommand)]
     pub subcmd: Option<SubCommand>,
 
     // --- GPG compatibility flags (accepted, ignored) ---
+
     #[clap(long, hide = true)]
     pub keyid_format: Option<String>,
 
@@ -242,7 +252,9 @@ impl TryFrom<Args> for Mode {
             if value.recipients.is_empty() {
                 return Err("Encryption requires at least one -r/--recipient".into());
             }
-            let output = value.output.ok_or("Encryption requires -o/--output")?;
+            let output = value
+                .output
+                .ok_or("Encryption requires -o/--output")?;
             let input = value.input_files.first().map(PathBuf::from);
             return Ok(Mode::Encrypt {
                 recipients: value.recipients,

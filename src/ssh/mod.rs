@@ -45,9 +45,7 @@ pub async fn run_agent(host: &str, keystore_path: Option<PathBuf>) -> Result<()>
     // Restore umask
     #[cfg(unix)]
     if let Some(old) = _old_umask {
-        unsafe {
-            libc::umask(old);
-        }
+        unsafe { libc::umask(old); }
     }
 
     result.map_err(|e| anyhow::anyhow!("SSH agent error: {:?}", e))?;
