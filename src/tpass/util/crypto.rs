@@ -49,45 +49,124 @@ pub fn decrypt_file(
         anyhow::bail!("Cannot determine recipient key IDs from encrypted message");
     }
 
-    // Find our secret key
-    let mut cert_data = None;
-    let mut matched_info = None;
+    // Try card first, then software key (matches signing priority)
+    let plaintext = match try_decrypt_on_card(&ciphertext, &key_ids, &keystore) {
+        Ok(pt) => pt,
+        Err(card_err) => {
+            log::info!("Card decryption not available ({}), trying software key", card_err);
 
-    for kid in &key_ids {
-        if let Ok(Some(data)) = keystore.find_by_key_id(kid) {
-            let info = wecanencrypt::parse_cert_bytes(&data, true)?;
-            if info.is_secret {
-                cert_data = Some(data);
-                matched_info = Some(info);
-                break;
+            // Find software secret key
+            let mut cert_data = None;
+            let mut matched_info = None;
+
+            for kid in &key_ids {
+                if let Ok(Some(data)) = keystore.find_by_key_id(kid) {
+                    let info = wecanencrypt::parse_cert_bytes(&data, true)?;
+                    if info.is_secret {
+                        cert_data = Some(data);
+                        matched_info = Some(info);
+                        break;
+                    }
+                }
+            }
+
+            let cert_data = cert_data.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Card decryption failed: {}\nNo software secret key found for key IDs: {}",
+                    card_err,
+                    key_ids.join(", ")
+                )
+            })?;
+            let cert_info = matched_info.unwrap();
+
+            let desc = format!(
+                "Enter passphrase to decrypt with key {}",
+                cert_info
+                    .user_ids
+                    .first()
+                    .map(|u| u.value.as_str())
+                    .unwrap_or(&cert_info.fingerprint)
+            );
+            let passphrase =
+                pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
+
+            Zeroizing::new(
+                wecanencrypt::decrypt_bytes(&cert_data, &ciphertext, &passphrase)
+                    .context("Decryption failed")?,
+            )
+        }
+    };
+
+    Ok(plaintext)
+}
+
+/// Try to decrypt using a connected OpenPGP card.
+/// Finds a card whose encryption subkey matches one of the PKESK key IDs.
+fn try_decrypt_on_card(
+    ciphertext: &[u8],
+    key_ids: &[String],
+    keystore: &wecanencrypt::KeyStore,
+) -> Result<Zeroizing<Vec<u8>>> {
+    // Find a card with a matching encryption key
+    let cards = wecanencrypt::card::list_all_cards()
+        .context("Failed to enumerate cards")?;
+
+    for card_summary in &cards {
+        if let Ok(card_info) =
+            wecanencrypt::card::get_card_details(Some(&card_summary.ident))
+        {
+            if let Some(ref enc_fp) = card_info.encryption_fingerprint {
+                // Check if this card's encryption key matches any PKESK key ID
+                let enc_fp_upper = enc_fp.to_uppercase();
+                // The key ID is the last 16 chars of the fingerprint
+                let enc_kid = if enc_fp_upper.len() >= 16 {
+                    &enc_fp_upper[enc_fp_upper.len() - 16..]
+                } else {
+                    &enc_fp_upper
+                };
+
+                let matches = key_ids.iter().any(|kid| kid.to_uppercase() == enc_kid);
+                if !matches {
+                    continue;
+                }
+
+                // Find the public cert for this card in the keystore
+                if let Ok(Some(cert_data)) =
+                    keystore.find_by_subkey_fingerprint(&enc_fp_upper)
+                {
+                    let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)?;
+                    let desc = format!(
+                        "Enter PIN for card {} to decrypt with key {}",
+                        card_summary.ident,
+                        cert_info
+                            .user_ids
+                            .first()
+                            .map(|u| u.value.as_str())
+                            .unwrap_or(&cert_info.fingerprint)
+                    );
+                    let pin = pinentry::get_passphrase(
+                        &desc,
+                        "Card PIN",
+                        Some(&cert_info.fingerprint),
+                    )?;
+
+                    let plaintext = wecanencrypt::card::decrypt_bytes_on_card(
+                        ciphertext,
+                        &cert_data,
+                        pin.as_bytes(),
+                    )
+                    .context("Card decryption failed")?;
+
+                    return Ok(Zeroizing::new(plaintext));
+                }
             }
         }
     }
 
-    let cert_data = cert_data.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No secret key found for key IDs: {}",
-            key_ids.join(", ")
-        )
-    })?;
-    let cert_info = matched_info.unwrap();
-
-    let desc = format!(
-        "Enter passphrase to decrypt with key {}",
-        cert_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&cert_info.fingerprint)
-    );
-    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
-
-    let plaintext = Zeroizing::new(
-        wecanencrypt::decrypt_bytes(&cert_data, &ciphertext, &passphrase)
-            .context("Decryption failed")?,
-    );
-
-    Ok(plaintext)
+    anyhow::bail!(
+        "No secret key or card found for key IDs: {}",
+        key_ids.join(", ")
+    )
 }
 
 /// Get key IDs a file is encrypted to (for reencrypt comparison).
