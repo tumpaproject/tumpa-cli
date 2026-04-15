@@ -11,7 +11,8 @@ pub fn open_keystore(path: Option<&PathBuf>) -> Result<KeyStore> {
         None => {
             let home = dirs::home_dir().context("Could not determine home directory")?;
             let db_path = home.join(".tumpa").join("keys.db");
-            KeyStore::open(&db_path).context(format!("Failed to open keystore at {:?}", db_path))
+            KeyStore::open(&db_path)
+                .context(format!("Failed to open keystore at {:?}", db_path))
         }
     }
 }

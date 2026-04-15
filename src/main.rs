@@ -1,13 +1,10 @@
-mod cache;
 mod cli;
-mod gpg;
-mod pinentry;
 mod ssh;
-mod store;
 
 use std::io::{stderr, stdin, stdout};
 
 use clap::Parser;
+use tumpa_cli::{gpg, store};
 
 use cli::*;
 
@@ -54,7 +51,9 @@ fn main() {
         Ok(Mode::ListKeysColon { key_ids }) => {
             gpg::keys::list_keys_colon(&key_ids, keystore_path.as_ref())
         }
-        Ok(Mode::ListSecretKeysColon) => gpg::keys::list_secret_keys_colon(keystore_path.as_ref()),
+        Ok(Mode::ListSecretKeysColon) => {
+            gpg::keys::list_secret_keys_colon(keystore_path.as_ref())
+        }
         Ok(Mode::ListConfig) => gpg::keys::list_config(),
         Ok(Mode::ListKeys) => list_keys(keystore_path.as_ref()),
         Ok(Mode::SshAgent { host }) => {

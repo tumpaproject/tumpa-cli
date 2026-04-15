@@ -13,6 +13,10 @@ categories = ["cryptography", "authentication"]
 name = "tcli"
 path = "src/main.rs"
 
+[[bin]]
+name = "tpass"
+path = "src/tpass/main.rs"
+
 [dependencies]
 wecanencrypt = { path = "/home/kdas/code/learning/wecanencrypt", features = ["keystore", "card"] }
 pgp = "0.19"
