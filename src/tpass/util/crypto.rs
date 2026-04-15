@@ -80,7 +80,7 @@ pub fn decrypt_file(
             .map(|u| u.value.as_str())
             .unwrap_or(&cert_info.fingerprint)
     );
-    let passphrase = pinentry::get_passphrase(&desc, "Passphrase")?;
+    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
 
     let plaintext = Zeroizing::new(
         wecanencrypt::decrypt_bytes(&cert_data, &ciphertext, &passphrase)
@@ -160,7 +160,7 @@ pub fn sign_file_detached(
                     .map(|u| u.value.as_str())
                     .unwrap_or(&cert_info.fingerprint)
             );
-            let passphrase = pinentry::get_passphrase(&desc, "Passphrase")?;
+            let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
 
             let signature = wecanencrypt::sign_bytes_detached(&cert_data, &data, &passphrase)
                 .context("Signing failed")?;

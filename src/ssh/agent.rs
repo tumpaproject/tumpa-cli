@@ -12,9 +12,9 @@ use ssh_agent_lib::proto::{Extension, Identity, SignRequest};
 use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, Signature};
 
-use tumpa_cli::cache::CredentialCache;
-use tumpa_cli::pinentry;
-use tumpa_cli::store;
+use crate::cache::CredentialCache;
+use crate::pinentry;
+use crate::store;
 
 /// SSH agent backend serving keys from the tumpa keystore and OpenPGP cards.
 ///
@@ -34,6 +34,19 @@ impl TumpaBackend {
         Self {
             keystore_path,
             cache: Arc::new(Mutex::new(CredentialCache::new())),
+            card_state: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Create a backend with a shared credential cache.
+    /// Used when the SSH agent runs alongside the GPG cache agent.
+    pub fn with_cache(
+        keystore_path: Option<PathBuf>,
+        cache: Arc<Mutex<CredentialCache>>,
+    ) -> Self {
+        Self {
+            keystore_path,
+            cache,
             card_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -343,7 +356,7 @@ impl TumpaBackend {
                     Some(p) => p,
                     None => {
                         let desc = format!("Enter PIN for card {}", card_ident);
-                        pinentry::get_passphrase(&desc, "Card PIN").map_err(|e| {
+                        pinentry::get_passphrase(&desc, "Card PIN", None).map_err(|e| {
                             log::error!("Failed to get card PIN: {}", e);
                             AgentError::Failure
                         })?
@@ -360,7 +373,7 @@ impl TumpaBackend {
                     attempt + 1,
                     MAX_PIN_RETRIES
                 );
-                pinentry::get_passphrase(&desc, "Card PIN").map_err(|e| {
+                pinentry::get_passphrase(&desc, "Card PIN", None).map_err(|e| {
                     log::error!("Failed to get card PIN: {}", e);
                     AgentError::Failure
                 })?
@@ -515,7 +528,7 @@ impl TumpaBackend {
             Some(p) => p,
             None => {
                 let desc = format!("Enter passphrase for SSH key {}", key_description);
-                let pass = pinentry::get_passphrase(&desc, "Passphrase")
+                let pass = pinentry::get_passphrase(&desc, "Passphrase", None)
                     .map_err(|e| {
                         log::error!("Failed to get passphrase: {}", e);
                         AgentError::Failure

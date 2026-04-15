@@ -185,7 +185,23 @@ pub struct Args {
 
 #[derive(Parser, Debug)]
 pub enum SubCommand {
-    /// Run as an SSH agent daemon.
+    /// Run the agent daemon (GPG passphrase cache + optional SSH agent).
+    Agent {
+        /// Also serve as an SSH agent.
+        #[clap(long)]
+        ssh: bool,
+
+        /// SSH agent binding (e.g., unix:///tmp/tcli.sock).
+        #[clap(short = 'H', long)]
+        host: Option<String>,
+
+        /// Passphrase cache TTL in seconds (default: 1800 = 30 min).
+        #[clap(long, default_value = "1800")]
+        cache_ttl: u64,
+    },
+
+    /// Run as an SSH agent daemon (alias for 'agent --ssh').
+    #[clap(hide = true)]
     SshAgent {
         /// Binding host (e.g., unix:///tmp/tcli.sock).
         #[clap(short = 'H', long)]
@@ -234,6 +250,11 @@ pub enum Mode {
     ListSecretKeysColon,
     ListKeys,
     ListConfig,
+    Agent {
+        ssh: bool,
+        ssh_host: Option<String>,
+        cache_ttl: u64,
+    },
     SshAgent {
         host: String,
     },
@@ -275,6 +296,17 @@ impl TryFrom<Args> for Mode {
     fn try_from(value: Args) -> Result<Self, Self::Error> {
         // Subcommands
         match value.subcmd {
+            Some(SubCommand::Agent {
+                ssh,
+                host,
+                cache_ttl,
+            }) => {
+                return Ok(Mode::Agent {
+                    ssh,
+                    ssh_host: host,
+                    cache_ttl,
+                })
+            }
             Some(SubCommand::SshAgent { host }) => return Ok(Mode::SshAgent { host }),
             Some(SubCommand::SshExport {
                 key_id,
