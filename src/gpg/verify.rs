@@ -6,6 +6,13 @@ use pgp::composed::{Deserializable, DetachedSignature};
 
 use crate::store;
 
+/// Sanitize a UID string for use in [GNUPG:] status lines.
+/// Strips control characters (including newlines) that could inject
+/// additional status lines parsed by git.
+fn sanitize_uid(uid: &str) -> String {
+    uid.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// Verify a detached signature.
 ///
 /// Reads signed data from stdin, reads signature from file,
@@ -29,7 +36,13 @@ pub fn verify(
     let sig_bytes = std::fs::read(sig_path)
         .context(format!("Failed to read signature file {:?}", sig_path))?;
 
-    // Parse the detached signature to extract issuer info
+    // Parse the detached signature to extract issuer info.
+    //
+    // Note: wecanencrypt::verify_bytes_detached (called below at L70) re-parses
+    // sig_bytes internally using the same pgp crate (v0.19) and the same
+    // DetachedSignature type, so both parses are guaranteed to agree.
+    // The issuer IDs extracted here correspond to the key that verification
+    // will actually check against.
     let detached_sig = parse_detached_signature(&sig_bytes)?;
     let sig_config = detached_sig
         .signature
@@ -84,7 +97,7 @@ pub fn verify(
             verifier_fp
         )?;
         if let Some(uid) = cert_info.user_ids.first() {
-            writeln!(err, "tcli: Signer: \"{}\"", uid.value)?;
+            writeln!(err, "tcli: Signer: \"{}\"", sanitize_uid(&uid.value))?;
         }
 
         // Git-parseable status output to stdout
@@ -94,7 +107,7 @@ pub fn verify(
                 out,
                 "\n[GNUPG:] GOODSIG {} {}",
                 verifier_key_id,
-                uid.value
+                sanitize_uid(&uid.value)
             )?;
         } else {
             writeln!(out, "\n[GNUPG:] GOODSIG {}", verifier_key_id)?;
@@ -106,15 +119,16 @@ pub fn verify(
         write!(out, "[GNUPG:] TRUST_FULLY 0 pgp")?;
     } else {
         writeln!(err, "tcli: BAD signature by key {}", cert_info.fingerprint)?;
+        let bad_uid = cert_info
+            .user_ids
+            .first()
+            .map(|u| sanitize_uid(&u.value))
+            .unwrap_or_default();
         writeln!(
             out,
             "\n[GNUPG:] BADSIG {} {}",
             cert_info.key_id.to_uppercase(),
-            cert_info
-                .user_ids
-                .first()
-                .map(|u| u.value.as_str())
-                .unwrap_or("")
+            bad_uid
         )?;
         anyhow::bail!("Signature verification failed");
     }
