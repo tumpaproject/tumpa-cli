@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 /// Matches pass's tree output format.
 pub fn show_tree(dir: &Path, header: &str) -> Result<()> {
     let output = Command::new("tree")
-        .args(["-N", "-C", "-l", "--noreport"])
+        .args(["-N", "-C", "--noreport"])
         .arg(dir)
         .output()
         .context("Failed to run 'tree'. Is the 'tree' command installed?")?;
@@ -42,7 +42,6 @@ pub fn show_tree_find(dir: &Path, patterns: &[String]) -> Result<()> {
         .args([
             "-N",
             "-C",
-            "-l",
             "--noreport",
             "-P",
             &pattern,

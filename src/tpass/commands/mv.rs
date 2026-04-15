@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::util::{config, git};
 
-use super::init::{check_sneaky_paths, reencrypt_path, remove_empty_parents};
+use super::init::{check_sneaky_paths, checked_passfile_path, checked_store_path, reencrypt_path, remove_empty_parents};
 use super::insert::yesno;
 
 /// `tpass mv [--force,-f] old-path new-path`
@@ -10,8 +10,8 @@ pub fn cmd_mv(old_path: &str, new_path: &str, force: bool) -> Result<()> {
     let prefix = config::store_dir();
     check_sneaky_paths(&[old_path, new_path])?;
 
-    let old_full = resolve_pass_path(&prefix, old_path);
-    let new_full = resolve_new_path(&prefix, new_path, &old_full);
+    let old_full = resolve_pass_path(&prefix, old_path)?;
+    let new_full = resolve_new_path(&prefix, new_path, &old_full)?;
 
     if !old_full.exists() {
         anyhow::bail!("Error: {} is not in the password store.", old_path);
@@ -106,16 +106,16 @@ pub fn cmd_mv(old_path: &str, new_path: &str, force: bool) -> Result<()> {
 /// Resolve a pass path to its actual filesystem path.
 /// If path.gpg exists and path is not a directory (or path doesn't end with /),
 /// append .gpg extension.
-fn resolve_pass_path(prefix: &std::path::Path, path: &str) -> std::path::PathBuf {
+fn resolve_pass_path(prefix: &std::path::Path, path: &str) -> Result<std::path::PathBuf> {
     let clean = path.trim_end_matches('/');
-    let full = prefix.join(clean);
-    let gpg = prefix.join(format!("{}.gpg", clean));
+    let full = checked_store_path(prefix, clean)?;
+    let gpg = checked_passfile_path(prefix, clean)?;
 
     // Match pass logic for determining file vs directory
     if gpg.is_file() && !(full.is_dir() && path.ends_with('/')) {
-        gpg
+        Ok(gpg)
     } else {
-        full
+        Ok(full)
     }
 }
 
@@ -124,13 +124,13 @@ fn resolve_new_path(
     prefix: &std::path::Path,
     new_path: &str,
     old_full: &std::path::Path,
-) -> std::path::PathBuf {
-    let new_full = prefix.join(new_path);
+) -> Result<std::path::PathBuf> {
+    let new_full = checked_store_path(prefix, new_path)?;
 
     // If old is a directory, or new is a directory, or new ends with /, don't add .gpg
     if old_full.is_dir() || new_full.is_dir() || new_path.ends_with('/') {
-        new_full
+        Ok(new_full)
     } else {
-        prefix.join(format!("{}.gpg", new_path))
+        checked_passfile_path(prefix, new_path)
     }
 }

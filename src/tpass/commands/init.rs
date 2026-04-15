@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -12,10 +12,11 @@ pub fn get_recipients(prefix: &std::path::Path, subpath: &str) -> Result<Vec<Str
         return Ok(keys);
     }
 
-    let mut current = prefix.join(subpath);
+    let mut current = checked_store_path(prefix, subpath)?;
     loop {
         let gpg_id_file = current.join(".gpg-id");
         if gpg_id_file.is_file() {
+            ensure_no_symlink_in_path(&gpg_id_file, prefix)?;
             // Verify signature if signing key is set
             if let Some(signing_keys) = config::signing_key() {
                 crypto::verify_file_signature(&gpg_id_file, &signing_keys, None)?;
@@ -175,7 +176,7 @@ pub fn cmd_init(path: Option<&str>, gpg_ids: &[String]) -> Result<()> {
     let full_path = if id_path.is_empty() {
         prefix.clone()
     } else {
-        prefix.join(id_path)
+        checked_store_path(&prefix, id_path)?
     };
 
     // Check that if id_path exists, it's a directory
@@ -272,16 +273,70 @@ pub fn cmd_init(path: Option<&str>, gpg_ids: &[String]) -> Result<()> {
 /// Reject paths containing ".." components.
 pub fn check_sneaky_paths(paths: &[&str]) -> Result<()> {
     for path in paths {
-        if path.contains("/..")
-            || path.starts_with("../")
-            || path.ends_with("/..")
-            || *path == ".."
-        {
-            anyhow::bail!(
-                "Error: You've attempted to pass a sneaky path to tpass. Go home."
-            );
+        if path.is_empty() {
+            continue;
+        }
+
+        let candidate = Path::new(path);
+        if candidate.is_absolute() {
+            anyhow::bail!("Error: Path escapes the password store.");
+        }
+
+        for component in candidate.components() {
+            match component {
+                Component::Normal(_) | Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    anyhow::bail!("Error: Path escapes the password store.");
+                }
+            }
         }
     }
+    Ok(())
+}
+
+pub fn checked_store_path(prefix: &Path, path: &str) -> Result<PathBuf> {
+    check_sneaky_paths(&[path])?;
+    let joined = prefix.join(path);
+    ensure_no_symlink_in_path(&joined, prefix)?;
+    Ok(joined)
+}
+
+pub fn checked_passfile_path(prefix: &Path, path: &str) -> Result<PathBuf> {
+    let clean = path.trim_end_matches('/');
+    check_sneaky_paths(&[clean])?;
+    let joined = prefix.join(format!("{}.gpg", clean));
+    ensure_no_symlink_in_path(&joined, prefix)?;
+    Ok(joined)
+}
+
+pub fn ensure_no_symlink_in_path(path: &Path, prefix: &Path) -> Result<()> {
+    let rel = path
+        .strip_prefix(prefix)
+        .map_err(|_| anyhow::anyhow!("Error: Path escapes the password store."))?;
+
+    let mut current = prefix.to_path_buf();
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => current.push(part),
+            Component::CurDir => continue,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                anyhow::bail!("Error: Path escapes the password store.");
+            }
+        }
+
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                anyhow::bail!(
+                    "Error: Refusing to follow symlinked path {}.",
+                    current.display()
+                );
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+
     Ok(())
 }
 

@@ -35,13 +35,18 @@ fn walk_and_grep(
         let path = entry.path();
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
+        let metadata = std::fs::symlink_metadata(&path)?;
 
         // Skip .git and .extensions
         if name_str == ".git" || name_str == ".extensions" {
             continue;
         }
 
-        if path.is_dir() {
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        if metadata.is_dir() {
             walk_and_grep(&path, prefix, grep_args, found_any)?;
         } else if path.extension().map(|e| e == "gpg").unwrap_or(false) {
             // Decrypt and grep

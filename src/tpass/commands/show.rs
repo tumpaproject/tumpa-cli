@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::util::{clip, config, crypto, tree};
 
-use super::init::check_sneaky_paths;
+use super::init::{check_sneaky_paths, checked_passfile_path, checked_store_path};
 
 /// `tpass [show] [--clip[=N],-c[N]] [--qrcode[=N],-q[N]] [pass-name]`
 pub fn cmd_show(path: Option<&str>, clip_line: Option<usize>, qrcode_line: Option<usize>) -> Result<()> {
@@ -13,7 +13,8 @@ pub fn cmd_show(path: Option<&str>, clip_line: Option<usize>, qrcode_line: Optio
         check_sneaky_paths(&[path])?;
     }
 
-    let passfile = prefix.join(format!("{}.gpg", path));
+    let passfile = checked_passfile_path(&prefix, path)?;
+    let dir_path = checked_store_path(&prefix, path)?;
 
     if passfile.is_file() {
         let plaintext = crypto::decrypt_file(&passfile, None)?;
@@ -46,13 +47,13 @@ pub fn cmd_show(path: Option<&str>, clip_line: Option<usize>, qrcode_line: Optio
         } else {
             print!("{}", content);
         }
-    } else if prefix.join(path).is_dir() {
+    } else if dir_path.is_dir() {
         let header = if path.is_empty() {
             "Password Store".to_string()
         } else {
             path.trim_end_matches('/').to_string()
         };
-        tree::show_tree(&prefix.join(path), &header)?;
+        tree::show_tree(&dir_path, &header)?;
     } else if path.is_empty() {
         anyhow::bail!("Error: password store is empty. Try \"tpass init\".");
     } else {

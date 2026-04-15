@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::util::{config, crypto, git};
 
-use super::init::{check_sneaky_paths, get_recipients};
+use super::init::{check_sneaky_paths, checked_passfile_path, get_recipients};
 
 /// `tpass insert [--echo,-e | --multiline,-m] [--force,-f] pass-name`
 pub fn cmd_insert(path: &str, multiline: bool, echo: bool, force: bool) -> Result<()> {
@@ -12,7 +12,7 @@ pub fn cmd_insert(path: &str, multiline: bool, echo: bool, force: bool) -> Resul
     let path = path.trim_end_matches('/');
     check_sneaky_paths(&[path])?;
 
-    let passfile = prefix.join(format!("{}.gpg", path));
+    let passfile = checked_passfile_path(&prefix, path)?;
     let git_dir = git::find_git_dir(&passfile, &prefix);
 
     if !force && passfile.exists()

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::util::{config, git};
 
-use super::init::{check_sneaky_paths, remove_empty_parents};
+use super::init::{check_sneaky_paths, checked_passfile_path, checked_store_path, remove_empty_parents};
 use super::insert::yesno;
 
 /// `tpass rm [--recursive,-r] [--force,-f] pass-name`
@@ -10,8 +10,8 @@ pub fn cmd_rm(path: &str, recursive: bool, force: bool) -> Result<()> {
     let prefix = config::store_dir();
     check_sneaky_paths(&[path])?;
 
-    let passdir = prefix.join(path.trim_end_matches('/'));
-    let passfile = prefix.join(format!("{}.gpg", path));
+    let passdir = checked_store_path(&prefix, path.trim_end_matches('/'))?;
+    let passfile = checked_passfile_path(&prefix, path)?;
 
     // Determine target: directory or file
     // Match pass logic: if both file and dir exist, prefer dir if path ends with /

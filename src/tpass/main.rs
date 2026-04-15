@@ -198,6 +198,9 @@ fn try_extension(command: &str, args: &[String]) -> bool {
     if commands::init::check_sneaky_paths(&[command]).is_err() {
         return false;
     }
+    if command.contains('/') {
+        return false;
+    }
 
     let extensions_dir = util::config::extensions_dir();
     let extensions_enabled = util::config::extensions_enabled();
