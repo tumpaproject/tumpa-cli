@@ -102,6 +102,11 @@ pub struct Args {
     #[clap(long, value_name = "EMAIL")]
     pub fetch: Option<String>,
 
+    /// Show agent socket path. Use `--show-socket` for the GPG agent socket,
+    /// `--show-socket ssh` for the SSH agent socket.
+    #[clap(long, value_name = "TYPE", num_args = 0..=1, default_missing_value = "gpg")]
+    pub show_socket: Option<String>,
+
     /// Output in binary format (for --export).
     #[clap(long)]
     pub binary: bool,
@@ -287,6 +292,9 @@ pub enum Mode {
         email: String,
         dry_run: bool,
     },
+    ShowSocket {
+        ssh: bool,
+    },
     None,
 }
 
@@ -318,6 +326,14 @@ impl TryFrom<Args> for Mode {
                 })
             }
             None => {}
+        }
+
+        // --- Socket info ---
+
+        if let Some(socket_type) = value.show_socket {
+            return Ok(Mode::ShowSocket {
+                ssh: socket_type == "ssh",
+            });
         }
 
         // --- Key management flags ---

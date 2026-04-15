@@ -15,6 +15,21 @@ pub fn default_socket_path() -> Result<PathBuf> {
     Ok(home.join(".tumpa").join("agent.sock"))
 }
 
+/// Default SSH agent socket path.
+/// Linux: /run/user/<UID>/tcli-ssh.sock
+/// macOS / fallback: ~/.tumpa/tcli-ssh.sock
+pub fn default_ssh_socket_path() -> Result<String> {
+    let runtime = format!("/run/user/{}", unsafe { libc::getuid() });
+    let dir = if std::path::Path::new(&runtime).exists() {
+        runtime
+    } else {
+        dirs::home_dir()
+            .map(|h| h.join(".tumpa").to_string_lossy().to_string())
+            .unwrap_or_else(|| "/tmp".to_string())
+    };
+    Ok(format!("{}/tcli-ssh.sock", dir))
+}
+
 /// PID file path: ~/.tumpa/agent.pid
 fn pid_file_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -127,15 +142,9 @@ pub async fn run_agent(
     if ssh {
         let ssh_cache = cache.clone();
         let ssh_host = ssh_host.unwrap_or_else(|| {
-            let runtime = format!("/run/user/{}", unsafe { libc::getuid() });
-            let dir = if std::path::Path::new(&runtime).exists() {
-                runtime
-            } else {
-                dirs::home_dir()
-                    .map(|h| h.join(".tumpa").to_string_lossy().to_string())
-                    .unwrap_or_else(|| "/tmp".to_string())
-            };
-            format!("unix://{}/tcli-ssh.sock", dir)
+            default_ssh_socket_path()
+                .map(|p| format!("unix://{}", p))
+                .unwrap_or_else(|_| "unix:///tmp/tcli-ssh.sock".to_string())
         });
 
         let ks_path = keystore_path.clone();
