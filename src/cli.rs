@@ -76,6 +76,48 @@ pub struct Args {
     #[clap(long)]
     pub list_only: bool,
 
+    // --- Key management ---
+
+    /// Import keys from files or directories.
+    #[clap(long)]
+    pub import: bool,
+
+    /// Export a key from the keystore.
+    #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
+    pub export: Option<String>,
+
+    /// Show detailed information about a key.
+    #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
+    pub info: Option<String>,
+
+    /// Delete a key from the keystore.
+    #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
+    pub delete: Option<String>,
+
+    /// Search for keys by name or email.
+    #[clap(long, value_name = "QUERY")]
+    pub search: Option<String>,
+
+    /// Fetch and import a key via WKD (Web Key Directory).
+    #[clap(long, value_name = "EMAIL")]
+    pub fetch: Option<String>,
+
+    /// Output in binary format (for --export).
+    #[clap(long)]
+    pub binary: bool,
+
+    /// Recurse into subdirectories (for --import with directories).
+    #[clap(long)]
+    pub recursive: bool,
+
+    /// Force operation without confirmation (for --delete).
+    #[clap(short = 'f', long, hide = true)]
+    pub force: bool,
+
+    /// Search by email (exact, case-insensitive) instead of UID substring.
+    #[clap(long)]
+    pub email: bool,
+
     // --- Positional ---
 
     /// Positional arguments (input files, "-" for stdin in verify mode).
@@ -195,6 +237,30 @@ pub enum Mode {
         key_id: String,
         ssh_pubkey_file: PathBuf,
     },
+    Import {
+        paths: Vec<PathBuf>,
+        recursive: bool,
+    },
+    Export {
+        key_id: String,
+        armor: bool,
+        binary: bool,
+        output: Option<PathBuf>,
+    },
+    Info {
+        key_id: String,
+    },
+    Delete {
+        key_id: String,
+        force: bool,
+    },
+    Search {
+        query: String,
+        email: bool,
+    },
+    Fetch {
+        email: String,
+    },
     None,
 }
 
@@ -216,6 +282,49 @@ impl TryFrom<Args> for Mode {
             }
             None => {}
         }
+
+        // --- Key management flags ---
+
+        if value.import {
+            let paths = value.input_files.iter().map(PathBuf::from).collect();
+            return Ok(Mode::Import {
+                paths,
+                recursive: value.recursive,
+            });
+        }
+
+        if let Some(key_id) = value.export {
+            return Ok(Mode::Export {
+                key_id,
+                armor: value.armor,
+                binary: value.binary,
+                output: value.output.clone(),
+            });
+        }
+
+        if let Some(key_id) = value.info {
+            return Ok(Mode::Info { key_id });
+        }
+
+        if let Some(key_id) = value.delete {
+            return Ok(Mode::Delete {
+                key_id,
+                force: value.force,
+            });
+        }
+
+        if let Some(query) = value.search {
+            return Ok(Mode::Search {
+                query,
+                email: value.email,
+            });
+        }
+
+        if let Some(email) = value.fetch {
+            return Ok(Mode::Fetch { email });
+        }
+
+        // --- GPG compatibility modes ---
 
         // --list-config (pass uses this to query GPG groups)
         if value.list_config {

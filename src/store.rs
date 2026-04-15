@@ -26,20 +26,20 @@ pub fn open_keystore(path: Option<&PathBuf>) -> Result<KeyStore> {
 /// - Any of the above prefixed with "0x"
 pub fn resolve_signer(store: &KeyStore, id: &str) -> Result<(Vec<u8>, CertificateInfo)> {
     let id = id.strip_prefix("0x").unwrap_or(id);
-    // wecanencrypt stores fingerprints in uppercase, key IDs in lowercase
+    // wecanencrypt stores both fingerprints and key IDs in uppercase
+    // (via hex::encode_upper in fingerprint_to_hex and keyid_to_hex)
     let id_upper = id.to_uppercase();
-    let id_lower = id.to_lowercase();
 
-    // Try as primary fingerprint (40 hex chars) - stored uppercase
+    // Try as primary fingerprint (40 hex chars)
     if id.len() == 40 {
         if let Ok((data, info)) = store.get_cert(&id_upper) {
             return Ok((data, info));
         }
     }
 
-    // Try as key ID (16 hex chars) - stored lowercase
+    // Try as key ID (16 hex chars)
     if id.len() == 16 {
-        if let Ok(Some(data)) = store.find_by_key_id(&id_lower) {
+        if let Ok(Some(data)) = store.find_by_key_id(&id_upper) {
             let info = wecanencrypt::parse_cert_bytes(&data, true)?;
             return Ok((data, info));
         }

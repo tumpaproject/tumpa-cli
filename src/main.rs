@@ -4,7 +4,7 @@ mod ssh;
 use std::io::{stderr, stdin, stdout};
 
 use clap::Parser;
-use tumpa_cli::{gpg, store};
+use tumpa_cli::{gpg, keystore, store};
 
 use cli::*;
 
@@ -64,6 +64,23 @@ fn main() {
             key_id,
             ssh_pubkey_file,
         }) => ssh_export(&key_id, &ssh_pubkey_file, keystore_path.as_ref()),
+        Ok(Mode::Import { paths, recursive }) => {
+            keystore::cmd_import(&paths, recursive, keystore_path.as_ref())
+        }
+        Ok(Mode::Export {
+            key_id,
+            armor,
+            binary,
+            output,
+        }) => keystore::cmd_export(&key_id, armor, binary, output.as_ref(), keystore_path.as_ref()),
+        Ok(Mode::Info { key_id }) => keystore::cmd_info(&key_id, keystore_path.as_ref()),
+        Ok(Mode::Delete { key_id, force }) => {
+            keystore::cmd_delete(&key_id, force, keystore_path.as_ref())
+        }
+        Ok(Mode::Search { query, email }) => {
+            keystore::cmd_search(&query, email, keystore_path.as_ref())
+        }
+        Ok(Mode::Fetch { email }) => keystore::cmd_fetch(&email, keystore_path.as_ref()),
         Ok(Mode::None) => {
             print_help();
             Ok(())
