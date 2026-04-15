@@ -26,8 +26,12 @@ test-compat: build
 test-pass: build
     TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_pass.sh
 
+# Run tcli key management tests (--import, --export, --info, --delete, --search)
+test-keystore: build
+    ./tests/test_keystore.sh
+
 # Run all test suites
-test-all: test test-compat test-pass
+test-all: test test-compat test-pass test-keystore
 
 # Build, lint, and test
 check: build lint test
