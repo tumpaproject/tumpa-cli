@@ -250,6 +250,20 @@ fi
 mkdir -p "$EXPORT_DIR/emptydir"
 test_output_contains "import empty dir" "Imported 0" "$TCLI" --import "$EXPORT_DIR/emptydir"
 
+# ----------------------------------------------------------
+echo "[7] Fetch (WKD)"
+# ----------------------------------------------------------
+
+FP_KUSHAL="A85FF376759C994A8A1168D8D8219C8C43F6C5E1"
+
+# Dry run — should show info but NOT import
+test_output_contains "fetch dry-run shows fingerprint" "$FP_KUSHAL" "$TCLI" --fetch "mail@kushaldas.in" --dry-run
+test_output_contains "fetch dry-run shows UID" "Kushal Das" "$TCLI" --fetch "mail@kushaldas.in" --dry-run
+test_output_contains "fetch dry-run shows algo" "RSA" "$TCLI" --fetch "mail@kushaldas.in" --dry-run
+test_output_contains "fetch dry-run shows subkeys" "Subkeys:" "$TCLI" --fetch "mail@kushaldas.in" --dry-run
+test_output_contains "fetch dry-run shows capabilities" "sign" "$TCLI" --fetch "mail@kushaldas.in" --dry-run
+test_output_contains "fetch dry-run shows UTC" "UTC" "$TCLI" --fetch "mail@kushaldas.in" --dry-run
+
 echo ""
 
 # --- Cleanup & Summary ---

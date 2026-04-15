@@ -114,6 +114,10 @@ pub struct Args {
     #[clap(short = 'f', long, hide = true)]
     pub force: bool,
 
+    /// Fetch without importing — show key info only (for --fetch).
+    #[clap(long)]
+    pub dry_run: bool,
+
     /// Search by email (exact, case-insensitive) instead of UID substring.
     #[clap(long)]
     pub email: bool,
@@ -260,6 +264,7 @@ pub enum Mode {
     },
     Fetch {
         email: String,
+        dry_run: bool,
     },
     None,
 }
@@ -321,7 +326,10 @@ impl TryFrom<Args> for Mode {
         }
 
         if let Some(email) = value.fetch {
-            return Ok(Mode::Fetch { email });
+            return Ok(Mode::Fetch {
+                email,
+                dry_run: value.dry_run,
+            });
         }
 
         // --- GPG compatibility modes ---
