@@ -695,6 +695,32 @@ if ! pgrep -f "tcli agent" >/dev/null; then
 fi
 ```
 
+### Querying socket paths
+
+```
+tcli --show-socket         # GPG agent socket
+tcli --show-socket ssh     # SSH agent socket
+```
+
+Output:
+
+```
+$ tcli --show-socket
+/home/user/.tumpa/agent.sock
+
+$ tcli --show-socket ssh
+/run/user/1000/tcli-ssh.sock
+```
+
+Useful for shell profile setup:
+
+```bash
+export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+```
+
+The SSH socket defaults to `/run/user/<UID>/tcli-ssh.sock` on Linux
+and `~/.tumpa/tcli-ssh.sock` on macOS.
+
 ### Without agent
 
 Everything works without the agent — you just get prompted every

@@ -8,6 +8,18 @@ repository = "https://github.com/tumpaproject/tumpa-cli"
 readme = "README.md"
 keywords = ["openpgp", "gpg", "encryption", "ssh", "pass"]
 categories = ["cryptography", "authentication"]
+include = [
+    "src/**/*.rs",
+    "tests/**/*.sh",
+    "tests/keys/*.asc",
+    "tests/keys/*.pub",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "docs/**/*.md",
+    "justfile",
+]
 
 [[bin]]
 name = "tcli"

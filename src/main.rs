@@ -90,6 +90,19 @@ fn main() {
         Ok(Mode::Fetch { email, dry_run }) => {
             keystore::cmd_fetch(&email, dry_run, keystore_path.as_ref())
         }
+        Ok(Mode::ShowSocket { ssh }) => {
+            if ssh {
+                match tumpa_cli::agent::default_ssh_socket_path() {
+                    Ok(path) => { println!("{}", path); Ok(()) }
+                    Err(e) => Err(e),
+                }
+            } else {
+                match tumpa_cli::agent::default_socket_path() {
+                    Ok(path) => { println!("{}", path.display()); Ok(()) }
+                    Err(e) => Err(e),
+                }
+            }
+        }
         Ok(Mode::None) => {
             print_help();
             Ok(())

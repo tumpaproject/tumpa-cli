@@ -210,6 +210,19 @@ tcli agent --cache-ttl 3600                 # custom TTL (1 hour)
 Everything works without the agent -- you just get prompted every time.
 The agent is purely additive.
 
+### Querying socket paths
+
+```
+tcli --show-socket         # GPG agent socket (~/.tumpa/agent.sock)
+tcli --show-socket ssh     # SSH agent socket (/run/user/<UID>/tcli-ssh.sock)
+```
+
+Useful for scripting:
+
+```bash
+export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+```
+
 ### How it works
 
 - Passphrases are cached in memory with a configurable TTL (default 30 min)
