@@ -4,20 +4,31 @@ A command-line tool for OpenPGP operations, SSH agent, and
 password management, backed by the
 [tumpa](https://github.com/tumpaproject/tumpa) keystore.
 
-The binary is called `tcli`. It acts as a drop-in replacement for GnuPG
-in git and [password-store](https://www.passwordstore.org/) workflows,
-and can also run as an SSH agent. It tries hardware OpenPGP cards first,
-then falls back to software keys stored in `~/.tumpa/keys.db`.
+Two binaries are provided:
+
+- **`tcli`** -- drop-in GnuPG replacement for git signing, encryption/decryption,
+  key management, and SSH agent
+- **`tpass`** -- drop-in replacement for [password-store](https://www.passwordstore.org/)
+  (`pass`), calling the tumpa keystore directly without GPG
+
+Both try hardware OpenPGP cards first, then fall back to software keys
+stored in `~/.tumpa/keys.db`.
+
+For detailed usage instructions, see the
+[Usage Guide](https://github.com/tumpaproject/tumpa-cli/blob/main/docs/usage.md).
 
 ## Features
 
 - **Git commit and tag signing** -- use as `gpg.program` in git config
 - **Signature verification** -- verify commits and tags with keys from the tumpa keystore
-- **Encryption / decryption** -- multi-recipient encryption, auto-detect secret key for decryption
+- **Encryption / decryption** -- multi-recipient encryption, card-first decryption with software fallback
 - **password-store (`pass`) support** -- works as a drop-in GPG replacement for `pass`
-- **OpenPGP card support** -- cards are tried first, software keys as fallback
+- **`tpass`** -- native password-store replacement, no GPG dependency
+- **OpenPGP card support** -- cards are tried first for signing, decryption, and SSH auth
+- **Unified agent** -- caches passphrases for GPG operations + optional SSH agent
+- **Key management** -- import, export, search, delete, and fetch keys via WKD
 - **SSH agent** -- serve authentication subkeys from the keystore and connected cards
-- **Passphrase handling** -- pinentry program, `TUMPA_PASSPHRASE` env var, or terminal prompt
+- **Passphrase handling** -- agent cache, pinentry, `TUMPA_PASSPHRASE` env var, or terminal prompt
 - **Compatible with [multiverse/bump-tag](https://github.com/SUNET/multiverse)** -- produces the `[GNUPG:]` status lines git expects
 
 ## Installation
@@ -28,7 +39,7 @@ then falls back to software keys stored in `~/.tumpa/keys.db`.
 cargo install tumpa-cli
 ```
 
-The binary `tcli` will be installed to `~/.cargo/bin/`.
+Two binaries are installed to `~/.cargo/bin/`: `tcli` and `tpass`.
 
 ### System dependencies
 
@@ -54,30 +65,34 @@ git config --global user.signingkey <FINGERPRINT>
 git config --global commit.gpgsign true
 ```
 
-### password-store (`pass`)
+### tpass (recommended)
 
-Symlink or alias `tcli` as `gpg`/`gpg2` so `pass` finds it:
+Use `tpass` directly -- no GPG symlinking needed:
+
+```
+tpass init <FINGERPRINT>
+tpass insert email/work
+tpass show email/work
+tpass -c email/work            # copy to clipboard
+tpass generate sites/github 20
+tpass edit email/work
+tpass grep admin
+```
+
+`tpass` is fully compatible with `pass` -- they share the same store
+format (`~/.password-store/`). See the
+[Usage Guide](https://github.com/tumpaproject/tumpa-cli/blob/main/docs/usage.md#tpass--native-password-store)
+for full documentation.
+
+### password-store (`pass`) via tcli
+
+Alternatively, use the original `pass` with `tcli` as the GPG backend:
 
 ```
 mkdir -p ~/bin
 ln -s $(which tcli) ~/bin/gpg2
 export PATH="$HOME/bin:$PATH"
 pass init <FINGERPRINT>
-```
-
-Or in your shell profile:
-
-```
-alias gpg2=tcli
-```
-
-Then use `pass` normally:
-
-```
-pass insert email/work        # encrypt a password
-pass email/work               # decrypt and display
-pass generate sites/github 20 # generate a random password
-pass edit email/work           # decrypt, edit, reencrypt
 ```
 
 ### Finding your key fingerprint
@@ -128,11 +143,27 @@ Decrypted output files are created with `0600` permissions.
 
 `tcli` acquires passphrases in this order:
 
-1. `TUMPA_PASSPHRASE` environment variable (useful for scripting and CI)
-2. `pinentry` program (same mechanism GnuPG uses)
-3. Terminal prompt (fallback)
+1. **Agent cache** -- if `tcli agent` is running, cached passphrases
+   are returned without prompting
+2. **`TUMPA_PASSPHRASE` environment variable** -- useful for scripting and CI
+3. **`pinentry` program** -- same mechanism GnuPG uses
+4. **Terminal prompt** -- fallback
 
 For card operations, the PIN is requested the same way.
+
+### Key management
+
+```
+tcli --import mykey.asc              # import from file
+tcli --import /path/to/keys/ -r      # import from directory (recursive)
+tcli --export <FP> -o key.asc        # export (armored)
+tcli --info <FP>                     # detailed key info
+tcli --search "Kushal"               # search by name
+tcli --search --email user@example.com  # search by email
+tcli --fetch user@example.com        # fetch via WKD
+tcli --fetch user@example.com --dry-run  # preview without importing
+tcli --delete <FP>                   # delete a key
+```
 
 ### Listing keys
 
@@ -150,35 +181,42 @@ tcli --keystore /path/to/keys.db --list-keys
 
 Or set `TUMPA_KEYSTORE` environment variable.
 
-## SSH agent
+## Agent
 
-`tcli` can run as an SSH agent, serving authentication subkeys from the
-tumpa keystore and any connected OpenPGP cards.
+`tcli agent` runs a daemon that caches passphrases for GPG operations
+(signing, decryption) and optionally serves as an SSH agent.
 
-### Starting the agent
-
-```
-tcli ssh-agent -H unix:///tmp/tcli.sock
-```
-
-This prints the `SSH_AUTH_SOCK` export line. In another terminal:
+### GPG passphrase caching
 
 ```
-export SSH_AUTH_SOCK=/tmp/tcli.sock
-ssh-add -L    # list available keys
-ssh user@host # authenticate using a key from the keystore
+tcli agent
 ```
+
+This eliminates repeated passphrase prompts. When git calls `tcli` for
+signing, or `tpass` decrypts a password, the agent provides the cached
+passphrase instead of prompting again. The cache expires after 30
+minutes by default.
+
+### GPG + SSH agent
+
+```
+tcli agent --ssh
+tcli agent --ssh -H unix:///tmp/tcli.sock   # custom SSH socket
+tcli agent --cache-ttl 3600                 # custom TTL (1 hour)
+```
+
+### Without agent
+
+Everything works without the agent -- you just get prompted every time.
+The agent is purely additive.
 
 ### How it works
 
-- On `ssh-add -L`, the agent returns all authentication-capable subkeys
-  from the keystore, converted to SSH public key format.
-- On SSH login, the agent unlocks the matching secret key using pinentry
-  (the passphrase is cached in memory for the agent's lifetime).
-- Ed25519, ECDSA (P-256, P-384, P-521), and RSA software keys are all
-  supported for signing.
-- Card-based keys are also listed if the card's auth key fingerprint
-  is in the keystore.
+- Passphrases are cached in memory with a configurable TTL (default 30 min)
+- SSH authentication keys from the keystore and connected cards are served
+- Ed25519, ECDSA (P-256, P-384, P-521), and RSA keys are supported
+- Card-based keys are listed if the card's auth key fingerprint is in the keystore
+- The agent socket (`~/.tumpa/agent.sock`) is created with 0600 permissions
 
 ## Supported key types
 
@@ -233,14 +271,20 @@ works without changes.
 
 ## Testing
 
-Run the `pass` integration tests:
-
 ```
-TUMPA_PASSPHRASE="your-passphrase" ./tests/test_pass.sh [FINGERPRINT]
+just test-all
 ```
 
-This tests init, insert, show, generate, overwrite, nested paths,
-remove, reinit, and GPG-compatible key listing output.
+Or run individual test suites:
+
+```
+just test             # tpass integration tests (33+ tests)
+just test-compat      # tpass <-> pass cross-compatibility
+just test-pass        # tcli + pass integration
+just test-keystore    # key management (import/export/info/delete/search/fetch)
+```
+
+All tests require `TUMPA_PASSPHRASE` set and a secret key in `~/.tumpa/keys.db`.
 
 ## License
 

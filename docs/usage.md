@@ -12,7 +12,7 @@ and direct encryption/decryption.
 - [Password store (pass)](#password-store-pass)
 - [tpass — native password store](#tpass--native-password-store)
 - [Encryption and decryption](#encryption-and-decryption)
-- [SSH agent](#ssh-agent)
+- [Agent (passphrase cache + SSH)](#agent-passphrase-cache--ssh)
 - [Hardware OpenPGP cards](#hardware-openpgp-cards)
 - [Passphrase handling](#passphrase-handling)
 - [Environment variables](#environment-variables)
@@ -81,8 +81,60 @@ built in.
 ## Key management
 
 `tcli` reads keys from the [tumpa](https://github.com/tumpaproject/tumpa)
-keystore at `~/.tumpa/keys.db`. Keys are created and managed through
-the tumpa desktop application.
+keystore at `~/.tumpa/keys.db`. Keys can be managed from the command
+line or through the tumpa desktop application.
+
+### Importing keys
+
+```
+tcli --import mykey.asc
+tcli --import /path/to/keys/ --recursive
+```
+
+Accepts armored and binary OpenPGP files. Keys already in the keystore
+are skipped gracefully. For directories, imports all `.asc`, `.gpg`,
+`.pub`, `.key`, `.pgp` files.
+
+### Fetching keys via WKD
+
+```
+tcli --fetch user@example.com
+tcli --fetch user@example.com --dry-run   # preview without importing
+```
+
+Looks up the key via Web Key Directory (WKD) and prompts to import.
+With `--dry-run`, shows detailed key info without importing.
+
+### Key information
+
+```
+tcli --info <FINGERPRINT>
+```
+
+Shows algorithm, capabilities, UIDs (primary first), subkeys with
+full fingerprints, creation and expiry timestamps.
+
+### Searching keys
+
+```
+tcli --search "Kushal"                  # search by name (substring)
+tcli --search --email user@example.com  # search by email (exact)
+```
+
+### Exporting keys
+
+```
+tcli --export <FINGERPRINT>                # armored to stdout
+tcli --export <FINGERPRINT> -o key.asc     # armored to file
+tcli --export <FINGERPRINT> --binary -o key.gpg  # binary format
+```
+
+### Deleting keys
+
+```
+tcli --delete <FINGERPRINT>       # prompts for confirmation
+tcli --delete <FINGERPRINT> -f    # force, no prompt
+```
 
 ### Listing keys
 
@@ -591,56 +643,64 @@ gpg: public key is CCD470033AD77830
 
 ---
 
-## SSH agent
+## Agent (passphrase cache + SSH)
 
-`tcli` can serve as an SSH agent, providing authentication keys from
-the tumpa keystore and connected OpenPGP cards.
+`tcli agent` runs a daemon that caches passphrases for GPG operations
+and optionally serves as an SSH agent. This eliminates repeated
+passphrase prompts when signing commits, decrypting passwords, etc.
 
-### Starting the agent
-
-```
-tcli ssh-agent -H unix:///run/user/$(id -u)/tcli-agent.sock
-```
-
-The agent prints the `SSH_AUTH_SOCK` export line. Set it in your shell:
+### GPG passphrase caching only
 
 ```
-export SSH_AUTH_SOCK=/run/user/$(id -u)/tcli-agent.sock
+tcli agent
 ```
 
-For convenience, add to your shell profile:
+When the agent is running, `tcli` and `tpass` check it for cached
+passphrases before prompting via pinentry. Passphrases obtained from
+pinentry are automatically stored in the agent for reuse.
+
+### GPG + SSH agent
+
+```
+tcli agent --ssh
+tcli agent --ssh -H unix:///tmp/tcli.sock   # custom SSH socket
+```
+
+When `--ssh` is passed, the agent also serves SSH authentication
+requests. The SSH and GPG caches are shared — a passphrase cached
+from a git signing operation is also available for SSH authentication
+with the same key.
+
+```
+ssh-add -L    # list available SSH keys
+ssh user@host # authenticate
+```
+
+### Cache TTL
+
+```
+tcli agent --cache-ttl 3600   # 1 hour (default: 1800 = 30 min)
+```
+
+Cached passphrases expire after the TTL. A background task sweeps
+expired entries every 60 seconds.
+
+### Shell profile setup
 
 ```bash
-export SSH_AUTH_SOCK="/run/user/$(id -u)/tcli-agent.sock"
-
 # Start the agent if not already running
-if ! ssh-add -L &>/dev/null; then
-    tcli ssh-agent -H "unix://$SSH_AUTH_SOCK" &
+if ! pgrep -f "tcli agent" >/dev/null; then
+    tcli agent --ssh &
     disown
 fi
 ```
 
-### Listing keys
+### Without agent
 
-```
-ssh-add -L
-```
+Everything works without the agent — you just get prompted every
+time. The agent is purely additive.
 
-Shows all authentication-capable subkeys from your keystore in SSH
-public key format. Copy the output to `~/.ssh/authorized_keys` on
-remote hosts or add to GitHub/GitLab settings.
-
-### Connecting
-
-```
-ssh user@host
-```
-
-The agent signs the authentication challenge. On first use, pinentry
-prompts for the key passphrase. The passphrase is cached in memory for
-the lifetime of the agent process.
-
-### Supported algorithms
+### Supported SSH algorithms
 
 | Key type | SSH algorithm | Status |
 |---|---|---|
@@ -652,12 +712,13 @@ the lifetime of the agent process.
 
 ### Security notes
 
-- The agent socket is created with `0600` permissions (owner only).
+- The agent socket (`~/.tumpa/agent.sock`) is created with `0600`
+  permissions (owner only). Security relies on filesystem permissions,
+  same trust model as gpg-agent and ssh-agent.
 - Passphrases are stored in memory using `Zeroizing<String>` and are
-  zeroed when removed from the cache or when the agent exits.
-- Using a TCP binding (`tcp://...`) is discouraged -- the agent
-  protocol has no authentication and anyone who can connect can request
-  signatures. A warning is printed if TCP is used.
+  zeroed when expired or when the agent exits.
+- A PID file (`~/.tumpa/agent.pid`) prevents multiple agents from
+  running simultaneously.
 
 ---
 
@@ -692,12 +753,16 @@ whenever a secret key operation is performed.
 
 ### Acquisition order
 
-1. **`TUMPA_PASSPHRASE` environment variable** -- if set, used
+1. **Agent cache** -- if `tcli agent` is running, cached passphrases
+   are returned without prompting. Both `tcli` (GPG mode) and `tpass`
+   benefit automatically.
+
+2. **`TUMPA_PASSPHRASE` environment variable** -- if set, used
    immediately. Suitable for scripting, CI/CD, and testing. Do not
    use in production on shared systems (the variable is visible in
    `/proc/<pid>/environ`).
 
-2. **`pinentry` program** -- `tcli` spawns the system's `pinentry`
+3. **`pinentry` program** -- `tcli` spawns the system's `pinentry`
    (the same program GnuPG uses). This opens a GUI dialog on desktop
    systems or a curses prompt in terminals. Override the program with
    `PINENTRY_PROGRAM`:
@@ -706,15 +771,20 @@ whenever a secret key operation is performed.
    export PINENTRY_PROGRAM=/usr/bin/pinentry-gnome3
    ```
 
-3. **Terminal prompt** -- if pinentry is not available, `tcli` falls
+4. **Terminal prompt** -- if pinentry is not available, `tcli` falls
    back to reading from the terminal via `rpassword`.
 
-### SSH agent caching
+When the agent is running and a passphrase is obtained from steps 2-4,
+it is automatically stored in the agent cache for future use.
 
-In SSH agent mode, passphrases are cached in memory after first use
-and reused for subsequent signing requests. The cache is cleared if a
-signing operation fails (in case the passphrase was wrong). The cache
-is zeroed when the agent exits.
+### Agent caching
+
+With `tcli agent` running, passphrases are cached with a configurable
+TTL (default 30 minutes). This is especially valuable for:
+
+- `tpass grep` — decrypts every entry without re-prompting
+- `tpass init` — reencrypts all entries with a single prompt
+- Repeated `git commit -S` — no prompt after the first one
 
 ---
 
@@ -740,7 +810,9 @@ sure the key was imported in the tumpa desktop app.
 ### "No secret key found for key IDs: ..."
 
 The encrypted message is addressed to a key you don't have the secret
-for. Check `tcli --list-keys` -- only keys marked `sec` can decrypt.
+for. Check `tcli --list-keys` -- keys marked `sec` can decrypt with
+software keys, and keys marked `pub` can decrypt if the corresponding
+OpenPGP card is connected. Make sure `pcscd` is running if using a card.
 
 ### "Failed to enumerate cards" or card errors
 
