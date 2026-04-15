@@ -10,6 +10,7 @@ and direct encryption/decryption.
 - [Key management](#key-management)
 - [Git signing](#git-signing)
 - [Password store (pass)](#password-store-pass)
+- [tpass — native password store](#tpass--native-password-store)
 - [Encryption and decryption](#encryption-and-decryption)
 - [SSH agent](#ssh-agent)
 - [Hardware OpenPGP cards](#hardware-openpgp-cards)
@@ -27,8 +28,12 @@ and direct encryption/decryption.
 cargo install tumpa-cli
 ```
 
-The binary `tcli` is installed to `~/.cargo/bin/`. Make sure this
-directory is in your `PATH`.
+Two binaries are installed to `~/.cargo/bin/`:
+
+- `tcli` — GPG replacement for git signing and SSH agent
+- `tpass` — drop-in replacement for `pass` (password-store)
+
+Make sure `~/.cargo/bin/` is in your `PATH`.
 
 ### From source
 
@@ -36,7 +41,7 @@ directory is in your `PATH`.
 git clone https://github.com/tumpaproject/tumpa-cli
 cd tumpa-cli
 cargo build --release
-cp target/release/tcli ~/.local/bin/
+cp target/release/tcli target/release/tpass ~/.local/bin/
 ```
 
 ### System dependencies
@@ -296,6 +301,224 @@ When you change the keys in `.gpg-id` (via `pass init` with different
 fingerprints), `pass` reencrypts all passwords to the new set of keys.
 `tcli` supports the `--decrypt --list-only` and `--list-keys --with-colons`
 commands that `pass` uses to detect which files need reencryption.
+
+---
+
+## tpass — native password store
+
+`tpass` is a drop-in replacement for `pass` (password-store) that calls
+the tumpa keystore directly instead of shelling out to GPG. It supports
+every `pass` command with identical flags, file formats, and environment
+variables. Stores created by `tpass` are fully interchangeable with
+`pass` (and vice versa).
+
+### Installation
+
+`tpass` is built alongside `tcli`:
+
+```
+cargo install tumpa-cli
+```
+
+This installs both `tcli` and `tpass` to `~/.cargo/bin/`.
+
+### Initializing the store
+
+```
+tpass init <FINGERPRINT>
+```
+
+For multiple recipients:
+
+```
+tpass init <FP1> <FP2> <FP3>
+```
+
+Initialize a subfolder with different keys:
+
+```
+tpass init -p work <WORK_FP>
+```
+
+### Storing and retrieving passwords
+
+```
+# Insert (prompted, typed twice for confirmation)
+tpass insert email/work
+
+# Insert from stdin (multiline)
+echo "mypassword" | tpass insert -m email/work
+
+# Insert with echo (single line, visible)
+tpass insert -e email/work
+
+# Show a password
+tpass show email/work
+
+# Copy to clipboard (auto-clears after 45 seconds)
+tpass show -c email/work
+
+# Copy a specific line to clipboard
+tpass show -c2 email/work
+
+# Show as QR code
+tpass show -q email/work
+```
+
+### Generating passwords
+
+```
+# Generate a 20-character password with symbols
+tpass generate sites/github 20
+
+# Without symbols (alphanumeric only)
+tpass generate -n sites/github 20
+
+# Copy generated password to clipboard
+tpass generate -c sites/github 20
+
+# Replace only the first line of an existing entry
+tpass generate -i sites/github 20
+```
+
+### Listing and searching
+
+```
+# List all entries (tree view)
+tpass ls
+
+# List a subfolder
+tpass ls email
+
+# Search entry names
+tpass find github
+
+# Search decrypted contents
+tpass grep admin
+```
+
+### Editing
+
+```
+tpass edit email/work
+```
+
+Decrypts to a secure temp file (`/dev/shm` if available), opens
+`$EDITOR`, and reencrypts on save. The temp file is overwritten with
+zeros before deletion.
+
+### Moving, copying, removing
+
+```
+tpass mv email/old email/new
+tpass cp email/work email/backup
+tpass rm email/old
+tpass rm -r email            # recursive
+```
+
+### Git integration
+
+```
+# Initialize git tracking
+tpass git init
+
+# All changes are auto-committed (insert, generate, edit, rm, mv, cp)
+
+# Run any git command on the store
+tpass git log
+tpass git push
+```
+
+### Reencryption
+
+When you change the keys with `tpass init`, all passwords under that
+path are reencrypted to the new set of keys:
+
+```
+# Change keys for the entire store
+tpass init <NEW_FP>
+
+# Change keys for a subfolder only
+tpass init -p team <FP1> <FP2>
+```
+
+### Clipboard
+
+Clipboard support works on:
+
+- **Wayland** — uses `wl-copy` / `wl-paste`
+- **X11** — uses `xclip`
+- **macOS** — uses `pbcopy` / `pbpaste`
+
+The clipboard is automatically cleared after `PASSWORD_STORE_CLIP_TIME`
+seconds (default: 45). The previous clipboard content is restored.
+
+### Extensions
+
+`tpass` supports `pass` extensions. Place executable `.bash` scripts in
+`~/.password-store/.extensions/` and enable them:
+
+```
+export PASSWORD_STORE_ENABLE_EXTENSIONS=true
+```
+
+Then run:
+
+```
+tpass myextension arg1 arg2
+```
+
+### Environment variables
+
+`tpass` respects all `pass` environment variables:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PASSWORD_STORE_DIR` | Store directory | `~/.password-store` |
+| `PASSWORD_STORE_KEY` | Override encryption key(s) | from `.gpg-id` |
+| `PASSWORD_STORE_CLIP_TIME` | Clipboard clear timeout (seconds) | `45` |
+| `PASSWORD_STORE_UMASK` | File creation mask | `077` |
+| `PASSWORD_STORE_GENERATED_LENGTH` | Default password length | `25` |
+| `PASSWORD_STORE_CHARACTER_SET` | Characters for generation | `[:punct:][:alnum:]` |
+| `PASSWORD_STORE_CHARACTER_SET_NO_SYMBOLS` | Alphanumeric charset | `[:alnum:]` |
+| `PASSWORD_STORE_X_SELECTION` | X11 clipboard selection | `clipboard` |
+| `PASSWORD_STORE_ENABLE_EXTENSIONS` | Enable user extensions | (disabled) |
+| `PASSWORD_STORE_EXTENSIONS_DIR` | Extensions directory | `$PREFIX/.extensions` |
+| `PASSWORD_STORE_SIGNING_KEY` | GPG fingerprint(s) for `.gpg-id` signing | (disabled) |
+| `EDITOR` | Editor for `tpass edit` | `vi` |
+
+Plus the tumpa-specific variables (`TUMPA_KEYSTORE`, `TUMPA_PASSPHRASE`,
+`PINENTRY_PROGRAM`) documented in the [Environment variables](#environment-variables)
+section above.
+
+### Differences from pass
+
+`tpass` is fully compatible with `pass`, with these differences:
+
+- **No GPG dependency** — `tpass` calls the tumpa keystore directly.
+  No need to symlink `tcli` as `gpg2` or configure `gpg.program`.
+- **Faster** — no process spawning overhead for GPG on each operation.
+- **Single binary** — `tpass` handles everything; no shell script.
+- **GPG groups not supported** — `pass` can expand GPG groups from
+  `gpg.conf`. `tpass` treats all `.gpg-id` entries as literal key
+  identifiers. Use full fingerprints instead.
+
+### Migrating from pass
+
+If you already have a password store set up with `pass` and `tcli` as
+the GPG backend, switching to `tpass` requires no migration. Just use
+`tpass` instead of `pass` — the store format is identical:
+
+```
+# Before
+pass show email/work
+
+# After
+tpass show email/work
+```
+
+Both commands read the same `~/.password-store/` directory and the same
+`~/.tumpa/keys.db` keystore.
 
 ---
 
