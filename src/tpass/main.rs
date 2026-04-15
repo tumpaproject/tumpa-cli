@@ -101,6 +101,9 @@ fn main() {
         }
         None => {
             // Default: try extension, then show, then help
+            let clip_line = if args.clip { Some(1) } else { None };
+            let qrcode_line = if args.qrcode { Some(1) } else { None };
+
             if args.args.is_empty() {
                 // No args at all — show root listing or help if store doesn't exist
                 let prefix = util::config::store_dir();
@@ -108,15 +111,15 @@ fn main() {
                     print_usage();
                     return;
                 }
-                commands::show::cmd_show(None, None, None)
+                commands::show::cmd_show(None, clip_line, qrcode_line)
             } else {
                 // Try as extension first, then as show
                 let first = &args.args[0];
-                if try_extension(first, &args.args[1..]) {
+                if !args.clip && !args.qrcode && try_extension(first, &args.args[1..]) {
                     Ok(())
                 } else {
-                    // Treat as show
-                    commands::show::cmd_show(Some(first), None, None)
+                    // Treat as show (with optional -c/-q)
+                    commands::show::cmd_show(Some(first), clip_line, qrcode_line)
                 }
             }
         }

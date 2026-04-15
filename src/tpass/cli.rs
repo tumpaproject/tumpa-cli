@@ -11,6 +11,14 @@ pub struct Args {
     #[clap(subcommand)]
     pub command: Option<Command>,
 
+    /// Copy to clipboard (shorthand for show -c)
+    #[clap(short = 'c', long = "clip")]
+    pub clip: bool,
+
+    /// Show as QR code (shorthand for show -q)
+    #[clap(short = 'q', long = "qrcode")]
+    pub qrcode: bool,
+
     /// Remaining args (for default show/extension behavior)
     #[clap(trailing_var_arg = true)]
     pub args: Vec<String>,
