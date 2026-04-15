@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::util::{clip, config, crypto, git};
 
-use super::init::{check_sneaky_paths, get_recipients};
+use super::init::{check_sneaky_paths, checked_passfile_path, get_recipients};
 use super::insert::yesno;
 
 /// `tpass generate [--no-symbols,-n] [--clip,-c] [--qrcode,-q] [--in-place,-i | --force,-f] pass-name [pass-length]`
@@ -32,7 +32,7 @@ pub fn cmd_generate(
     };
 
     // Create parent directories
-    let passfile = prefix.join(format!("{}.gpg", path));
+    let passfile = checked_passfile_path(&prefix, path)?;
     if let Some(parent) = passfile.parent() {
         std::fs::create_dir_all(parent)?;
     }

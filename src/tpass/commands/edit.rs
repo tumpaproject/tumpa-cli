@@ -1,11 +1,11 @@
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::util::{config, crypto, git};
 
-use super::init::{check_sneaky_paths, get_recipients};
+use super::init::{check_sneaky_paths, checked_passfile_path, get_recipients};
 
 /// `tpass edit pass-name`
 pub fn cmd_edit(path: &str) -> Result<()> {
@@ -14,7 +14,7 @@ pub fn cmd_edit(path: &str) -> Result<()> {
     check_sneaky_paths(&[path])?;
 
     // Create parent directories
-    let passfile = prefix.join(format!("{}.gpg", path));
+    let passfile = checked_passfile_path(&prefix, path)?;
     if let Some(parent) = passfile.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -28,7 +28,7 @@ pub fn cmd_edit(path: &str) -> Result<()> {
 
     // Create secure temp directory
     let tmpdir = create_secure_tmpdir()?;
-    let tmp_file = tmpdir.join(format!("{}-{}.txt", path.replace('/', "-"), std::process::id()));
+    let tmp_file = create_secure_tmpfile(&tmpdir, path)?;
 
     // Decrypt existing file to temp if it exists
     let action;
@@ -98,19 +98,47 @@ pub fn cmd_edit(path: &str) -> Result<()> {
 
 /// Create a secure temporary directory, preferring /dev/shm.
 fn create_secure_tmpdir() -> Result<PathBuf> {
-    let template = format!("tpass.{}", std::process::id());
+    let base = if Path::new("/dev/shm").is_dir() {
+        PathBuf::from("/dev/shm")
+    } else {
+        PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string()))
+    };
 
-    if std::path::Path::new("/dev/shm").is_dir() {
-        let dir = PathBuf::from("/dev/shm").join(&template);
-        std::fs::create_dir_all(&dir)?;
-        return Ok(dir);
+    for _ in 0..16 {
+        let dir = base.join(format!("tpass.{}", random_suffix()?));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
     }
 
-    let base = std::env::var("TMPDIR")
-        .unwrap_or_else(|_| "/tmp".to_string());
-    let dir = PathBuf::from(base).join(&template);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    anyhow::bail!("Failed to create secure temporary directory")
+}
+
+fn create_secure_tmpfile(dir: &Path, path: &str) -> Result<PathBuf> {
+    let tmp_file = dir.join(format!("{}-{}.txt", path.replace('/', "-"), random_suffix()?));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(&tmp_file)?;
+    Ok(tmp_file)
+}
+
+fn random_suffix() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(hex::encode(bytes))
 }
 
 /// Clean up temp directory: overwrite files with zeros then remove.

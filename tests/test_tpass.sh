@@ -58,6 +58,8 @@ echo "Using key: $KEY_FP"
 
 TEST_DIR=$(mktemp -d)
 export PASSWORD_STORE_DIR="$TEST_DIR/store"
+OUTSIDE_DIR="$TEST_DIR/outside"
+mkdir -p "$OUTSIDE_DIR"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -172,18 +174,69 @@ pass_test "insert nested" sh -c "echo 'deep' | '$TPASS' insert -m a/b/c/deep"
 pass_test_output "show nested" "deep" "$TPASS" show a/b/c/deep
 
 echo ""
-echo "[9] Remove"
+echo "[9] Path and symlink safety"
+printf '%s\n' "$KEY_FP" > "$OUTSIDE_DIR/.gpg-id"
+echo -n "  reject absolute path escape ... "
+if ! sh -c "echo 'escaped' | '$TPASS' insert -m '$OUTSIDE_DIR/abs-escape'" >/dev/null 2>&1 \
+    && [[ ! -e "$OUTSIDE_DIR/abs-escape.gpg" ]]; then
+    echo "OK"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo "FAIL"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+mkdir -p "$PASSWORD_STORE_DIR/safe"
+pass_test "insert symlink target" sh -c "echo 'symlink-secret' | '$TPASS' insert -m safe/real"
+mv "$PASSWORD_STORE_DIR/safe/real.gpg" "$OUTSIDE_DIR/real.gpg"
+ln -s "$OUTSIDE_DIR/real.gpg" "$PASSWORD_STORE_DIR/safe/link.gpg"
+echo -n "  reject symlinked file read ... "
+if ! "$TPASS" show safe/link >/dev/null 2>&1; then
+    echo "OK"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo "FAIL"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+mkdir -p "$OUTSIDE_DIR/symlink-dir"
+printf '%s\n' "$KEY_FP" > "$OUTSIDE_DIR/symlink-dir/.gpg-id"
+ln -s "$OUTSIDE_DIR/symlink-dir" "$PASSWORD_STORE_DIR/linkdir"
+echo -n "  reject symlinked directory write ... "
+if ! sh -c "echo 'blocked' | '$TPASS' insert -m linkdir/entry" >/dev/null 2>&1 \
+    && [[ ! -e "$OUTSIDE_DIR/symlink-dir/entry.gpg" ]]; then
+    echo "OK"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo "FAIL"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+echo ""
+echo "[10] Edit"
+EDITOR_SCRIPT="$TEST_DIR/editor.sh"
+cat > "$EDITOR_SCRIPT" <<'EOF'
+#!/bin/sh
+printf 'edited-pass\nuser: edited\n' > "$1"
+EOF
+chmod +x "$EDITOR_SCRIPT"
+pass_test "edit" env EDITOR="$EDITOR_SCRIPT" "$TPASS" edit test/edited
+pass_test_output "show edited" "edited-pass
+user: edited" "$TPASS" show test/edited
+
+echo ""
+echo "[11] Remove"
 pass_test "remove" "$TPASS" rm -f test/simple
 
 echo ""
-echo "[10] Reinit (same key, no reencrypt needed)"
+echo "[12] Reinit (same key, no reencrypt needed)"
 pass_test "reinit same key" "$TPASS" init "$KEY_FP"
 pass_test_output "show after reinit" "line1
 user: admin
 url: example.com" "$TPASS" show test/multi
 
 echo ""
-echo "[11] List"
+echo "[13] List"
 echo -n "  tpass ls ... "
 LS_OUTPUT=$("$TPASS" ls 2>/dev/null)
 if echo "$LS_OUTPUT" | grep -q "test"; then
@@ -195,7 +248,7 @@ else
 fi
 
 echo ""
-echo "[12] Find"
+echo "[14] Find"
 echo -n "  tpass find multi ... "
 FIND_OUTPUT=$("$TPASS" find multi 2>/dev/null)
 if echo "$FIND_OUTPUT" | grep -q "multi"; then
@@ -207,14 +260,14 @@ else
 fi
 
 echo ""
-echo "[13] Copy"
+echo "[15] Copy"
 pass_test "copy" "$TPASS" cp test/multi test/multi-copy
 pass_test_output "show copy" "line1
 user: admin
 url: example.com" "$TPASS" show test/multi-copy
 
 echo ""
-echo "[14] Move"
+echo "[16] Move"
 pass_test "move" "$TPASS" mv -f test/multi-copy test/multi-moved
 pass_test_output "show moved" "line1
 user: admin
@@ -229,7 +282,7 @@ else
 fi
 
 echo ""
-echo "[15] Grep"
+echo "[17] Grep"
 echo -n "  tpass grep admin ... "
 GREP_OUTPUT=$("$TPASS" grep admin 2>/dev/null) || true
 if echo "$GREP_OUTPUT" | grep -q "admin"; then
@@ -241,11 +294,11 @@ else
 fi
 
 echo ""
-echo "[16] Remove recursive"
+echo "[18] Remove recursive"
 pass_test "remove recursive" "$TPASS" rm -rf test
 
 echo ""
-echo "[17] Version"
+echo "[19] Version"
 echo -n "  tpass version ... "
 VERSION_OUTPUT=$("$TPASS" version 2>/dev/null)
 if echo "$VERSION_OUTPUT" | grep -q "tpass"; then
@@ -257,7 +310,7 @@ else
 fi
 
 echo ""
-echo "[18] Git integration"
+echo "[20] Git integration"
 pass_test "git init" "$TPASS" git init
 echo -n "  git log has commits ... "
 GIT_LOG=$(cd "$PASSWORD_STORE_DIR" && git log --oneline 2>/dev/null)
