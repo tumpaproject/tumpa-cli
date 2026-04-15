@@ -63,12 +63,21 @@ pub fn verify(
     let lookup = store::resolve_from_issuer_ids(&keystore, &issuer_ids)?;
 
     let Some((cert_data, cert_info)) = lookup else {
-        writeln!(
-            err,
-            "tcli: Can't check signature: Certificate not found for {:?}",
-            issuer_ids
-        )?;
-        // Don't fail hard - git will interpret absence of GOODSIG as unverified
+        // Certificate not in keystore. Emit ERRSIG + NO_PUBKEY status lines
+        // on stdout for git, but nothing on stderr. Tools like bump-tag
+        // capture stderr and treat any output as a verification warning,
+        // so silence is safest here. Git reads the status lines to determine
+        // the signature is from an unknown key.
+        let key_id = if let Some(kid) = issuer_ids.iter().find(|id| id.len() == 16) {
+            kid.to_uppercase()
+        } else if let Some(fp) = issuer_ids.iter().find(|id| id.len() == 40) {
+            fp[24..].to_uppercase()
+        } else {
+            issuer_ids.first().map(|s| s.to_uppercase()).unwrap_or_default()
+        };
+        log::info!("Certificate not found for key ID {}", key_id);
+        writeln!(out, "\n[GNUPG:] ERRSIG {}", key_id)?;
+        write!(out, "[GNUPG:] NO_PUBKEY {}", key_id)?;
         return Ok(());
     };
 
@@ -90,19 +99,30 @@ pub fn verify(
             verifier_fp.to_uppercase()
         };
 
-        // Human-readable output to stderr
-        writeln!(
-            err,
-            "tcli: Good signature by key {}",
-            verifier_fp
-        )?;
-        if let Some(uid) = cert_info.user_ids.first() {
-            writeln!(err, "tcli: Signer: \"{}\"", sanitize_uid(&uid.value))?;
+        // Collect non-revoked UIDs, primary first (matching gpg output order)
+        let mut uids: Vec<_> = cert_info.user_ids.iter().filter(|u| !u.revoked).collect();
+        uids.sort_by(|a, b| b.is_primary.cmp(&a.is_primary));
+
+        // Human-readable output to stderr (matching gpg output style)
+        for (i, uid) in uids.iter().enumerate() {
+            if i == 0 {
+                writeln!(
+                    err,
+                    "tcli: Good signature from \"{}\"",
+                    sanitize_uid(&uid.value)
+                )?;
+            } else {
+                writeln!(
+                    err,
+                    "tcli:                 aka \"{}\"",
+                    sanitize_uid(&uid.value)
+                )?;
+            }
         }
 
         // Git-parseable status output to stdout
         // https://github.com/git/git/blob/11c821f2f2a31e70fb5cc449f9a29401c333aad2/gpg-interface.c#L371
-        if let Some(uid) = cert_info.user_ids.first() {
+        if let Some(uid) = uids.first() {
             writeln!(
                 out,
                 "\n[GNUPG:] GOODSIG {} {}",
@@ -119,9 +139,12 @@ pub fn verify(
         write!(out, "[GNUPG:] TRUST_FULLY 0 pgp")?;
     } else {
         writeln!(err, "tcli: BAD signature by key {}", cert_info.fingerprint)?;
+        // Use primary UID for BADSIG line
         let bad_uid = cert_info
             .user_ids
-            .first()
+            .iter()
+            .filter(|u| !u.revoked)
+            .max_by_key(|u| u.is_primary)
             .map(|u| sanitize_uid(&u.value))
             .unwrap_or_default();
         writeln!(

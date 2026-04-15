@@ -33,6 +33,15 @@ pub fn sign(
         .or_else(|card_err| {
             log::info!("Card signing failed ({}), trying software key", card_err);
             sign_with_software_key(&buffer, &cert_data, &cert_info, &mut err)
+                .map_err(|sw_err| {
+                    // If the software fallback also fails, include the card error
+                    // so the user knows why the card path failed too
+                    anyhow::anyhow!(
+                        "Card signing failed: {}\nSoftware key fallback failed: {}",
+                        card_err,
+                        sw_err
+                    )
+                })
         })?;
 
     // Write signature to stdout

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use pgp::composed::Deserializable;
 
 use sha2::Digest;
 use ssh_agent_lib::agent::Session;
@@ -107,30 +110,81 @@ impl Session for TumpaBackend {
         let mut identities = Vec::new();
 
         // 1. Collect card identities via wecanencrypt
-        if let Ok(cards) = wecanencrypt::card::list_all_cards() {
-            for card_summary in &cards {
-                // Get full card details to read the auth key
-                if let Ok(card_info) = wecanencrypt::card::get_card_details(Some(&card_summary.ident)) {
-                    if let Some(ref auth_fp) = card_info.authentication_fingerprint {
-                        log::debug!("Card {} has auth key {}", card_summary.ident, auth_fp);
-                        // We need the public key from the card - try to find it in keystore.
-                        // Card returns lowercase hex, keystore stores uppercase.
-                        let auth_fp_upper = auth_fp.to_uppercase();
-                        if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
-                            if let Ok(Some(cert_data)) = keystore.find_by_subkey_fingerprint(&auth_fp_upper) {
-                                if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(&cert_data, Some(&card_summary.ident)) {
-                                    if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
-                                        identities.push(Identity {
-                                            pubkey: key_data,
-                                            comment: format!("card:{}", card_summary.ident),
-                                        });
+        match wecanencrypt::card::list_all_cards() {
+            Ok(cards) => {
+                log::info!("Found {} card(s)", cards.len());
+                for card_summary in &cards {
+                    log::info!("Card: {} ({})", card_summary.ident, card_summary.manufacturer_name);
+                    // Get full card details to read the auth key
+                    match wecanencrypt::card::get_card_details(Some(&card_summary.ident)) {
+                        Ok(card_info) => {
+                            log::info!("  sig_fp: {:?}, auth_fp: {:?}", card_info.signature_fingerprint, card_info.authentication_fingerprint);
+                            if let Some(ref auth_fp) = card_info.authentication_fingerprint {
+                                // We need the public key from the card - try to find it in keystore.
+                                // Card returns lowercase hex, keystore stores uppercase.
+                                let auth_fp_upper = auth_fp.to_uppercase();
+                                match store::open_keystore(self.keystore_path.as_ref()) {
+                                    Ok(keystore) => {
+                                        match keystore.find_by_subkey_fingerprint(&auth_fp_upper) {
+                                            Ok(Some(cert_data)) => {
+                                                // Diagnostic: check what parse sees
+                                                log::info!("  cert_data len={}, starts_with_dash={}", cert_data.len(), cert_data.first() == Some(&b'-'));
+                                                // Try armored first, then binary, then secret key
+                                                let pk_result = pgp::composed::SignedPublicKey::from_armor_single(Cursor::new(&cert_data))
+                                                    .map(|(k, _)| (k, "armored"))
+                                                    .or_else(|_| pgp::composed::SignedPublicKey::from_bytes(Cursor::new(&cert_data)).map(|k| (k, "binary")))
+                                                    .or_else(|_| pgp::composed::SignedSecretKey::from_armor_single(Cursor::new(&cert_data))
+                                                        .map(|(k, _)| (k.to_public_key(), "secret-armored"))
+                                                        .or_else(|_| pgp::composed::SignedSecretKey::from_bytes(Cursor::new(&cert_data))
+                                                            .map(|k| (k.to_public_key(), "secret-binary"))));
+                                                match pk_result {
+                                                    Ok((pk, method)) => {
+                                                        log::info!("  Parsed via {}: {} public_subkeys, {} secret_subkeys(n/a)", method, pk.public_subkeys.len(), 0);
+                                                        for (i, sk) in pk.public_subkeys.iter().enumerate() {
+                                                            let mut flags = Vec::new();
+                                                            for sig in &sk.signatures {
+                                                                let f = sig.key_flags();
+                                                                if f.sign() { flags.push("sign"); }
+                                                                if f.encrypt_comms() || f.encrypt_storage() { flags.push("encrypt"); }
+                                                                if f.authentication() { flags.push("auth"); }
+                                                                if f.certify() { flags.push("certify"); }
+                                                            }
+                                                            log::info!("  subkey[{}]: flags={:?}, sigs={}", i, flags, sk.signatures.len());
+                                                        }
+                                                    }
+                                                    Err(e) => log::warn!("  All parse attempts failed: {}", e),
+                                                }
+                                                match wecanencrypt::get_ssh_pubkey(&cert_data, Some(&card_summary.ident)) {
+                                                    Ok(ssh_pubkey) => {
+                                                        match parse_ssh_pubkey_line(&ssh_pubkey) {
+                                                            Ok(key_data) => {
+                                                                log::info!("  Added card SSH identity");
+                                                                identities.push(Identity {
+                                                                    pubkey: key_data,
+                                                                    comment: format!("card:{}", card_summary.ident),
+                                                                });
+                                                            }
+                                                            Err(e) => log::warn!("  Failed to parse SSH pubkey: {}", e),
+                                                        }
+                                                    }
+                                                    Err(e) => log::warn!("  Failed to get SSH pubkey from cert: {}", e),
+                                                }
+                                            }
+                                            Ok(None) => log::warn!("  Auth subkey {} not found in keystore", auth_fp_upper),
+                                            Err(e) => log::warn!("  Keystore lookup failed: {}", e),
+                                        }
                                     }
+                                    Err(e) => log::warn!("  Failed to open keystore: {}", e),
                                 }
+                            } else {
+                                log::info!("  No authentication fingerprint on card");
                             }
                         }
+                        Err(e) => log::warn!("  Failed to get card details: {}", e),
                     }
                 }
             }
+            Err(e) => log::warn!("Failed to enumerate cards: {}", e),
         }
 
         // 2. Collect keystore identities (software keys with auth subkeys)
