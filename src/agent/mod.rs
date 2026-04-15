@@ -12,15 +12,60 @@ use crate::cache::CredentialCache;
 /// Default agent socket path: ~/.tumpa/agent.sock
 pub fn default_socket_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
-    let tumpa_dir = home.join(".tumpa");
-    std::fs::create_dir_all(&tumpa_dir)?;
-    Ok(tumpa_dir.join("agent.sock"))
+    Ok(home.join(".tumpa").join("agent.sock"))
+}
+
+/// PID file path: ~/.tumpa/agent.pid
+fn pid_file_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    Ok(home.join(".tumpa").join("agent.pid"))
+}
+
+/// Check if a previous agent is still running by reading the PID file.
+/// Returns true if a process with the stored PID is alive.
+fn is_agent_running() -> bool {
+    let pid_path = match pid_file_path() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let pid_str = match std::fs::read_to_string(&pid_path) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let pid: i32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    // Check if process is alive (signal 0 = existence check)
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+fn write_pid_file() -> Result<()> {
+    let pid_path = pid_file_path()?;
+    std::fs::write(&pid_path, format!("{}\n", std::process::id()))?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn remove_pid_file() {
+    if let Ok(path) = pid_file_path() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Run the unified agent.
 ///
 /// Always starts the GPG passphrase cache on `~/.tumpa/agent.sock`.
 /// If `ssh` is true, also starts the SSH agent.
+///
+/// # Security model
+///
+/// The agent socket is created with 0600 permissions (owner-only).
+/// Any process running as the same UID can connect and read cached
+/// passphrases. This is the same trust model as gpg-agent and
+/// ssh-agent — security relies on Unix file permissions, not on
+/// protocol-level authentication. Passphrases are transmitted in
+/// base64 encoding (not encrypted) over the socket.
 pub async fn run_agent(
     ssh: bool,
     ssh_host: Option<String>,
@@ -30,10 +75,25 @@ pub async fn run_agent(
     let cache = Arc::new(Mutex::new(CredentialCache::new()));
     let socket_path = default_socket_path()?;
 
-    // Remove stale socket
+    // Ensure ~/.tumpa/ exists
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Check if another agent is already running
     if socket_path.exists() {
+        if is_agent_running() {
+            anyhow::bail!(
+                "Another agent is already running (PID file: {:?}). \
+                 Stop it first or remove the stale socket.",
+                pid_file_path()?
+            );
+        }
+        // Stale socket from a crashed agent — safe to remove
         std::fs::remove_file(&socket_path)?;
     }
+
+    write_pid_file()?;
 
     // Set restrictive umask for socket creation
     let old_umask = unsafe { libc::umask(0o177) };

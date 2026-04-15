@@ -271,12 +271,13 @@ pub fn cmd_delete(key_id: &str, force: bool, keystore_path: Option<&PathBuf>) ->
         .unwrap_or("<no UID>");
 
     if !force {
-        eprintln!(
+        eprint!(
             "Delete {} {} ({})? [y/N] ",
             if cert_info.is_secret { "SECRET key" } else { "public key" },
             cert_info.fingerprint,
             uid
         );
+        io::stderr().flush()?;
         let mut response = String::new();
         io::stdin().read_line(&mut response)?;
         if !matches!(response.trim(), "y" | "Y") {
