@@ -4,6 +4,12 @@ use anyhow::Result;
 
 use crate::store;
 
+/// Sanitize a UID string for colon-format output.
+/// Strips control characters that could break the line-based format.
+fn sanitize_uid(uid: &str) -> String {
+    uid.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// List keys in colon-delimited format (GPG --list-keys --with-colons).
 ///
 /// `pass` parses this to find encryption subkey key IDs:
@@ -58,7 +64,7 @@ pub fn list_keys_colon(
         // UID lines
         for uid in &cert.user_ids {
             if !uid.revoked {
-                println!("uid:-::::::::{}:", uid.value);
+                println!("uid:-::::::::{}:", sanitize_uid(&uid.value));
             }
         }
 
@@ -117,7 +123,7 @@ pub fn list_secret_keys_colon(
         // UID lines
         for uid in &cert.user_ids {
             if !uid.revoked {
-                println!("uid:-::::::::{}:", uid.value);
+                println!("uid:-::::::::{}:", sanitize_uid(&uid.value));
             }
         }
 

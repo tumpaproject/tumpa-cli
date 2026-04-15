@@ -19,6 +19,9 @@ path = "src/tpass/main.rs"
 
 [dependencies]
 wecanencrypt = { path = "/home/kdas/code/learning/wecanencrypt", features = ["keystore", "card"] }
+# Must match wecanencrypt's pgp dependency exactly -- both crates parse
+# detached signatures using pgp::composed::DetachedSignature, and a version
+# mismatch could cause parser disagreement (see verify.rs dual-parse note).
 pgp = "0.19"
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
