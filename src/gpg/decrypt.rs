@@ -65,7 +65,7 @@ pub fn decrypt(
             .map(|u| u.value.as_str())
             .unwrap_or(&cert_info.fingerprint)
     );
-    let passphrase = pinentry::get_passphrase(&desc, "Passphrase")?;
+    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
 
     // Decrypt (wrap in Zeroizing so plaintext is zeroed on drop)
     let plaintext = Zeroizing::new(

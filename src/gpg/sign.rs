@@ -87,7 +87,7 @@ fn try_sign_on_card(
                     .unwrap_or(&cert_info.fingerprint)
             );
 
-            let pin = pinentry::get_passphrase(&desc, "Card PIN")?;
+            let pin = pinentry::get_passphrase(&desc, "Card PIN", Some(&cert_info.fingerprint))?;
 
             let signature = wecanencrypt::card::sign_bytes_detached_on_card(
                 data,
@@ -132,7 +132,7 @@ fn sign_with_software_key(
             .unwrap_or(&cert_info.fingerprint)
     );
 
-    let passphrase = pinentry::get_passphrase(&desc, "Passphrase")?;
+    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
 
     let signature = wecanencrypt::sign_bytes_detached(cert_data, data, &passphrase)
         .context("Software key signing failed")?;

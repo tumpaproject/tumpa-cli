@@ -1,10 +1,9 @@
 mod cli;
-mod ssh;
 
 use std::io::{stderr, stdin, stdout};
 
 use clap::Parser;
-use tumpa_cli::{gpg, keystore, store};
+use tumpa_cli::{gpg, keystore, ssh, store};
 
 use cli::*;
 
@@ -56,6 +55,14 @@ fn main() {
         }
         Ok(Mode::ListConfig) => gpg::keys::list_config(),
         Ok(Mode::ListKeys) => list_keys(keystore_path.as_ref()),
+        Ok(Mode::Agent {
+            ssh,
+            ssh_host,
+            cache_ttl,
+        }) => {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(tumpa_cli::agent::run_agent(ssh, ssh_host, cache_ttl, keystore_path))
+        }
         Ok(Mode::SshAgent { host }) => {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(ssh::run_agent(&host, keystore_path))
