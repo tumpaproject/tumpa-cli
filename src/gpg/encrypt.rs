@@ -21,7 +21,8 @@ pub fn encrypt(
     // Resolve each recipient to cert data
     let mut cert_data_list: Vec<Vec<u8>> = Vec::new();
     for recipient_id in recipients {
-        let (cert_data, _info) = store::resolve_signer(&keystore, recipient_id)?;
+        let (cert_data, cert_info) = store::resolve_signer(&keystore, recipient_id)?;
+        store::ensure_cert_usable_for_encryption(&cert_info)?;
         cert_data_list.push(cert_data);
     }
     let cert_refs: Vec<&[u8]> = cert_data_list.iter().map(|c| c.as_slice()).collect();

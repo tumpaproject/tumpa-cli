@@ -17,7 +17,8 @@ pub fn encrypt_to_recipients(
 
     let mut cert_data_list: Vec<Vec<u8>> = Vec::new();
     for recipient_id in recipient_ids {
-        let (cert_data, _info) = store::resolve_signer(&keystore, recipient_id)?;
+        let (cert_data, cert_info) = store::resolve_signer(&keystore, recipient_id)?;
+        store::ensure_cert_usable_for_encryption(&cert_info)?;
         cert_data_list.push(cert_data);
     }
     let cert_refs: Vec<&[u8]> = cert_data_list.iter().map(|c| c.as_slice()).collect();
@@ -192,11 +193,15 @@ pub fn recipient_encryption_key_ids(
     let mut key_ids = Vec::new();
 
     for recipient_id in recipient_ids {
-        let (cert_data, _info) = store::resolve_signer(&keystore, recipient_id)?;
+        let (cert_data, cert_info) = store::resolve_signer(&keystore, recipient_id)?;
+        store::ensure_cert_usable_for_encryption(&cert_info)?;
         let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, true)?;
 
         for sk in &cert_info.subkeys {
             if sk.is_revoked {
+                continue;
+            }
+            if store::subkey_is_expired(sk) {
                 continue;
             }
             if matches!(sk.key_type, wecanencrypt::KeyType::Encryption) {
@@ -228,6 +233,9 @@ pub fn sign_file_detached(
     // Sign with the first available key
     for signer_id in signer_ids {
         if let Ok((cert_data, cert_info)) = store::resolve_signer(&keystore, signer_id) {
+            if store::ensure_cert_usable_for_signing(&cert_info).is_err() {
+                continue;
+            }
             if !cert_info.is_secret {
                 continue;
             }
