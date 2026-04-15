@@ -80,7 +80,9 @@ fn main() {
         Ok(Mode::Search { query, email }) => {
             keystore::cmd_search(&query, email, keystore_path.as_ref())
         }
-        Ok(Mode::Fetch { email }) => keystore::cmd_fetch(&email, keystore_path.as_ref()),
+        Ok(Mode::Fetch { email, dry_run }) => {
+            keystore::cmd_fetch(&email, dry_run, keystore_path.as_ref())
+        }
         Ok(Mode::None) => {
             print_help();
             Ok(())
