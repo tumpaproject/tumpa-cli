@@ -16,6 +16,12 @@
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
+/// Validate that a fingerprint is a hex string of 16 or 40 characters.
+fn is_valid_fingerprint(s: &str) -> bool {
+    let len = s.len();
+    (len == 16 || len == 40) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// A request from a client to the agent.
 pub enum Request {
     Get { fingerprint: String },
@@ -36,7 +42,7 @@ pub fn parse_request(line: &str) -> Option<Request> {
 
     if let Some(fp) = line.strip_prefix("GET_PASSPHRASE ") {
         let fp = fp.trim();
-        if !fp.is_empty() {
+        if is_valid_fingerprint(fp) {
             return Some(Request::Get {
                 fingerprint: fp.to_string(),
             });
@@ -48,7 +54,7 @@ pub fn parse_request(line: &str) -> Option<Request> {
         if let (Some(fp), Some(b64)) = (parts.next(), parts.next()) {
             let fp = fp.trim();
             let b64 = b64.trim();
-            if !fp.is_empty() && !b64.is_empty() {
+            if is_valid_fingerprint(fp) && !b64.is_empty() {
                 if let Ok(decoded) = base64_decode(b64) {
                     return Some(Request::Put {
                         fingerprint: fp.to_string(),
@@ -61,7 +67,7 @@ pub fn parse_request(line: &str) -> Option<Request> {
 
     if let Some(fp) = line.strip_prefix("CLEAR_PASSPHRASE ") {
         let fp = fp.trim();
-        if !fp.is_empty() {
+        if is_valid_fingerprint(fp) {
             return Some(Request::Clear {
                 fingerprint: fp.to_string(),
             });
