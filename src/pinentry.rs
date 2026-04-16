@@ -119,16 +119,54 @@ fn try_agent_put(fingerprint: &str, passphrase: &Zeroizing<String>) {
 }
 
 /// Try to get passphrase via pinentry Assuan protocol.
+///
+/// If `PINENTRY_PROGRAM` is set, only that program is tried. Otherwise,
+/// `pinentry` is tried first; on macOS `pinentry-mac` is tried as a
+/// fallback when `pinentry` is not on `PATH` (since Homebrew's
+/// `pinentry-mac` only installs under that name).
 fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
-    let pinentry_program =
-        std::env::var("PINENTRY_PROGRAM").unwrap_or_else(|_| "pinentry".to_string());
+    let candidates: Vec<String> = if let Ok(explicit) = std::env::var("PINENTRY_PROGRAM") {
+        vec![explicit]
+    } else {
+        let mut v = vec!["pinentry".to_string()];
+        if cfg!(target_os = "macos") {
+            v.push("pinentry-mac".to_string());
+        }
+        v
+    };
 
-    let mut child = Command::new(&pinentry_program)
+    for program in &candidates {
+        match try_pinentry_with(program, description, prompt)? {
+            Some(pass) => return Ok(pass),
+            None => log::debug!("{} not on PATH, trying next pinentry", program),
+        }
+    }
+    anyhow::bail!(
+        "no pinentry program found (tried: {})",
+        candidates.join(", ")
+    );
+}
+
+/// Run the Assuan conversation with a specific pinentry program.
+///
+/// Returns `Ok(None)` if the program itself cannot be spawned (e.g. not
+/// on `PATH`), so the caller can try the next candidate. Returns
+/// `Err(..)` for protocol errors or user cancellation — those must not
+/// cascade to the next candidate.
+fn try_pinentry_with(
+    program: &str,
+    description: &str,
+    prompt: &str,
+) -> Result<Option<Zeroizing<String>>> {
+    let mut child = match Command::new(program)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .context(format!("Failed to spawn {}", pinentry_program))?;
+    {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
 
     let mut stdin = child.stdin.take().context("Failed to open pinentry stdin")?;
     let stdout = child.stdout.take().context("Failed to open pinentry stdout")?;
@@ -177,7 +215,7 @@ fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
     writeln!(stdin, "BYE")?;
     let _ = child.wait();
 
-    Ok(passphrase)
+    Ok(Some(passphrase))
 }
 
 /// Fallback: prompt on terminal via rpassword-style read.
