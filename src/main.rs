@@ -82,6 +82,7 @@ fn main() {
             output,
         }) => keystore::cmd_export(&key_id, armor, binary, output.as_ref(), keystore_path.as_ref()),
         Ok(Mode::Info { key_id }) => keystore::cmd_info(&key_id, keystore_path.as_ref()),
+        Ok(Mode::Desc { path }) => keystore::cmd_desc(&path),
         Ok(Mode::Delete { key_id, force }) => {
             keystore::cmd_delete(&key_id, force, keystore_path.as_ref())
         }
