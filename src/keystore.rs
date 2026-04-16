@@ -124,12 +124,12 @@ fn merge_and_reimport(
     new_data: &[u8],
 ) -> Result<bool> {
     let existing = keystore.export_cert(fingerprint)?;
-    let merged = wecanencrypt::merge_keys(&existing, new_data, false)
+    let merged = wecanencrypt::merge_keys(&existing, new_data)
         .context("Certificate merge failed")?;
 
     // Re-import the merged cert (INSERT OR REPLACE updates the row)
     keystore.import_cert(&merged)?;
-    Ok(existing != merged)
+    Ok(existing != *merged)
 }
 
 /// Export a key from the keystore.
