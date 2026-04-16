@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
-use pgp::composed::Deserializable;
+use std::time::Instant;
 
 use sha2::Digest;
 use ssh_agent_lib::agent::Session;
@@ -27,6 +25,10 @@ pub struct TumpaBackend {
     /// Maps card ident -> auth key fingerprint last seen on that card.
     /// Used to detect card removal and key changes between requests.
     card_state: Arc<Mutex<HashMap<String, String>>>,
+    /// Cached card enumeration results with timestamp.
+    /// Reused if the last enumeration was less than 1 second ago,
+    /// avoiding redundant card SELECTs between identities() and sign().
+    cached_cards: Arc<Mutex<(Instant, Vec<(wecanencrypt::card::CardSummary, wecanencrypt::card::CardInfo)>)>>,
 }
 
 impl TumpaBackend {
@@ -35,6 +37,7 @@ impl TumpaBackend {
             keystore_path,
             cache: Arc::new(Mutex::new(CredentialCache::new())),
             card_state: Arc::new(Mutex::new(HashMap::new())),
+            cached_cards: Arc::new(Mutex::new((Instant::now(), Vec::new()))),
         }
     }
 
@@ -48,34 +51,69 @@ impl TumpaBackend {
             keystore_path,
             cache,
             card_state: Arc::new(Mutex::new(HashMap::new())),
+            cached_cards: Arc::new(Mutex::new((Instant::now(), Vec::new()))),
         }
     }
 
-    /// Detect card removal or key changes since the last request.
+    /// Maximum age of cached card enumeration before re-querying.
+    /// Avoids redundant card SELECTs when identities() and sign()
+    /// are called in quick succession (typical SSH flow).
+    const CARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// Detect card removal or key changes since the last request, and
+    /// return the current card list with full details.
+    ///
+    /// If the last enumeration was less than 1 second ago, returns
+    /// the cached results without touching the card. Otherwise
+    /// re-enumerates and updates the cache.
     ///
     /// Compares the currently connected cards against the previously
     /// seen state. If a card was removed or its auth key fingerprint
     /// changed, the cached PIN for that card is cleared so the user
     /// is prompted again via pinentry on next use.
-    fn detect_card_changes(&self) {
+    ///
+    /// Returns the enumerated cards so callers don't need to re-query.
+    fn detect_card_changes(
+        &self,
+    ) -> Vec<(wecanencrypt::card::CardSummary, wecanencrypt::card::CardInfo)> {
+        // Return cached results if fresh enough
+        if let Ok(cached) = self.cached_cards.lock() {
+            if cached.0.elapsed() < Self::CARD_CACHE_TTL && !cached.1.is_empty() {
+                return cached.1.clone();
+            }
+        }
+
         let current_cards = wecanencrypt::card::list_all_cards().unwrap_or_default();
 
+        // Fetch full details for each card (one SELECT per card)
+        let mut cards_with_info = Vec::new();
+        for card in &current_cards {
+            if let Ok(info) = wecanencrypt::card::get_card_details(Some(&card.ident)) {
+                cards_with_info.push((card.clone(), info));
+            }
+        }
+
+        // Update the cache
+        if let Ok(mut cached) = self.cached_cards.lock() {
+            *cached = (Instant::now(), cards_with_info.clone());
+        }
+
         let Ok(mut state) = self.card_state.lock() else {
-            return;
+            return cards_with_info;
         };
         let Ok(mut cache) = self.cache.lock() else {
-            return;
+            return cards_with_info;
         };
 
         // Build current map: ident -> auth_fp
-        let mut current: HashMap<String, String> = HashMap::new();
-        for card in &current_cards {
-            if let Ok(info) = wecanencrypt::card::get_card_details(Some(&card.ident)) {
-                if let Some(auth_fp) = info.authentication_fingerprint {
-                    current.insert(card.ident.clone(), auth_fp);
-                }
-            }
-        }
+        let current: HashMap<String, String> = cards_with_info
+            .iter()
+            .filter_map(|(summary, info)| {
+                info.authentication_fingerprint
+                    .as_ref()
+                    .map(|fp| (summary.ident.clone(), fp.clone()))
+            })
+            .collect();
 
         // Check for removed or changed cards
         let previous_idents: Vec<String> = state.keys().cloned().collect();
@@ -104,6 +142,8 @@ impl TumpaBackend {
 
         // Update state to current
         *state = current;
+
+        cards_with_info
     }
 }
 
@@ -118,86 +158,46 @@ impl Session for TumpaBackend {
     async fn request_identities(&mut self) -> Result<Vec<Identity>, AgentError> {
         log::debug!("request_identities");
 
-        self.detect_card_changes();
+        let cards = self.detect_card_changes();
 
         let mut identities = Vec::new();
 
-        // 1. Collect card identities via wecanencrypt
-        match wecanencrypt::card::list_all_cards() {
-            Ok(cards) => {
-                log::info!("Found {} card(s)", cards.len());
-                for card_summary in &cards {
-                    log::info!("Card: {} ({})", card_summary.ident, card_summary.manufacturer_name);
-                    // Get full card details to read the auth key
-                    match wecanencrypt::card::get_card_details(Some(&card_summary.ident)) {
-                        Ok(card_info) => {
-                            log::info!("  sig_fp: {:?}, auth_fp: {:?}", card_info.signature_fingerprint, card_info.authentication_fingerprint);
-                            if let Some(ref auth_fp) = card_info.authentication_fingerprint {
-                                // We need the public key from the card - try to find it in keystore.
-                                // Card returns lowercase hex, keystore stores uppercase.
-                                let auth_fp_upper = auth_fp.to_uppercase();
-                                match store::open_keystore(self.keystore_path.as_ref()) {
-                                    Ok(keystore) => {
-                                        match keystore.find_by_subkey_fingerprint(&auth_fp_upper) {
-                                            Ok(Some(cert_data)) => {
-                                                // Diagnostic: check what parse sees
-                                                log::info!("  cert_data len={}, starts_with_dash={}", cert_data.len(), cert_data.first() == Some(&b'-'));
-                                                // Try armored first, then binary, then secret key
-                                                let pk_result = pgp::composed::SignedPublicKey::from_armor_single(Cursor::new(&cert_data))
-                                                    .map(|(k, _)| (k, "armored"))
-                                                    .or_else(|_| pgp::composed::SignedPublicKey::from_bytes(Cursor::new(&cert_data)).map(|k| (k, "binary")))
-                                                    .or_else(|_| pgp::composed::SignedSecretKey::from_armor_single(Cursor::new(&cert_data))
-                                                        .map(|(k, _)| (k.to_public_key(), "secret-armored"))
-                                                        .or_else(|_| pgp::composed::SignedSecretKey::from_bytes(Cursor::new(&cert_data))
-                                                            .map(|k| (k.to_public_key(), "secret-binary"))));
-                                                match pk_result {
-                                                    Ok((pk, method)) => {
-                                                        log::info!("  Parsed via {}: {} public_subkeys, {} secret_subkeys(n/a)", method, pk.public_subkeys.len(), 0);
-                                                        for (i, sk) in pk.public_subkeys.iter().enumerate() {
-                                                            let mut flags = Vec::new();
-                                                            for sig in &sk.signatures {
-                                                                let f = sig.key_flags();
-                                                                if f.sign() { flags.push("sign"); }
-                                                                if f.encrypt_comms() || f.encrypt_storage() { flags.push("encrypt"); }
-                                                                if f.authentication() { flags.push("auth"); }
-                                                                if f.certify() { flags.push("certify"); }
-                                                            }
-                                                            log::info!("  subkey[{}]: flags={:?}, sigs={}", i, flags, sk.signatures.len());
-                                                        }
-                                                    }
-                                                    Err(e) => log::warn!("  All parse attempts failed: {}", e),
-                                                }
-                                                match wecanencrypt::get_ssh_pubkey(&cert_data, Some(&card_summary.ident)) {
-                                                    Ok(ssh_pubkey) => {
-                                                        match parse_ssh_pubkey_line(&ssh_pubkey) {
-                                                            Ok(key_data) => {
-                                                                log::info!("  Added card SSH identity");
-                                                                identities.push(Identity {
-                                                                    pubkey: key_data,
-                                                                    comment: format!("card:{}", card_summary.ident),
-                                                                });
-                                                            }
-                                                            Err(e) => log::warn!("  Failed to parse SSH pubkey: {}", e),
-                                                        }
-                                                    }
-                                                    Err(e) => log::warn!("  Failed to get SSH pubkey from cert: {}", e),
-                                                }
+        // 1. Collect card identities (using data already fetched by detect_card_changes)
+        log::info!("Found {} card(s)", cards.len());
+        for (card_summary, card_info) in &cards {
+            log::info!("Card: {} ({})", card_summary.ident, card_summary.manufacturer_name);
+            log::info!("  sig_fp: {:?}, auth_fp: {:?}", card_info.signature_fingerprint, card_info.authentication_fingerprint);
+            if let Some(ref auth_fp) = card_info.authentication_fingerprint {
+                let auth_fp_upper = auth_fp.to_uppercase();
+                match store::open_keystore(self.keystore_path.as_ref()) {
+                    Ok(keystore) => {
+                        match keystore.find_by_subkey_fingerprint(&auth_fp_upper) {
+                            Ok(Some(cert_data)) => {
+                                match wecanencrypt::get_ssh_pubkey(&cert_data, Some(&card_summary.ident)) {
+                                    Ok(ssh_pubkey) => {
+                                        match parse_ssh_pubkey_line(&ssh_pubkey) {
+                                            Ok(key_data) => {
+                                                log::info!("  Added card SSH identity");
+                                                identities.push(Identity {
+                                                    pubkey: key_data,
+                                                    comment: format!("card:{}", card_summary.ident),
+                                                });
                                             }
-                                            Ok(None) => log::warn!("  Auth subkey {} not found in keystore", auth_fp_upper),
-                                            Err(e) => log::warn!("  Keystore lookup failed: {}", e),
+                                            Err(e) => log::warn!("  Failed to parse SSH pubkey: {}", e),
                                         }
                                     }
-                                    Err(e) => log::warn!("  Failed to open keystore: {}", e),
+                                    Err(e) => log::warn!("  Failed to get SSH pubkey from cert: {}", e),
                                 }
-                            } else {
-                                log::info!("  No authentication fingerprint on card");
                             }
+                            Ok(None) => log::warn!("  Auth subkey {} not found in keystore", auth_fp_upper),
+                            Err(e) => log::warn!("  Keystore lookup failed: {}", e),
                         }
-                        Err(e) => log::warn!("  Failed to get card details: {}", e),
                     }
+                    Err(e) => log::warn!("  Failed to open keystore: {}", e),
                 }
+            } else {
+                log::info!("  No authentication fingerprint on card");
             }
-            Err(e) => log::warn!("Failed to enumerate cards: {}", e),
         }
 
         // 2. Collect keystore identities (software keys with auth subkeys)
@@ -252,35 +252,30 @@ impl Session for TumpaBackend {
     async fn sign(&mut self, request: SignRequest) -> Result<Signature, AgentError> {
         log::debug!("sign request for pubkey {:?}", request.pubkey.algorithm());
 
-        self.detect_card_changes();
+        let cards = self.detect_card_changes();
 
-        // Check if a card holds this authentication key
-        if let Ok(cards) = wecanencrypt::card::list_all_cards() {
-            for card_summary in &cards {
-                if let Ok(card_info) =
-                    wecanencrypt::card::get_card_details(Some(&card_summary.ident))
-                {
-                    if let Some(ref auth_fp) = card_info.authentication_fingerprint {
-                        let auth_fp_upper = auth_fp.to_uppercase();
-                        if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
-                            if let Ok(Some(cert_data)) =
-                                keystore.find_by_subkey_fingerprint(&auth_fp_upper)
-                            {
-                                if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(
-                                    &cert_data,
-                                    Some(&card_summary.ident),
-                                ) {
-                                    if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
-                                        if key_data == request.pubkey {
-                                            // This card owns the key -- sign with it
-                                            return self
-                                                .sign_with_card(
-                                                    &card_summary.ident,
-                                                    &request,
-                                                )
-                                                .await;
-                                        }
-                                    }
+        // Check if a card holds this authentication key (using already-fetched data)
+        for (card_summary, card_info) in &cards {
+            if let Some(ref auth_fp) = card_info.authentication_fingerprint {
+                let auth_fp_upper = auth_fp.to_uppercase();
+                if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
+                    if let Ok(Some(cert_data)) =
+                        keystore.find_by_subkey_fingerprint(&auth_fp_upper)
+                    {
+                        if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(
+                            &cert_data,
+                            Some(&card_summary.ident),
+                        ) {
+                            if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
+                                if key_data == request.pubkey {
+                                    let holder = card_info.cardholder_name.as_deref();
+                                    return self
+                                        .sign_with_card(
+                                            &card_summary.ident,
+                                            holder,
+                                            &request,
+                                        )
+                                        .await;
                                 }
                             }
                         }
@@ -336,6 +331,7 @@ impl TumpaBackend {
     async fn sign_with_card(
         &self,
         card_ident: &str,
+        cardholder_name: Option<&str>,
         request: &SignRequest,
     ) -> Result<Signature, AgentError> {
         log::info!("Signing with card {}", card_ident);
@@ -355,15 +351,11 @@ impl TumpaBackend {
                 match cached {
                     Some(p) => p,
                     None => {
-                        let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
-                        let holder = card_info
-                            .as_ref()
-                            .and_then(|i| i.cardholder_name.as_deref())
-                            .filter(|n| !n.is_empty());
+                        let holder = cardholder_name.filter(|n| !n.is_empty());
                         let desc = if let Some(name) = holder {
                             format!("Please unlock the card\n\n{}\n\nSSH authentication", name)
                         } else {
-                            format!("Please unlock the card\n\nSSH authentication")
+                            "Please unlock the card\n\nSSH authentication".to_string()
                         };
                         pinentry::get_passphrase(&desc, "PIN", None).map_err(|e| {
                             log::error!("Failed to get card PIN: {}", e);
