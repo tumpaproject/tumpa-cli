@@ -4,8 +4,6 @@ A command-line tool for OpenPGP operations, SSH agent, and
 password management, backed by the
 [tumpa](https://github.com/tumpaproject/tumpa) keystore.
 
-[https://tumpa.rocks](https://tumpa.rocks) will have the full userguide.
-
 Two binaries are provided:
 
 - **`tcli`** -- drop-in GnuPG replacement for git signing, encryption/decryption,
@@ -56,6 +54,27 @@ The `pcscd` service must be running: `sudo systemctl start pcscd.socket`
 On macOS, the PC/SC framework is built in -- no extra packages needed.
 
 ## Setup
+
+### Import your key
+
+The first step is importing your OpenPGP key. The keystore directory
+(`~/.tumpa/`) and database are created automatically on first use:
+
+```
+tcli --import my-secret-key.asc
+```
+
+Verify it was imported:
+
+```
+tcli --list-keys
+```
+
+If you don't have a key yet, generate one with
+[wecanencrypt](https://github.com/kushaldas/wecanencrypt),
+[GnuPG](https://gnupg.org/), or the
+[tumpa](https://github.com/tumpaproject/tumpa) desktop application,
+then import it.
 
 ### Shell completions
 
