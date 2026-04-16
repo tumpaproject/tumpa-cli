@@ -78,17 +78,27 @@ fn try_sign_on_card(
             let card_ident = &card_match.card.ident;
             log::info!("Found card {} with signing key", card_ident);
 
-            let desc = format!(
-                "Enter PIN for card {} to sign with key {}",
-                card_ident,
-                cert_info
-                    .user_ids
-                    .first()
-                    .map(|u| u.value.as_str())
-                    .unwrap_or(&cert_info.fingerprint)
-            );
+            // Fetch card details for the pinentry prompt
+            let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
 
-            let pin = pinentry::get_passphrase(&desc, "Card PIN", Some(&cert_info.fingerprint))?;
+            let uid = cert_info
+                .user_ids
+                .first()
+                .map(|u| u.value.as_str())
+                .unwrap_or(&cert_info.fingerprint);
+
+            let mut desc = format!("Please unlock the card\n\nNumber: {}", card_match.card.serial_number);
+            if let Some(ref info) = card_info {
+                if let Some(ref name) = info.cardholder_name {
+                    if !name.is_empty() {
+                        desc.push_str(&format!("\nHolder: {}", name));
+                    }
+                }
+                desc.push_str(&format!("\nCounter: {}", info.signature_counter));
+            }
+            desc.push_str(&format!("\n\nSigning as: {}", uid));
+
+            let pin = pinentry::get_passphrase(&desc, "PIN", Some(&cert_info.fingerprint))?;
 
             let signature = wecanencrypt::card::sign_bytes_detached_on_card(
                 data,

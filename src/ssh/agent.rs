@@ -355,8 +355,17 @@ impl TumpaBackend {
                 match cached {
                     Some(p) => p,
                     None => {
-                        let desc = format!("Enter PIN for card {}", card_ident);
-                        pinentry::get_passphrase(&desc, "Card PIN", None).map_err(|e| {
+                        let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
+                        let holder = card_info
+                            .as_ref()
+                            .and_then(|i| i.cardholder_name.as_deref())
+                            .filter(|n| !n.is_empty());
+                        let desc = if let Some(name) = holder {
+                            format!("Please unlock the card\n\n{}\n\nSSH authentication", name)
+                        } else {
+                            format!("Please unlock the card\n\nSSH authentication")
+                        };
+                        pinentry::get_passphrase(&desc, "PIN", None).map_err(|e| {
                             log::error!("Failed to get card PIN: {}", e);
                             AgentError::Failure
                         })?
@@ -373,7 +382,7 @@ impl TumpaBackend {
                     attempt + 1,
                     MAX_PIN_RETRIES
                 );
-                pinentry::get_passphrase(&desc, "Card PIN", None).map_err(|e| {
+                pinentry::get_passphrase(&desc, "PIN", None).map_err(|e| {
                     log::error!("Failed to get card PIN: {}", e);
                     AgentError::Failure
                 })?

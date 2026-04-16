@@ -3,6 +3,7 @@ mod commands;
 mod util;
 
 use clap::Parser;
+use clap_complete::Shell;
 
 use cli::{Args, Command};
 
@@ -36,6 +37,23 @@ fn main() {
     }
 
     let args = Args::parse();
+
+    if let Some(shell) = args.completions {
+        // Use hand-written completions that list password entries from the store,
+        // matching pass's completion behavior. Clap-generated completions only
+        // handle flags/subcommands, not the dynamic password names.
+        let script = match shell {
+            Shell::Bash => include_str!("../../completions/tpass.bash"),
+            Shell::Zsh => include_str!("../../completions/tpass.zsh"),
+            Shell::Fish => include_str!("../../completions/tpass.fish"),
+            _ => {
+                eprintln!("Completions not available for {:?}. Supported: bash, zsh, fish.", shell);
+                std::process::exit(1);
+            }
+        };
+        print!("{}", script);
+        return;
+    }
 
     let result = match args.command {
         Some(Command::Init { path, gpg_ids }) => {

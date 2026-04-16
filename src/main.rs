@@ -2,7 +2,8 @@ mod cli;
 
 use std::io::{stderr, stdin, stdout};
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 use tumpa_cli::{gpg, keystore, ssh, store};
 
 use cli::*;
@@ -89,6 +90,10 @@ fn main() {
         }
         Ok(Mode::Fetch { email, dry_run }) => {
             keystore::cmd_fetch(&email, dry_run, keystore_path.as_ref())
+        }
+        Ok(Mode::Completions { shell }) => {
+            generate(shell, &mut Args::command(), "tcli", &mut stdout());
+            Ok(())
         }
         Ok(Mode::CardStatus) => card_status(),
         Ok(Mode::ShowSocket { ssh }) => {
