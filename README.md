@@ -173,6 +173,15 @@ tcli --list-keys --with-colons       # GnuPG colon format
 tcli --list-secret-keys --with-colons
 ```
 
+### Smart card status
+
+```
+tcli --card-status
+```
+
+Shows details of connected OpenPGP cards (manufacturer, serial,
+key fingerprints, PIN retry counters), similar to `gpg --card-status`.
+
 ### Custom keystore path
 
 ```

@@ -90,6 +90,7 @@ fn main() {
         Ok(Mode::Fetch { email, dry_run }) => {
             keystore::cmd_fetch(&email, dry_run, keystore_path.as_ref())
         }
+        Ok(Mode::CardStatus) => card_status(),
         Ok(Mode::ShowSocket { ssh }) => {
             if ssh {
                 match tumpa_cli::agent::default_ssh_socket_path() {
@@ -192,4 +193,77 @@ fn list_keys(keystore_path: Option<&std::path::PathBuf>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn card_status() -> anyhow::Result<()> {
+    let cards = wecanencrypt::card::list_all_cards()
+        .map_err(|e| anyhow::anyhow!("Failed to enumerate cards: {}", e))?;
+
+    if cards.is_empty() {
+        println!("No OpenPGP card detected.");
+        return Ok(());
+    }
+
+    for (i, card_summary) in cards.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+
+        let info = wecanencrypt::card::get_card_details(Some(&card_summary.ident))
+            .map_err(|e| anyhow::anyhow!("Failed to read card {}: {}", card_summary.ident, e))?;
+
+        println!("Manufacturer .....: {}", info.manufacturer_name.as_deref().unwrap_or("Unknown"));
+        println!("Serial number ....: {}", info.serial_number);
+
+        if let Some(ref name) = info.cardholder_name {
+            println!("Name of cardholder: {}", name);
+        }
+
+        if let Some(ref url) = info.public_key_url {
+            if !url.is_empty() {
+                println!("URL of public key : {}", url);
+            }
+        }
+
+        print_card_key("Signature key ....", &info.signature_fingerprint);
+        print_card_key("Encryption key ...", &info.encryption_fingerprint);
+        print_card_key("Authentication key", &info.authentication_fingerprint);
+
+        println!("Signature counter : {}", info.signature_counter);
+        println!(
+            "PIN retry counter : {} {} {}",
+            info.pin_retry_counter,
+            info.reset_code_retry_counter,
+            info.admin_pin_retry_counter
+        );
+    }
+
+    Ok(())
+}
+
+fn print_card_key(label: &str, fingerprint: &Option<String>) {
+    match fingerprint {
+        Some(fp) if !fp.is_empty() && fp != "0000000000000000000000000000000000000000" => {
+            // Format as "XXXX XXXX XXXX XXXX XXXX  XXXX XXXX XXXX XXXX XXXX"
+            // (groups of 4, double space after the 5th group, matching gpg)
+            let fp_upper = fp.to_uppercase();
+            let groups: Vec<&str> = (0..fp_upper.len())
+                .step_by(4)
+                .map(|i| &fp_upper[i..(i + 4).min(fp_upper.len())])
+                .collect();
+            let formatted = if groups.len() >= 10 {
+                format!(
+                    "{}  {}",
+                    groups[..5].join(" "),
+                    groups[5..].join(" ")
+                )
+            } else {
+                groups.join(" ")
+            };
+            println!("{}: {}", label, formatted);
+        }
+        _ => {
+            println!("{}: [none]", label);
+        }
+    }
 }

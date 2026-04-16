@@ -91,9 +91,19 @@ tcli --import mykey.asc
 tcli --import /path/to/keys/ --recursive
 ```
 
-Accepts armored and binary OpenPGP files. Keys already in the keystore
-are skipped gracefully. For directories, imports all `.asc`, `.gpg`,
-`.pub`, `.key`, `.pgp` files.
+Accepts armored and binary OpenPGP files. For directories, imports all
+`.asc`, `.gpg`, `.pub`, `.key`, `.pgp` files.
+
+When importing a key that already exists in the keystore, `tcli` merges
+the new data into the existing certificate instead of skipping it. This
+picks up renewed expiry dates, new third-party certifications, updated
+subkey bindings, and new user IDs. If the imported data is identical to
+what's already stored, the key is reported as "Unchanged".
+
+```
+$ tcli --import updated_key.asc
+Updated A85FF376759C994A... (Alice <alice@example.com>) — merged new signatures
+```
 
 ### Fetching keys via WKD
 
@@ -104,6 +114,10 @@ tcli --fetch user@example.com --dry-run   # preview without importing
 
 Looks up the key via Web Key Directory (WKD) and prompts to import.
 With `--dry-run`, shows detailed key info without importing.
+
+If the key already exists in the keystore, `tcli` offers to merge
+updates from the WKD response. This is how you refresh a contact's
+key after they renew their expiry or add new subkeys.
 
 ### Key information
 
@@ -753,16 +767,42 @@ time. The agent is purely additive.
 `tcli` supports YubiKey and other OpenPGP-compatible smart cards for
 signing, decryption, and SSH authentication.
 
+### Card status
+
+```
+tcli --card-status
+```
+
+Shows details of all connected OpenPGP cards, similar to
+`gpg --card-status`:
+
+```
+Manufacturer .....: Yubico
+Serial number ....: 04901321
+Name of cardholder: Kushal Das
+URL of public key : https://kushaldas.in/key.asc
+Signature key ....: 0BC1 3512 5EB2 FF9A 0F88  EE1C C65F F007 C757 66ED
+Encryption key ...: D2BA F621 2E4C DE54 8C33  0C3D FB82 AA5D 326D A75D
+Authentication key: 621B 1339 CDB8 3147 9A4D  EB4F 7C90 F274 9E08 5E1D
+Signature counter : 1234
+PIN retry counter : 3 0 3
+```
+
+If no card is connected, prints "No OpenPGP card detected."
+
 ### How card priority works
 
-For every operation, `tcli` checks for a connected card first:
+For every operation, `tcli` and `tpass` check for a connected card
+first:
 
-1. **Signing:** calls `find_cards_for_key()` to see if any connected
-   card holds the signing key for the certificate. If found, the card
-   performs the signature. Otherwise, the software key is used.
-2. **SSH agent:** card-based authentication keys are listed alongside
+1. **Signing:** checks if any connected card holds the signing key.
+   If found, the card performs the signature. Otherwise, the software
+   key is used.
+2. **Decryption:** checks if any connected card holds the encryption
+   key. If found, prompts for card PIN and decrypts on-card. Otherwise,
+   falls back to software key.
+3. **SSH agent:** card-based authentication keys are listed alongside
    software keys. Card keys are preferred when both are available.
-3. **Decryption:** currently uses software keys from the keystore.
 
 ### PIN entry
 
