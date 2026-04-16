@@ -168,18 +168,27 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: Compute source tarball SHA256
+      - name: Compute per-platform tarball SHA256s
         id: sha
         run: |
-          url="https://github.com/${{ github.repository }}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          sha=$(curl -sL "$url" | sha256sum | cut -d' ' -f1)
-          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
-          echo "url=$url" >> "$GITHUB_OUTPUT"
           version="${GITHUB_REF_NAME#v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          for triple in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            tarball="artifacts/tumpa-cli-${triple}/tumpa-cli-${triple}.tar.gz"
+            if [ ! -f "$tarball" ]; then
+              echo "Missing artifact: $tarball" >&2
+              exit 1
+            fi
+            sha=$(sha256sum "$tarball" | cut -d' ' -f1)
+            key="${triple//-/_}"
+            echo "sha_${key}=$sha" >> "$GITHUB_OUTPUT"
+          done
 
       - name: Update Homebrew formula
         uses: peter-evans/repository-dispatch@v3
@@ -190,6 +199,9 @@ jobs:
           client-payload: |
             {
               "version": "${{ steps.sha.outputs.version }}",
-              "url": "${{ steps.sha.outputs.url }}",
-              "sha256": "${{ steps.sha.outputs.sha256 }}"
+              "sha256": {
+                "aarch64_apple_darwin":     "${{ steps.sha.outputs.sha_aarch64_apple_darwin }}",
+                "x86_64_apple_darwin":      "${{ steps.sha.outputs.sha_x86_64_apple_darwin }}",
+                "x86_64_unknown_linux_gnu": "${{ steps.sha.outputs.sha_x86_64_unknown_linux_gnu }}"
+              }
             }
