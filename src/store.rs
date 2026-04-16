@@ -6,16 +6,27 @@ use wecanencrypt::KeyType;
 use wecanencrypt::KeyStore;
 
 /// Open the tumpa keystore at the given path or default ~/.tumpa/keys.db.
+///
+/// Creates the parent directory and database file if they don't exist.
 pub fn open_keystore(path: Option<&PathBuf>) -> Result<KeyStore> {
-    match path {
-        Some(p) => KeyStore::open(p).context(format!("Failed to open keystore at {:?}", p)),
+    let db_path = match path {
+        Some(p) => p.clone(),
         None => {
             let home = dirs::home_dir().context("Could not determine home directory")?;
-            let db_path = home.join(".tumpa").join("keys.db");
-            KeyStore::open(&db_path)
-                .context(format!("Failed to open keystore at {:?}", db_path))
+            home.join(".tumpa").join("keys.db")
+        }
+    };
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = db_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .context(format!("Failed to create keystore directory {:?}", parent))?;
         }
     }
+
+    KeyStore::open(&db_path)
+        .context(format!("Failed to open keystore at {:?}", db_path))
 }
 
 /// Resolve a signer ID (fingerprint, key ID, or subkey fingerprint) to cert data + info.

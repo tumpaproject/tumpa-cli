@@ -8,6 +8,7 @@ and direct encryption/decryption.
 
 - [Installation](#installation)
   - [Shell completions](#shell-completions)
+- [Getting started](#getting-started)
 - [Key management](#key-management)
 - [Git signing](#git-signing)
 - [Password store (pass)](#password-store-pass)
@@ -96,6 +97,52 @@ tpass --completions fish > ~/.config/fish/completions/tpass.fish
 ```
 
 Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
+
+---
+
+## Getting started
+
+The first step after installation is importing your OpenPGP key. The
+keystore directory (`~/.tumpa/`) and database file (`keys.db`) are
+created automatically on first use — no manual setup needed.
+
+### Import your secret key
+
+```
+tcli --import my-secret-key.asc
+```
+
+This imports both the secret key material and the public certificate.
+If `~/.tumpa/keys.db` doesn't exist yet, it is created automatically.
+
+### Verify the import
+
+```
+$ tcli --list-keys
+sec A85FF376759C994A8A1168D8D8219C8C43F6C5E1 Alice <alice@example.com>
+```
+
+Lines starting with `sec` indicate keys you own (have the secret key
+for). The 40-character hex string is the fingerprint — you'll use it
+for git signing, `pass init`, and encryption.
+
+### Import contacts' public keys
+
+```
+tcli --import colleague-pubkey.asc
+tcli --fetch colleague@example.com       # or fetch via WKD
+```
+
+These are stored as public-only certificates (shown as `pub` in
+`tcli --list-keys`) and used as encryption recipients.
+
+### Next steps
+
+With your key imported, set up the workflows you need:
+
+- [Git signing](#git-signing) — sign commits and tags
+- [tpass](#tpass--native-password-store) — manage passwords
+- [Agent](#agent-passphrase-cache--ssh) — cache passphrases and SSH auth
 
 ---
 
