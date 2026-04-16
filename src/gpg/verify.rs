@@ -101,7 +101,7 @@ pub fn verify(
 
         // Collect non-revoked UIDs, primary first (matching gpg output order)
         let mut uids: Vec<_> = cert_info.user_ids.iter().filter(|u| !u.revoked).collect();
-        uids.sort_by(|a, b| b.is_primary.cmp(&a.is_primary));
+        uids.sort_by_key(|u| std::cmp::Reverse(u.is_primary));
 
         // Human-readable output to stderr (matching gpg output style)
         for (i, uid) in uids.iter().enumerate() {

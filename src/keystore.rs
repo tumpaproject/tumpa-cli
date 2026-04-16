@@ -236,7 +236,7 @@ fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) 
 
     // UIDs (primary first)
     let mut uids: Vec<_> = cert_info.user_ids.iter().filter(|u| !u.revoked).collect();
-    uids.sort_by(|a, b| b.is_primary.cmp(&a.is_primary));
+    uids.sort_by_key(|u| std::cmp::Reverse(u.is_primary));
 
     if !uids.is_empty() {
         println!("     UIDs:");

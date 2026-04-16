@@ -81,11 +81,7 @@ fn try_sign_on_card(
             // Fetch card details for the pinentry prompt
             let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
 
-            let uid = cert_info
-                .user_ids
-                .first()
-                .map(|u| u.value.as_str())
-                .unwrap_or(&cert_info.fingerprint);
+            let uid = primary_uid(cert_info);
 
             let mut desc = format!("Please unlock the card\n\nNumber: {}", card_match.card.serial_number);
             if let Some(ref info) = card_info {
@@ -134,14 +130,7 @@ fn sign_with_software_key(
         );
     }
 
-    let desc = format!(
-        "Enter passphrase for key {}",
-        cert_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&cert_info.fingerprint)
-    );
+    let desc = format!("Enter passphrase for key {}", primary_uid(cert_info));
 
     let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
 
@@ -155,4 +144,19 @@ fn sign_with_software_key(
     )?;
 
     Ok(signature)
+}
+
+/// Get the primary UID string from a certificate, falling back to the first
+/// UID or the fingerprint.
+///
+/// Prefers the UID marked `is_primary` (RFC 9580 primary UID flag), then
+/// the first non-revoked UID, then the fingerprint.
+fn primary_uid(cert_info: &wecanencrypt::CertificateInfo) -> &str {
+    cert_info
+        .user_ids
+        .iter()
+        .find(|u| u.is_primary && !u.revoked)
+        .or_else(|| cert_info.user_ids.iter().find(|u| !u.revoked))
+        .map(|u| u.value.as_str())
+        .unwrap_or(&cert_info.fingerprint)
 }

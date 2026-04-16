@@ -8,6 +8,7 @@ and direct encryption/decryption.
 
 - [Installation](#installation)
   - [Shell completions](#shell-completions)
+- [Getting started](#getting-started)
 - [Key management](#key-management)
 - [Git signing](#git-signing)
 - [Password store (pass)](#password-store-pass)
@@ -96,6 +97,52 @@ tpass --completions fish > ~/.config/fish/completions/tpass.fish
 ```
 
 Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
+
+---
+
+## Getting started
+
+The first step after installation is importing your OpenPGP key. The
+keystore directory (`~/.tumpa/`) and database file (`keys.db`) are
+created automatically on first use — no manual setup needed.
+
+### Import your secret key
+
+```
+tcli --import my-secret-key.asc
+```
+
+This imports both the secret key material and the public certificate.
+If `~/.tumpa/keys.db` doesn't exist yet, it is created automatically.
+
+### Verify the import
+
+```
+$ tcli --list-keys
+sec A85FF376759C994A8A1168D8D8219C8C43F6C5E1 Alice <alice@example.com>
+```
+
+Lines starting with `sec` indicate keys you own (have the secret key
+for). The 40-character hex string is the fingerprint — you'll use it
+for git signing, `pass init`, and encryption.
+
+### Import contacts' public keys
+
+```
+tcli --import colleague-pubkey.asc
+tcli --fetch colleague@example.com       # or fetch via WKD
+```
+
+These are stored as public-only certificates (shown as `pub` in
+`tcli --list-keys`) and used as encryption recipients.
+
+### Next steps
+
+With your key imported, set up the workflows you need:
+
+- [Git signing](#git-signing) — sign commits and tags
+- [tpass](#tpass--native-password-store) — manage passwords
+- [Agent](#agent-passphrase-cache--ssh) — cache passphrases and SSH auth
 
 ---
 
@@ -720,7 +767,56 @@ tcli agent --cache-ttl 3600   # 1 hour (default: 1800 = 30 min)
 Cached passphrases expire after the TTL. A background task sweeps
 expired entries every 60 seconds.
 
-### Shell profile setup
+### Starting the agent automatically
+
+#### macOS (Launch Agent)
+
+Create `~/Library/LaunchAgents/rocks.tumpa.agent.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>rocks.tumpa.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/.cargo/bin/tcli</string>
+        <string>agent</string>
+        <string>--ssh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/.tumpa/agent.log</string>
+</dict>
+</plist>
+```
+
+Replace `USERNAME` with your macOS username, then load it:
+
+```
+launchctl load ~/Library/LaunchAgents/rocks.tumpa.agent.plist
+```
+
+Add to your shell profile (`~/.zshrc`):
+
+```bash
+export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
+```
+
+The agent starts automatically on login, restarts if it crashes, and
+logs to `~/.tumpa/agent.log`.
+
+To stop: `launchctl unload ~/Library/LaunchAgents/rocks.tumpa.agent.plist`
+
+#### Linux (shell profile)
+
+Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # Start the agent if not already running
@@ -728,6 +824,7 @@ if ! pgrep -f "tcli agent" >/dev/null; then
     tcli agent --ssh &
     disown
 fi
+export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
 ```
 
 ### Querying socket paths

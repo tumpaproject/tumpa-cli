@@ -1,6 +1,6 @@
 [package]
 name = "tumpa-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "OpenPGP operations and SSH agent backed by tumpa keystore."
 license = "GPL-3.0-or-later"
@@ -11,6 +11,7 @@ categories = ["cryptography", "authentication"]
 include = [
     "src/**/*.rs",
     "completions/*",
+    "contrib/**",
     "tests/**/*.sh",
     "tests/keys/*.asc",
     "tests/keys/*.pub",
