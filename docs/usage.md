@@ -767,7 +767,56 @@ tcli agent --cache-ttl 3600   # 1 hour (default: 1800 = 30 min)
 Cached passphrases expire after the TTL. A background task sweeps
 expired entries every 60 seconds.
 
-### Shell profile setup
+### Starting the agent automatically
+
+#### macOS (Launch Agent)
+
+Create `~/Library/LaunchAgents/rocks.tumpa.agent.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>rocks.tumpa.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/.cargo/bin/tcli</string>
+        <string>agent</string>
+        <string>--ssh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/.tumpa/agent.log</string>
+</dict>
+</plist>
+```
+
+Replace `USERNAME` with your macOS username, then load it:
+
+```
+launchctl load ~/Library/LaunchAgents/rocks.tumpa.agent.plist
+```
+
+Add to your shell profile (`~/.zshrc`):
+
+```bash
+export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
+```
+
+The agent starts automatically on login, restarts if it crashes, and
+logs to `~/.tumpa/agent.log`.
+
+To stop: `launchctl unload ~/Library/LaunchAgents/rocks.tumpa.agent.plist`
+
+#### Linux (shell profile)
+
+Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # Start the agent if not already running
@@ -775,6 +824,7 @@ if ! pgrep -f "tcli agent" >/dev/null; then
     tcli agent --ssh &
     disown
 fi
+export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
 ```
 
 ### Querying socket paths

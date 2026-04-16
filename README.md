@@ -251,6 +251,56 @@ tcli agent --ssh -H unix:///tmp/tcli.sock   # custom SSH socket
 tcli agent --cache-ttl 3600                 # custom TTL (1 hour)
 ```
 
+### Starting the agent automatically
+
+**macOS** -- create `~/Library/LaunchAgents/rocks.tumpa.agent.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>rocks.tumpa.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/.cargo/bin/tcli</string>
+        <string>agent</string>
+        <string>--ssh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/.tumpa/agent.log</string>
+</dict>
+</plist>
+```
+
+Replace `USERNAME` with your macOS username, then:
+
+```
+launchctl load ~/Library/LaunchAgents/rocks.tumpa.agent.plist
+```
+
+Add to `~/.zshrc`:
+
+```bash
+export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
+```
+
+**Linux** -- add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+if ! pgrep -f "tcli agent" >/dev/null; then
+    tcli agent --ssh &
+    disown
+fi
+export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+```
+
 ### Without agent
 
 Everything works without the agent -- you just get prompted every time.
