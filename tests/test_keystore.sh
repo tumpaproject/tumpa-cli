@@ -97,9 +97,9 @@ echo "[1] Import"
 run_test "import single file" "$TCLI" --import "$KEYS_DIR/public.asc"
 test_output_contains "import reports count" "Imported 1" "$TCLI" --import "$KEYS_DIR/hellopublic.asc"
 
-# Import same file again — should skip
-test_output_contains "import skip existing" "Skipping $FP_PUBLIC" "$TCLI" --import "$KEYS_DIR/public.asc"
-test_output_contains "import skip reports count" "skipped 1" "$TCLI" --import "$KEYS_DIR/public.asc"
+# Import same file again — should merge (no new data, but reports as updated)
+test_output_contains "import re-import merges" "Updated $FP_PUBLIC" "$TCLI" --import "$KEYS_DIR/public.asc"
+test_output_contains "import re-import reports count" "0 new, 1 updated" "$TCLI" --import "$KEYS_DIR/public.asc"
 
 # Import from directory
 cleanup_test_keys
