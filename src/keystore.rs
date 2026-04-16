@@ -10,18 +10,18 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
     let keystore = store::open_keystore(keystore_path)?;
 
     let mut imported = 0u32;
-    let mut skipped = 0u32;
+    let mut updated = 0u32;
     let mut failed = 0u32;
 
     for path in paths {
         if path.is_dir() {
-            import_dir(&keystore, path, recursive, &mut imported, &mut skipped, &mut failed)?;
+            import_dir(&keystore, path, recursive, &mut imported, &mut updated, &mut failed)?;
         } else {
-            import_file(&keystore, path, &mut imported, &mut skipped, &mut failed);
+            import_file(&keystore, path, &mut imported, &mut updated, &mut failed);
         }
     }
 
-    println!("Imported {} key(s), skipped {} (already present), {} failed.", imported, skipped, failed);
+    println!("Imported {} new, {} updated, {} failed.", imported, updated, failed);
     Ok(())
 }
 
@@ -30,7 +30,7 @@ fn import_dir(
     dir: &Path,
     recursive: bool,
     imported: &mut u32,
-    skipped: &mut u32,
+    updated: &mut u32,
     failed: &mut u32,
 ) -> Result<()> {
     let entries = std::fs::read_dir(dir)
@@ -41,10 +41,10 @@ fn import_dir(
         let path = entry.path();
 
         if path.is_dir() && recursive {
-            import_dir(keystore, &path, recursive, imported, skipped, failed)?;
+            import_dir(keystore, &path, recursive, imported, updated, failed)?;
         } else if path.is_file()
             && is_key_file(&path) {
-                import_file(keystore, &path, imported, skipped, failed);
+                import_file(keystore, &path, imported, updated, failed);
             }
     }
 
@@ -62,7 +62,7 @@ fn import_file(
     keystore: &wecanencrypt::KeyStore,
     path: &Path,
     imported: &mut u32,
-    skipped: &mut u32,
+    updated: &mut u32,
     failed: &mut u32,
 ) {
     let data = match std::fs::read(path) {
@@ -74,7 +74,7 @@ fn import_file(
         }
     };
 
-    // Check if key already exists before importing
+    // If the key already exists, merge new signatures into the stored cert
     if let Ok(cert_info) = wecanencrypt::parse_cert_bytes(&data, false) {
         if keystore.contains(&cert_info.fingerprint).unwrap_or(false) {
             let uid = cert_info
@@ -82,11 +82,20 @@ fn import_file(
                 .first()
                 .map(|u| u.value.as_str())
                 .unwrap_or("");
-            println!(
-                "Skipping {} ({}) — already imported",
-                cert_info.fingerprint, uid
-            );
-            *skipped += 1;
+            match merge_and_reimport(keystore, &cert_info.fingerprint, &data) {
+                Ok(true) => {
+                    println!("Updated {} ({}) — merged new signatures", cert_info.fingerprint, uid);
+                    *updated += 1;
+                }
+                Ok(false) => {
+                    println!("Unchanged {} ({}) — no new data", cert_info.fingerprint, uid);
+                    *updated += 1;
+                }
+                Err(e) => {
+                    eprintln!("Failed to merge {:?}: {}", path, e);
+                    *failed += 1;
+                }
+            }
             return;
         }
     }
@@ -105,6 +114,22 @@ fn import_file(
             *failed += 1;
         }
     }
+}
+
+/// Merge new certificate data into an existing keystore entry.
+/// Returns Ok(true) if the merge produced changes, Ok(false) if identical.
+fn merge_and_reimport(
+    keystore: &wecanencrypt::KeyStore,
+    fingerprint: &str,
+    new_data: &[u8],
+) -> Result<bool> {
+    let existing = keystore.export_cert(fingerprint)?;
+    let merged = wecanencrypt::merge_keys(&existing, new_data, false)
+        .context("Certificate merge failed")?;
+
+    // Re-import the merged cert (INSERT OR REPLACE updates the row)
+    keystore.import_cert(&merged)?;
+    Ok(existing != merged)
 }
 
 /// Export a key from the keystore.
@@ -337,12 +362,9 @@ pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) ->
         return Ok(());
     }
 
-    // Import
+    // Import or merge
     let keystore = store::open_keystore(keystore_path)?;
-    if keystore.contains(&cert_info.fingerprint)? {
-        println!("\nKey {} already in keystore.", cert_info.fingerprint);
-        return Ok(());
-    }
+    let already_exists = keystore.contains(&cert_info.fingerprint)?;
 
     let uid = cert_info
         .user_ids
@@ -350,7 +372,11 @@ pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) ->
         .map(|u| u.value.as_str())
         .unwrap_or("<no UID>");
 
-    eprint!("\nImport this key? [y/N] ");
+    if already_exists {
+        eprint!("\nKey already in keystore. Merge updates? [y/N] ");
+    } else {
+        eprint!("\nImport this key? [y/N] ");
+    }
     io::stderr().flush()?;
     let mut response = String::new();
     io::stdin().read_line(&mut response)?;
@@ -359,8 +385,16 @@ pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) ->
         return Ok(());
     }
 
-    keystore.import_cert(&cert_data)?;
-    println!("Imported {} ({})", cert_info.fingerprint, uid);
+    if already_exists {
+        match merge_and_reimport(&keystore, &cert_info.fingerprint, &cert_data) {
+            Ok(true) => println!("Updated {} ({}) — merged new signatures", cert_info.fingerprint, uid),
+            Ok(false) => println!("Unchanged {} ({}) — no new data", cert_info.fingerprint, uid),
+            Err(e) => anyhow::bail!("Merge failed: {}", e),
+        }
+    } else {
+        keystore.import_cert(&cert_data)?;
+        println!("Imported {} ({})", cert_info.fingerprint, uid);
+    }
 
     Ok(())
 }

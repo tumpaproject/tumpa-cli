@@ -107,6 +107,10 @@ pub struct Args {
     #[clap(long, value_name = "TYPE", num_args = 0..=1, default_missing_value = "gpg")]
     pub show_socket: Option<String>,
 
+    /// Show status of connected OpenPGP smart card.
+    #[clap(long)]
+    pub card_status: bool,
+
     /// Output in binary format (for --export).
     #[clap(long)]
     pub binary: bool,
@@ -295,6 +299,7 @@ pub enum Mode {
     ShowSocket {
         ssh: bool,
     },
+    CardStatus,
     None,
 }
 
@@ -328,7 +333,11 @@ impl TryFrom<Args> for Mode {
             None => {}
         }
 
-        // --- Socket info ---
+        // --- Card and socket info ---
+
+        if value.card_status {
+            return Ok(Mode::CardStatus);
+        }
 
         if let Some(socket_type) = value.show_socket {
             return Ok(Mode::ShowSocket {
