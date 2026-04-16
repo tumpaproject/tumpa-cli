@@ -196,6 +196,22 @@ tcli --info <FINGERPRINT>
 Shows algorithm, capabilities, UIDs (primary first), subkeys with
 full fingerprints, creation and expiry timestamps.
 
+### Inspecting a key file before importing
+
+```
+tcli --desc mykey.asc
+tcli --desc /path/to/key.pub
+```
+
+Renders the same detail view as `--info`, but reads directly from a
+key file (armored or binary, public or secret) instead of the
+keystore. Nothing is imported or written — useful for reviewing a
+cert someone sent you before deciding to trust it.
+
+The first line's leading marker is `sec` for a file that carries
+secret key material, `pub` otherwise. Missing or unparseable files
+return a non-zero exit code with a clear error.
+
 ### Searching keys
 
 ```

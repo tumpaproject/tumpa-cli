@@ -190,6 +190,20 @@ pub fn cmd_info(key_id: &str, keystore_path: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Show detailed information about a key file without importing it.
+///
+/// Parses the cert bytes directly and reuses the same renderer as
+/// `--info`. Accepts both armored and binary, and both public and
+/// secret key files. Never touches the keystore.
+pub fn cmd_desc(path: &Path) -> Result<()> {
+    let cert_data =
+        std::fs::read(path).with_context(|| format!("Failed to read {:?}", path))?;
+    let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)
+        .with_context(|| format!("Failed to parse key from {:?}", path))?;
+    print_cert_info(&cert_data, &cert_info);
+    Ok(())
+}
+
 /// Print detailed certificate information.
 fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) {
     let key_type = if cert_info.is_secret { "sec" } else { "pub" };

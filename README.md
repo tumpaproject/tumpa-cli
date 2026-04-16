@@ -194,7 +194,8 @@ For card operations, the PIN is requested the same way.
 tcli --import mykey.asc              # import from file
 tcli --import /path/to/keys/ -r      # import from directory (recursive)
 tcli --export <FP> -o key.asc        # export (armored)
-tcli --info <FP>                     # detailed key info
+tcli --info <FP>                     # detailed info for a keystore key
+tcli --desc mykey.asc                # detailed info for a key file (no import)
 tcli --search "Kushal"               # search by name
 tcli --search --email user@example.com  # search by email
 tcli --fetch user@example.com        # fetch via WKD
