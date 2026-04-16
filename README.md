@@ -55,6 +55,22 @@ On macOS, the PC/SC framework is built in -- no extra packages needed.
 
 ## Setup
 
+### Shell completions
+
+```bash
+# Bash
+tcli --completions bash > ~/.local/share/bash-completion/completions/tcli
+tpass --completions bash > ~/.local/share/bash-completion/completions/tpass
+
+# Zsh
+tcli --completions zsh > ~/.zfunc/_tcli
+tpass --completions zsh > ~/.zfunc/_tpass
+
+# Fish
+tcli --completions fish > ~/.config/fish/completions/tcli.fish
+tpass --completions fish > ~/.config/fish/completions/tpass.fish
+```
+
 ### Git
 
 Configure git to use `tcli` for signing:

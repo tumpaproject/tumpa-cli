@@ -1,0 +1,117 @@
+# Fish completion for tpass - password store backed by tumpa keystore
+# Install: tpass --completions fish > ~/.config/fish/completions/tpass.fish
+
+set -l PROG 'tpass'
+
+function __fish_tpass_get_prefix
+    if set -q PASSWORD_STORE_DIR
+        realpath -- "$PASSWORD_STORE_DIR"
+    else
+        echo "$HOME/.password-store"
+    end
+end
+
+function __fish_tpass_needs_command
+    [ (count (commandline -opc)) -eq 1 ]
+end
+
+function __fish_tpass_uses_command
+    set -l cmd (commandline -opc)
+    if [ (count $cmd) -gt 1 ]
+        if [ $argv[1] = $cmd[2] ]
+            return 0
+        end
+    end
+    return 1
+end
+
+function __fish_tpass_print
+    set -l ext $argv[1]
+    set -l strip $argv[2]
+    set -l prefix (__fish_tpass_get_prefix)
+    set -l matches $prefix/**$ext
+    printf '%s\n' $matches | sed "s#$prefix/\(.*\)$strip#\1#"
+end
+
+function __fish_tpass_print_entry_dirs
+    __fish_tpass_print "/"
+end
+
+function __fish_tpass_print_entries
+    __fish_tpass_print ".gpg" ".gpg"
+end
+
+function __fish_tpass_print_entries_and_dirs
+    __fish_tpass_print_entry_dirs
+    __fish_tpass_print_entries
+end
+
+function __fish_tpass_git_complete
+    set -l prefix (__fish_tpass_get_prefix)
+    set -l git_cmd (commandline -opc) (commandline -ct)
+    set -e git_cmd[1 2] # Drop "tpass git".
+    complete -C"git -C $prefix $git_cmd"
+end
+
+# Subcommands
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a help -d 'Command: show usage help'
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a version -d 'Command: show program version'
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a init -d 'Command: initialize new password storage'
+complete -c $PROG -f -n '__fish_tpass_uses_command init' -s p -l path -d 'Assign gpg-id for specified sub folder'
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a ls -d 'Command: list passwords'
+complete -c $PROG -f -n '__fish_tpass_uses_command ls' -a "(__fish_tpass_print_entry_dirs)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a insert -d 'Command: insert new password'
+complete -c $PROG -f -n '__fish_tpass_uses_command insert' -s e -l echo -d 'Echo the password on console'
+complete -c $PROG -f -n '__fish_tpass_uses_command insert' -s m -l multiline -d 'Provide multiline password entry'
+complete -c $PROG -f -n '__fish_tpass_uses_command insert' -s f -l force -d 'Do not prompt before overwriting'
+complete -c $PROG -f -n '__fish_tpass_uses_command insert' -a "(__fish_tpass_print_entry_dirs)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a generate -d 'Command: generate new password'
+complete -c $PROG -f -n '__fish_tpass_uses_command generate' -s n -l no-symbols -d 'Do not use special symbols'
+complete -c $PROG -f -n '__fish_tpass_uses_command generate' -s c -l clip -d 'Put the password in clipboard'
+complete -c $PROG -f -n '__fish_tpass_uses_command generate' -s q -l qrcode -d 'Show as QR code'
+complete -c $PROG -f -n '__fish_tpass_uses_command generate' -s f -l force -d 'Do not prompt before overwriting'
+complete -c $PROG -f -n '__fish_tpass_uses_command generate' -s i -l in-place -d 'Replace only the first line'
+complete -c $PROG -f -n '__fish_tpass_uses_command generate' -a "(__fish_tpass_print_entry_dirs)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a mv -d 'Command: rename existing password'
+complete -c $PROG -f -n '__fish_tpass_uses_command mv' -s f -l force -d 'Force rename'
+complete -c $PROG -f -n '__fish_tpass_uses_command mv' -a "(__fish_tpass_print_entries_and_dirs)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a cp -d 'Command: copy existing password'
+complete -c $PROG -f -n '__fish_tpass_uses_command cp' -s f -l force -d 'Force copy'
+complete -c $PROG -f -n '__fish_tpass_uses_command cp' -a "(__fish_tpass_print_entries_and_dirs)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a rm -d 'Command: remove existing password'
+complete -c $PROG -f -n '__fish_tpass_uses_command rm' -s r -l recursive -d 'Remove password groups recursively'
+complete -c $PROG -f -n '__fish_tpass_uses_command rm' -s f -l force -d 'Force removal'
+complete -c $PROG -f -n '__fish_tpass_uses_command rm' -a "(__fish_tpass_print_entries_and_dirs)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a edit -d 'Command: edit password using text editor'
+complete -c $PROG -f -n '__fish_tpass_uses_command edit' -a "(__fish_tpass_print_entries)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a show -d 'Command: show existing password'
+complete -c $PROG -f -n '__fish_tpass_uses_command show' -s c -l clip -d 'Put password in clipboard'
+complete -c $PROG -f -n '__fish_tpass_uses_command show' -s q -l qrcode -d 'Show as QR code'
+complete -c $PROG -f -n '__fish_tpass_uses_command show' -a "(__fish_tpass_print_entries)"
+
+# Default (no subcommand) shows entries and supports -c/-q
+complete -c $PROG -f -n '__fish_tpass_needs_command' -s c -l clip -d 'Put password in clipboard'
+complete -c $PROG -f -n '__fish_tpass_needs_command' -s q -l qrcode -d 'Show as QR code'
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a "(__fish_tpass_print_entries)"
+complete -c $PROG -f -n '__fish_tpass_uses_command -c' -a "(__fish_tpass_print_entries)"
+complete -c $PROG -f -n '__fish_tpass_uses_command --clip' -a "(__fish_tpass_print_entries)"
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a find -d 'Command: find password files matching pattern'
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a grep -d 'Command: search inside decrypted password files'
+complete -c $PROG -f -n '__fish_tpass_uses_command grep' -a '(begin
+    set -l cmd (commandline -opc) (commandline -ct)
+    set -e cmd[1 2] # Drop "tpass grep".
+    complete -C"grep $cmd"
+end)'
+
+complete -c $PROG -f -n '__fish_tpass_needs_command' -a git -d 'Command: execute a git command'
+complete -c $PROG -f -n '__fish_tpass_uses_command git' -a '(__fish_tpass_git_complete)'

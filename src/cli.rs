@@ -2,6 +2,7 @@ use std::convert::TryFrom;
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap_complete::Shell;
 
 /// A GPG-compatible CLI for signing, verification, encryption, decryption,
 /// and SSH agent functionality, backed by the tumpa keystore.
@@ -147,6 +148,12 @@ pub struct Args {
     /// SSH agent subcommand.
     #[clap(subcommand)]
     pub subcmd: Option<SubCommand>,
+
+    // --- Shell completions ---
+
+    /// Generate shell completions and print to stdout.
+    #[clap(long, value_name = "SHELL", value_enum)]
+    pub completions: Option<Shell>,
 
     // --- GPG compatibility flags (accepted, ignored) ---
 
@@ -300,6 +307,9 @@ pub enum Mode {
         ssh: bool,
     },
     CardStatus,
+    Completions {
+        shell: Shell,
+    },
     None,
 }
 
@@ -331,6 +341,12 @@ impl TryFrom<Args> for Mode {
                 })
             }
             None => {}
+        }
+
+        // --- Shell completions ---
+
+        if let Some(shell) = value.completions {
+            return Ok(Mode::Completions { shell });
         }
 
         // --- Card and socket info ---

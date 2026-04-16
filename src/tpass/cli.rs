@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[clap(
@@ -10,6 +11,10 @@ use clap::{Parser, Subcommand};
 pub struct Args {
     #[clap(subcommand)]
     pub command: Option<Command>,
+
+    /// Generate shell completions and print to stdout.
+    #[clap(long, value_name = "SHELL", value_enum)]
+    pub completions: Option<Shell>,
 
     /// Copy to clipboard (shorthand for show -c)
     #[clap(short = 'c', long = "clip")]

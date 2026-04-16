@@ -7,6 +7,7 @@ and direct encryption/decryption.
 ## Table of contents
 
 - [Installation](#installation)
+  - [Shell completions](#shell-completions)
 - [Key management](#key-management)
 - [Git signing](#git-signing)
 - [Password store (pass)](#password-store-pass)
@@ -75,6 +76,26 @@ sudo systemctl enable --now pcscd.socket
 
 No extra packages needed. The PC/SC framework (CryptoTokenKit) is
 built in.
+
+### Shell completions
+
+Generate completions for your shell and source them:
+
+```bash
+# Bash
+tcli --completions bash > ~/.local/share/bash-completion/completions/tcli
+tpass --completions bash > ~/.local/share/bash-completion/completions/tpass
+
+# Zsh (add ~/.zfunc to your fpath in .zshrc first)
+tcli --completions zsh > ~/.zfunc/_tcli
+tpass --completions zsh > ~/.zfunc/_tpass
+
+# Fish
+tcli --completions fish > ~/.config/fish/completions/tcli.fish
+tpass --completions fish > ~/.config/fish/completions/tpass.fish
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
 
 ---
 

@@ -136,18 +136,23 @@ fn try_decrypt_on_card(
                     keystore.find_by_subkey_fingerprint(&enc_fp_upper)
                 {
                     let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)?;
-                    let desc = format!(
-                        "Enter PIN for card {} to decrypt with key {}",
-                        card_summary.ident,
-                        cert_info
-                            .user_ids
-                            .first()
-                            .map(|u| u.value.as_str())
-                            .unwrap_or(&cert_info.fingerprint)
-                    );
+                    let uid = cert_info
+                        .user_ids
+                        .first()
+                        .map(|u| u.value.as_str())
+                        .unwrap_or(&cert_info.fingerprint);
+
+                    let mut desc = format!("Please unlock the card\n\nNumber: {}", card_info.serial_number);
+                    if let Some(ref name) = card_info.cardholder_name {
+                        if !name.is_empty() {
+                            desc.push_str(&format!("\nHolder: {}", name));
+                        }
+                    }
+                    desc.push_str(&format!("\n\nDecrypting for: {}", uid));
+
                     let pin = pinentry::get_passphrase(
                         &desc,
-                        "Card PIN",
+                        "PIN",
                         Some(&cert_info.fingerprint),
                     )?;
 
