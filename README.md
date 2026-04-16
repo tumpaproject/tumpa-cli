@@ -4,6 +4,8 @@ A command-line tool for OpenPGP operations, SSH agent, and
 password management, backed by the
 [tumpa](https://github.com/tumpaproject/tumpa) keystore.
 
+[https://tumpa.rocks](https://tumpa.rocks) will have the full userguide.
+
 Two binaries are provided:
 
 - **`tcli`** -- drop-in GnuPG replacement for git signing, encryption/decryption,
