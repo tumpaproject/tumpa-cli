@@ -46,6 +46,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/tcli dist/
+          cp target/${{ matrix.target }}/release/tclig dist/
           cp target/${{ matrix.target }}/release/tpass dist/
           cp completions/tpass.bash dist/
           cp completions/tpass.zsh dist/
@@ -83,6 +84,7 @@ jobs:
           tar xzf x86_64/tumpa-cli-x86_64-apple-darwin.tar.gz -C x86_64-bin
           tar xzf aarch64/tumpa-cli-aarch64-apple-darwin.tar.gz -C aarch64-bin
           lipo -create x86_64-bin/tcli aarch64-bin/tcli -output dist/tcli
+          lipo -create x86_64-bin/tclig aarch64-bin/tclig -output dist/tclig
           lipo -create x86_64-bin/tpass aarch64-bin/tpass -output dist/tpass
           cp aarch64-bin/tpass.bash dist/
           cp aarch64-bin/tpass.zsh dist/

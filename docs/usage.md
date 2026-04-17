@@ -115,6 +115,26 @@ tcli --import my-secret-key.asc
 This imports both the secret key material and the public certificate.
 If `~/.tumpa/keys.db` doesn't exist yet, it is created automatically.
 
+### Migrate from GnuPG
+
+If your keys already live in GnuPG, feed `gpg --export` (or
+`gpg --export-secret-keys`) straight into `tcli --import`. The
+stream can contain many keys concatenated — every key is imported
+or merged:
+
+```
+tcli --import <(gpg --export)                # all public keys
+tcli --import <(gpg --export-secret-keys)    # public + secret material
+gpg --export | tcli --import -               # same via a pipe
+gpg --export | tcli --import                 # no path = read stdin
+```
+
+The process-substitution form (`<(...)`) works because bash exposes
+the pipe as `/dev/fd/N`, which `tcli` reads like any other file.
+Each key inside the stream runs through the same merge-on-duplicate
+flow as a single-file import — re-running the command later picks
+up renewed expiries and new certifications instead of duplicating.
+
 ### Verify the import
 
 ```
@@ -163,10 +183,19 @@ line or through the tumpa desktop application.
 ```
 tcli --import mykey.asc
 tcli --import /path/to/keys/ --recursive
+tcli --import <(gpg --export)                # process substitution
+gpg --export | tcli --import -               # stdin (explicit)
+gpg --export | tcli --import                 # stdin (implicit)
 ```
 
 Accepts armored and binary OpenPGP files. For directories, imports all
 `.asc`, `.gpg`, `.pub`, `.key`, `.pgp` files.
+
+A path of `-` (or no paths at all) reads a keyring from stdin. Any
+input — file, directory entry, process substitution, or stdin — may
+contain **multiple keys concatenated**, the shape `gpg --export`
+produces. Every key in the stream is imported or merged; a malformed
+key is reported and skipped without aborting the rest.
 
 When importing a key that already exists in the keystore, `tcli` merges
 the new data into the existing certificate instead of skipping it. This
@@ -178,6 +207,9 @@ what's already stored, the key is reported as "Unchanged".
 $ tcli --import updated_key.asc
 Updated A85FF376759C994A... (Alice <alice@example.com>) — merged new signatures
 ```
+
+See [ADR 0006](adr/0006-import-from-gpg-and-stdin.md) for the design
+rationale behind multi-key and stdin support.
 
 ### Fetching keys via WKD
 
@@ -253,12 +285,14 @@ Lines starting with `pub` are other people's public keys.
 
 ### GnuPG-compatible listing
 
-For scripts that parse GnuPG's colon-delimited output:
+For scripts that parse GnuPG's colon-delimited output, use `tclig`
+(the GPG drop-in binary — `tcli` is the human-facing UI and only
+emits the condensed `sec/pub fingerprint uid` format):
 
 ```
-tcli --list-keys --with-colons
-tcli --list-keys --with-colons <FINGERPRINT>
-tcli --list-secret-keys --with-colons
+tclig --list-keys --with-colons
+tclig --list-keys --with-colons <FINGERPRINT>
+tclig --list-secret-keys --with-colons
 ```
 
 ### Using a different keystore
@@ -279,10 +313,11 @@ export TUMPA_KEYSTORE=/path/to/other/keys.db
 
 ### One-time setup
 
-Tell git to use `tcli` instead of `gpg`:
+Tell git to use `tclig` instead of `gpg`. `tclig` is the GPG drop-in
+binary; the human-facing `tcli` does not accept `gpg` flags.
 
 ```
-git config --global gpg.program tcli
+git config --global gpg.program tclig
 ```
 
 Set your signing key (use the fingerprint from `tcli --list-keys`):
@@ -333,30 +368,30 @@ git log --pretty="format:%H %G?"
 
 ### How it works
 
-When git calls `tcli` for signing, it:
+When git calls `tclig` for signing, it:
 
 1. Checks if a connected OpenPGP card holds the signing key
 2. If yes, signs using the card (prompts for card PIN via pinentry)
 3. If no card, signs using the software key from the keystore
    (prompts for passphrase via pinentry)
 
-For verification, `tcli` looks up the signer's certificate in the
-keystore by fingerprint or key ID extracted from the signature.
+For verification, `tclig` looks up the signer's key in the keystore
+by fingerprint or key ID extracted from the signature.
 
 ### bump-tag compatibility
 
 [multiverse/bump-tag](https://github.com/SUNET/multiverse) works
-without any changes. `tcli` produces the `[GNUPG:]` status lines that
-git and bump-tag expect: `SIG_CREATED`, `GOODSIG`, `VALIDSIG`, and
-`TRUST_FULLY`.
+without any changes. `tclig` produces the `[GNUPG:]` status lines
+that git and bump-tag expect: `SIG_CREATED`, `GOODSIG`, `VALIDSIG`,
+and `TRUST_FULLY`.
 
 ---
 
 ## Password store (pass)
 
 [pass](https://www.passwordstore.org/) is the standard Unix password
-manager. It calls `gpg` for all encryption and decryption. `tcli` can
-replace `gpg` for `pass`.
+manager. It calls `gpg` for all encryption and decryption. `tclig`
+(the GPG drop-in binary) can replace `gpg` for `pass`.
 
 ### Setup
 
@@ -365,7 +400,7 @@ approach is to create a symlink:
 
 ```
 mkdir -p ~/bin
-ln -s $(which tcli) ~/bin/gpg2
+ln -s $(which tclig) ~/bin/gpg2
 ```
 
 Add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
@@ -378,7 +413,7 @@ Alternatively, use an alias (works for interactive use but not all
 scripts):
 
 ```bash
-alias gpg2=tcli
+alias gpg2=tclig
 ```
 
 ### Initializing the store
@@ -415,7 +450,7 @@ echo "mypassword" | pass insert -m email/work
 pass email/work
 ```
 
-Prints the decrypted password to stdout. `tcli` automatically finds
+Prints the decrypted password to stdout. `tclig` automatically finds
 the right secret key and prompts for the passphrase via pinentry.
 
 ### Generating passwords
@@ -455,7 +490,7 @@ pass cp email/work email/backup  # copy
 
 When you change the keys in `.gpg-id` (via `pass init` with different
 fingerprints), `pass` reencrypts all passwords to the new set of keys.
-`tcli` supports the `--decrypt --list-only` and `--list-keys --with-colons`
+`tclig` supports the `--decrypt --list-only` and `--list-keys --with-colons`
 commands that `pass` uses to detect which files need reencryption.
 
 ---
@@ -652,7 +687,7 @@ section above.
 `tpass` is fully compatible with `pass`, with these differences:
 
 - **No GPG dependency** — `tpass` calls the tumpa keystore directly.
-  No need to symlink `tcli` as `gpg2` or configure `gpg.program`.
+  No need to symlink `tclig` as `gpg2` or configure `gpg.program`.
 - **Faster** — no process spawning overhead for GPG on each operation.
 - **Single binary** — `tpass` handles everything; no shell script.
 - **GPG groups not supported** — `pass` can expand GPG groups from
@@ -661,7 +696,7 @@ section above.
 
 ### Migrating from pass
 
-If you already have a password store set up with `pass` and `tcli` as
+If you already have a password store set up with `pass` and `tclig` as
 the GPG backend, switching to `tpass` requires no migration. Just use
 `tpass` instead of `pass` — the store format is identical:
 
@@ -680,33 +715,33 @@ Both commands read the same `~/.password-store/` directory and the same
 
 ## Encryption and decryption
 
-`tcli` can be used directly for encryption and decryption, outside of
-git or `pass`.
+`tclig` is the GPG drop-in, so encryption and decryption from the
+shell use the same flags `gpg` accepts.
 
 ### Encrypting
 
 Encrypt from stdin to a file:
 
 ```
-echo "secret data" | tcli -e -r <FINGERPRINT> -o secret.gpg
+echo "secret data" | tclig -e -r <FINGERPRINT> -o secret.gpg
 ```
 
 Encrypt a file:
 
 ```
-tcli -e -r <FINGERPRINT> -o document.gpg document.txt
+tclig -e -r <FINGERPRINT> -o document.gpg document.txt
 ```
 
 Encrypt to multiple recipients (any of them can decrypt):
 
 ```
-tcli -e -r <FP1> -r <FP2> -r <FP3> -o shared.gpg data.txt
+tclig -e -r <FP1> -r <FP2> -r <FP3> -o shared.gpg data.txt
 ```
 
 Produce ASCII-armored output:
 
 ```
-tcli -e -a -r <FINGERPRINT> -o secret.asc document.txt
+tclig -e -a -r <FINGERPRINT> -o secret.asc document.txt
 ```
 
 ### Decrypting
@@ -714,16 +749,16 @@ tcli -e -a -r <FINGERPRINT> -o secret.asc document.txt
 Decrypt to stdout:
 
 ```
-tcli -d secret.gpg
+tclig -d secret.gpg
 ```
 
 Decrypt to a file:
 
 ```
-tcli -d -o document.txt secret.gpg
+tclig -d -o document.txt secret.gpg
 ```
 
-`tcli` automatically determines which secret key can decrypt the
+`tclig` automatically determines which secret key can decrypt the
 message by inspecting the encrypted file's recipient key IDs. If your
 keystore contains the matching secret key, decryption proceeds after
 passphrase entry.
@@ -736,7 +771,7 @@ Output files from decryption are created with `0600` permissions
 To see which key IDs a file is encrypted for, without decrypting:
 
 ```
-tcli --decrypt --list-only encrypted.gpg
+tclig --decrypt --list-only encrypted.gpg
 ```
 
 Output:
@@ -759,9 +794,10 @@ passphrase prompts when signing commits, decrypting passwords, etc.
 tcli agent
 ```
 
-When the agent is running, `tcli` and `tpass` check it for cached
-passphrases before prompting via pinentry. Passphrases obtained from
-pinentry are automatically stored in the agent for reuse.
+When the agent is running, `tcli`, `tclig`, and `tpass` all check it
+for cached passphrases before prompting via pinentry. Passphrases
+obtained from pinentry are automatically stored in the agent for
+reuse.
 
 ### GPG + SSH agent
 
@@ -1139,16 +1175,17 @@ Common causes:
 
 ### git says "failed to sign the data"
 
-1. Check that `gpg.program` is set correctly:
+1. Check that `gpg.program` is set correctly (and points at `tclig`,
+   not `tcli` — `tcli` does not accept GPG flags):
 
    ```
    git config --global gpg.program
    ```
 
-2. Verify `tcli` can sign on its own:
+2. Verify `tclig` can sign on its own:
 
    ```
-   echo test | tcli -bsau <FINGERPRINT>
+   echo test | tclig -bsau <FINGERPRINT>
    ```
 
 3. Make sure `user.signingkey` matches a key in the keystore:
@@ -1158,18 +1195,29 @@ Common causes:
    tcli --list-keys
    ```
 
+### `gpg: unknown option --verify` after upgrading
+
+You have `git config gpg.program tcli`, or a `gpg2` symlink
+pointing at `tcli`. As of tumpa-cli 0.2 the GPG drop-in lives in a
+separate binary, `tclig`. Re-point the setting:
+
+```
+git config --global gpg.program tclig
+ln -sf $(which tclig) ~/bin/gpg2
+```
+
 ### Verifying the setup
 
 Quick end-to-end check:
 
 ```
 # Sign and verify
-echo "hello" | tcli -bsau <FP> > /tmp/test.sig
-echo "hello" | tcli --verify /tmp/test.sig -
+echo "hello" | tclig -bsau <FP> > /tmp/test.sig
+echo "hello" | tclig --verify /tmp/test.sig -
 
 # Encrypt and decrypt
-echo "secret" | tcli -e -r <FP> -o /tmp/test.gpg
-tcli -d /tmp/test.gpg
+echo "secret" | tclig -e -r <FP> -o /tmp/test.gpg
+tclig -d /tmp/test.gpg
 
 # Clean up
 rm /tmp/test.sig /tmp/test.gpg

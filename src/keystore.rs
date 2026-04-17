@@ -1,11 +1,21 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use pgp::composed::PublicOrSecret;
+use pgp::ser::Serialize;
 
 use crate::store;
 
-/// Import keys from files or directories.
+/// Import keys from files, directories, or stdin.
+///
+/// A path of `-` (or no paths at all) means read an OpenPGP keyring from
+/// stdin. This makes `gpg --export | tcli --import -` and
+/// `tcli --import <(gpg --export)` both work: the former via explicit
+/// stdin, the latter via the `/dev/fd/N` path created by process
+/// substitution. Each stream may contain multiple keys concatenated
+/// (the default `gpg --export` shape) and every key in the stream is
+/// imported or merged.
 pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&PathBuf>) -> Result<()> {
     log::debug!(
         "cmd_import: paths={} recursive={} keystore_path={:?}",
@@ -19,12 +29,24 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
     let mut updated = 0u32;
     let mut failed = 0u32;
 
-    for path in paths {
-        log::debug!("cmd_import: processing {:?} (is_dir={})", path, path.is_dir());
-        if path.is_dir() {
-            import_dir(&keystore, path, recursive, &mut imported, &mut updated, &mut failed)?;
-        } else {
-            import_file(&keystore, path, &mut imported, &mut updated, &mut failed);
+    if paths.is_empty() {
+        import_stdin(&keystore, &mut imported, &mut updated, &mut failed);
+    } else {
+        for path in paths {
+            if is_stdin_path(path) {
+                import_stdin(&keystore, &mut imported, &mut updated, &mut failed);
+                continue;
+            }
+            log::debug!(
+                "cmd_import: processing {:?} (is_dir={})",
+                path,
+                path.is_dir()
+            );
+            if path.is_dir() {
+                import_dir(&keystore, path, recursive, &mut imported, &mut updated, &mut failed)?;
+            } else {
+                import_file(&keystore, path, &mut imported, &mut updated, &mut failed);
+            }
         }
     }
 
@@ -34,6 +56,28 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
     );
     println!("Imported {} new, {} updated, {} failed.", imported, updated, failed);
     Ok(())
+}
+
+fn is_stdin_path(path: &Path) -> bool {
+    path.as_os_str() == "-"
+}
+
+fn import_stdin(
+    keystore: &wecanencrypt::KeyStore,
+    imported: &mut u32,
+    updated: &mut u32,
+    failed: &mut u32,
+) {
+    log::debug!("import_stdin: reading keyring from stdin");
+    let mut data = Vec::new();
+    if let Err(e) = io::stdin().read_to_end(&mut data) {
+        log::error!("import_stdin: read failed: {:#}", e);
+        eprintln!("Failed to read from stdin: {:#}", e);
+        *failed += 1;
+        return;
+    }
+    log::debug!("import_stdin: read {} bytes", data.len());
+    import_blob(keystore, &data, "<stdin>", imported, updated, failed);
 }
 
 fn import_dir(
@@ -90,12 +134,80 @@ fn import_file(
     };
     log::debug!("import_file: read {} bytes from {:?}", data.len(), path);
 
+    let label = path.display().to_string();
+    import_blob(keystore, &data, &label, imported, updated, failed);
+}
+
+/// Parse a blob that may contain one or many OpenPGP keys (public,
+/// secret, or mixed, armored or binary) and import each key
+/// individually. `gpg --export` produces a concatenated stream of all
+/// exported keys; iterating with `PublicOrSecret::from_reader_many`
+/// imports every key in the stream instead of silently stopping at
+/// the first one.
+fn import_blob(
+    keystore: &wecanencrypt::KeyStore,
+    data: &[u8],
+    source_label: &str,
+    imported: &mut u32,
+    updated: &mut u32,
+    failed: &mut u32,
+) {
+    let cursor = io::Cursor::new(data);
+    let iter = match PublicOrSecret::from_reader_many(cursor) {
+        Ok((iter, _headers)) => iter,
+        Err(e) => {
+            log::error!("import_blob: parse_many failed for {}: {:#}", source_label, e);
+            eprintln!("Failed to parse keys from {}: {:#}", source_label, e);
+            *failed += 1;
+            return;
+        }
+    };
+
+    let mut any_key = false;
+    for key_result in iter {
+        any_key = true;
+        let key = match key_result {
+            Ok(k) => k,
+            Err(e) => {
+                log::error!("import_blob: key parse failed in {}: {:#}", source_label, e);
+                eprintln!("Failed to parse a key from {}: {:#}", source_label, e);
+                *failed += 1;
+                continue;
+            }
+        };
+
+        let mut key_bytes = Vec::new();
+        if let Err(e) = key.to_writer(&mut key_bytes) {
+            log::error!("import_blob: serialize failed in {}: {:#}", source_label, e);
+            eprintln!("Failed to re-serialize key from {}: {:#}", source_label, e);
+            *failed += 1;
+            continue;
+        }
+
+        import_one_key(keystore, &key_bytes, source_label, imported, updated, failed);
+    }
+
+    if !any_key {
+        log::debug!("import_blob: no keys found in {}", source_label);
+        eprintln!("No OpenPGP keys found in {}", source_label);
+        *failed += 1;
+    }
+}
+
+fn import_one_key(
+    keystore: &wecanencrypt::KeyStore,
+    data: &[u8],
+    source_label: &str,
+    imported: &mut u32,
+    updated: &mut u32,
+    failed: &mut u32,
+) {
     // If the key already exists, merge new signatures into the stored key
-    match wecanencrypt::parse_key_bytes(&data, false) {
+    match wecanencrypt::parse_key_bytes(data, false) {
         Ok(key_info) => {
             log::debug!(
-                "import_file: parsed {:?} fp={} secret={} uids={} subkeys={}",
-                path,
+                "import_one_key: parsed from {} fp={} secret={} uids={} subkeys={}",
+                source_label,
                 key_info.fingerprint,
                 key_info.is_secret,
                 key_info.user_ids.len(),
@@ -103,12 +215,12 @@ fn import_file(
             );
             let already_present = match keystore.contains(&key_info.fingerprint) {
                 Ok(b) => {
-                    log::debug!("import_file: contains({})={}", key_info.fingerprint, b);
+                    log::debug!("import_one_key: contains({})={}", key_info.fingerprint, b);
                     b
                 }
                 Err(e) => {
                     log::error!(
-                        "import_file: contains({}) failed: {:#}",
+                        "import_one_key: contains({}) failed: {:#}",
                         key_info.fingerprint,
                         e,
                     );
@@ -121,20 +233,20 @@ fn import_file(
                     .first()
                     .map(|u| u.value.as_str())
                     .unwrap_or("");
-                match merge_and_reimport(keystore, &key_info.fingerprint, &data) {
+                match merge_and_reimport(keystore, &key_info.fingerprint, data) {
                     Ok(true) => {
-                        log::info!("import_file: merged fp={} (changed)", key_info.fingerprint);
+                        log::info!("import_one_key: merged fp={} (changed)", key_info.fingerprint);
                         println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid);
                         *updated += 1;
                     }
                     Ok(false) => {
-                        log::info!("import_file: merged fp={} (no change)", key_info.fingerprint);
+                        log::info!("import_one_key: merged fp={} (no change)", key_info.fingerprint);
                         println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid);
                         *updated += 1;
                     }
                     Err(e) => {
-                        log::error!("import_file: merge failed for {:?}: {:#}", path, e);
-                        eprintln!("Failed to merge {:?}: {:#}", path, e);
+                        log::error!("import_one_key: merge failed for {}: {:#}", source_label, e);
+                        eprintln!("Failed to merge key from {}: {:#}", source_label, e);
                         *failed += 1;
                     }
                 }
@@ -143,26 +255,26 @@ fn import_file(
         }
         Err(e) => {
             log::debug!(
-                "import_file: parse_key_bytes failed for {:?}: {:#} (falling through to raw import)",
-                path,
+                "import_one_key: parse_key_bytes failed for {}: {:#} (falling through to raw import)",
+                source_label,
                 e,
             );
         }
     }
 
-    match keystore.import_key(&data) {
+    match keystore.import_key(data) {
         Ok(fp) => {
             let info = keystore.get_key_info(&fp).ok();
             let uid = info
                 .and_then(|i| i.user_ids.first().map(|u| u.value.clone()))
                 .unwrap_or_default();
-            log::info!("import_file: imported fp={}", fp);
+            log::info!("import_one_key: imported fp={}", fp);
             println!("Imported {} ({})", fp, uid);
             *imported += 1;
         }
         Err(e) => {
-            log::error!("import_file: import_key failed for {:?}: {:#}", path, e);
-            eprintln!("Failed to import {:?}: {:#}", path, e);
+            log::error!("import_one_key: import_key failed for {}: {:#}", source_label, e);
+            eprintln!("Failed to import key from {}: {:#}", source_label, e);
             *failed += 1;
         }
     }

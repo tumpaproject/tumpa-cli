@@ -97,8 +97,9 @@ echo "[1] Import"
 run_test "import single file" "$TCLI" --import "$KEYS_DIR/public.asc"
 test_output_contains "import reports count" "Imported 1" "$TCLI" --import "$KEYS_DIR/hellopublic.asc"
 
-# Import same file again — should merge (no new data, but reports as updated)
-test_output_contains "import re-import merges" "Updated $FP_PUBLIC" "$TCLI" --import "$KEYS_DIR/public.asc"
+# Import same file again — merge is idempotent, so a byte-identical
+# re-import reports "Unchanged" (still counted under the updated tally).
+test_output_contains "import re-import unchanged" "Unchanged $FP_PUBLIC" "$TCLI" --import "$KEYS_DIR/public.asc"
 test_output_contains "import re-import reports count" "0 new, 1 updated" "$TCLI" --import "$KEYS_DIR/public.asc"
 
 # Import from directory
