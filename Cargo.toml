@@ -28,11 +28,15 @@ name = "tcli"
 path = "src/main.rs"
 
 [[bin]]
+name = "tclig"
+path = "src/tclig/main.rs"
+
+[[bin]]
 name = "tpass"
 path = "src/tpass/main.rs"
 
 [dependencies]
-wecanencrypt = { version = "0.10.0" , features = ["keystore", "card", "network"] }
+wecanencrypt = { version = "0.10.0", features = ["keystore", "card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).

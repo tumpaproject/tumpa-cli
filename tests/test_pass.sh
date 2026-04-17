@@ -19,9 +19,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TCLI="$PROJECT_DIR/target/debug/tcli"
+TCLIG="$PROJECT_DIR/target/debug/tclig"
 
 if [[ ! -x "$TCLI" ]]; then
     echo "ERROR: tcli not found at $TCLI"
+    echo "Run 'cargo build' first."
+    exit 1
+fi
+
+if [[ ! -x "$TCLIG" ]]; then
+    echo "ERROR: tclig not found at $TCLIG"
     echo "Run 'cargo build' first."
     exit 1
 fi
@@ -60,8 +67,8 @@ export PASSWORD_STORE_DIR="$TEST_DIR/store"
 WRAPPER_DIR="$TEST_DIR/bin"
 
 mkdir -p "$WRAPPER_DIR"
-ln -sf "$TCLI" "$WRAPPER_DIR/gpg2"
-ln -sf "$TCLI" "$WRAPPER_DIR/gpg"
+ln -sf "$TCLIG" "$WRAPPER_DIR/gpg2"
+ln -sf "$TCLIG" "$WRAPPER_DIR/gpg"
 export PATH="$WRAPPER_DIR:$PATH"
 
 PASS_COUNT=0
@@ -173,7 +180,7 @@ fi
 echo ""
 echo "[10] Key listing (GPG compat)"
 echo -n "  --list-keys --with-colons (encryption subkey) ... "
-SUB_E=$("$TCLI" --list-keys --with-colons "$KEY_FP" 2>/dev/null \
+SUB_E=$("$TCLIG" --list-keys --with-colons "$KEY_FP" 2>/dev/null \
     | sed -n 's/^sub:[^idr:]*:[^:]*:[^:]*:\([^:]*\):[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[a-zA-Z]*e[a-zA-Z]*:.*/\1/p')
 if [[ -n "$SUB_E" ]]; then
     echo "OK ($SUB_E)"
@@ -184,7 +191,7 @@ else
 fi
 
 echo -n "  --list-secret-keys --with-colons (UID) ... "
-UID_LINE=$("$TCLI" --list-secret-keys --with-colons 2>/dev/null \
+UID_LINE=$("$TCLIG" --list-secret-keys --with-colons 2>/dev/null \
     | grep "^uid:" | head -1 | cut -d: -f10)
 if [[ -n "$UID_LINE" ]]; then
     echo "OK ($UID_LINE)"
@@ -195,7 +202,7 @@ else
 fi
 
 echo -n "  --decrypt --list-only ... "
-PUBKEY=$("$TCLI" --decrypt --list-only "$PASSWORD_STORE_DIR/test/multi.gpg" 2>&1 \
+PUBKEY=$("$TCLIG" --decrypt --list-only "$PASSWORD_STORE_DIR/test/multi.gpg" 2>&1 \
     | sed -nE 's/^gpg: public key is ([A-F0-9]+)$/\1/p')
 if [[ -n "$PUBKEY" ]]; then
     echo "OK ($PUBKEY)"
