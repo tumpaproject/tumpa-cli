@@ -91,6 +91,10 @@ pub struct Args {
     #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
     pub info: Option<String>,
 
+    /// Show detailed information about a key file without importing it.
+    #[clap(long, value_name = "FILE")]
+    pub desc: Option<PathBuf>,
+
     /// Delete a key from the keystore.
     #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
     pub delete: Option<String>,
@@ -291,6 +295,9 @@ pub enum Mode {
     Info {
         key_id: String,
     },
+    Desc {
+        path: PathBuf,
+    },
     Delete {
         key_id: String,
         force: bool,
@@ -382,6 +389,10 @@ impl TryFrom<Args> for Mode {
 
         if let Some(key_id) = value.info {
             return Ok(Mode::Info { key_id });
+        }
+
+        if let Some(path) = value.desc {
+            return Ok(Mode::Desc { path });
         }
 
         if let Some(key_id) = value.delete {

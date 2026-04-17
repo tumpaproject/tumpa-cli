@@ -15,15 +15,15 @@ pub fn encrypt_to_recipients(
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
 
-    let mut cert_data_list: Vec<Vec<u8>> = Vec::new();
+    let mut key_data_list: Vec<Vec<u8>> = Vec::new();
     for recipient_id in recipient_ids {
-        let (cert_data, cert_info) = store::resolve_signer(&keystore, recipient_id)?;
-        store::ensure_cert_usable_for_encryption(&cert_info)?;
-        cert_data_list.push(cert_data);
+        let (key_data, key_info) = store::resolve_signer(&keystore, recipient_id)?;
+        store::ensure_key_usable_for_encryption(&key_info)?;
+        key_data_list.push(key_data);
     }
-    let cert_refs: Vec<&[u8]> = cert_data_list.iter().map(|c| c.as_slice()).collect();
+    let key_refs: Vec<&[u8]> = key_data_list.iter().map(|c| c.as_slice()).collect();
 
-    let ciphertext = wecanencrypt::encrypt_bytes_to_multiple(&cert_refs, plaintext, false)
+    let ciphertext = wecanencrypt::encrypt_bytes_to_multiple(&key_refs, plaintext, false)
         .context("Encryption failed")?;
 
     std::fs::write(output, &ciphertext)
@@ -57,42 +57,42 @@ pub fn decrypt_file(
             log::info!("Card decryption not available ({}), trying software key", card_err);
 
             // Find software secret key
-            let mut cert_data = None;
+            let mut key_data = None;
             let mut matched_info = None;
 
             for kid in &key_ids {
                 if let Ok(Some(data)) = keystore.find_by_key_id(kid) {
-                    let info = wecanencrypt::parse_cert_bytes(&data, true)?;
+                    let info = wecanencrypt::parse_key_bytes(&data, true)?;
                     if info.is_secret {
-                        cert_data = Some(data);
+                        key_data = Some(data);
                         matched_info = Some(info);
                         break;
                     }
                 }
             }
 
-            let cert_data = cert_data.ok_or_else(|| {
+            let key_data = key_data.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Card decryption failed: {}\nNo software secret key found for key IDs: {}",
                     card_err,
                     key_ids.join(", ")
                 )
             })?;
-            let cert_info = matched_info.unwrap();
+            let key_info = matched_info.unwrap();
 
             let desc = format!(
                 "Enter passphrase to decrypt with key {}",
-                cert_info
+                key_info
                     .user_ids
                     .first()
                     .map(|u| u.value.as_str())
-                    .unwrap_or(&cert_info.fingerprint)
+                    .unwrap_or(&key_info.fingerprint)
             );
             let passphrase =
-                pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
+                pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
 
             Zeroizing::new(
-                wecanencrypt::decrypt_bytes(&cert_data, &ciphertext, &passphrase)
+                wecanencrypt::decrypt_bytes(&key_data, &ciphertext, &passphrase)
                     .context("Decryption failed")?,
             )
         }
@@ -132,18 +132,19 @@ fn try_decrypt_on_card(
                 }
 
                 // Find the public cert for this card in the keystore
-                if let Ok(Some(cert_data)) =
+                if let Ok(Some(key_data)) =
                     keystore.find_by_subkey_fingerprint(&enc_fp_upper)
                 {
-                    let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)?;
-                    let uid = cert_info
+                    let key_info = wecanencrypt::parse_key_bytes(&key_data, false)?;
+                    let uid = key_info
                         .user_ids
                         .first()
                         .map(|u| u.value.as_str())
-                        .unwrap_or(&cert_info.fingerprint);
+                        .unwrap_or(&key_info.fingerprint);
 
                     let mut desc = format!("Please unlock the card\n\nNumber: {}", card_info.serial_number);
-                    if let Some(ref name) = card_info.cardholder_name {
+                    if let Some(ref raw) = card_info.cardholder_name {
+                        let name = pinentry::format_cardholder_name(raw);
                         if !name.is_empty() {
                             desc.push_str(&format!("\nHolder: {}", name));
                         }
@@ -153,12 +154,12 @@ fn try_decrypt_on_card(
                     let pin = pinentry::get_passphrase(
                         &desc,
                         "PIN",
-                        Some(&cert_info.fingerprint),
+                        Some(&key_info.fingerprint),
                     )?;
 
                     let plaintext = wecanencrypt::card::decrypt_bytes_on_card(
                         ciphertext,
-                        &cert_data,
+                        &key_data,
                         pin.as_bytes(),
                     )
                     .context("Card decryption failed")?;
@@ -198,11 +199,11 @@ pub fn recipient_encryption_key_ids(
     let mut key_ids = Vec::new();
 
     for recipient_id in recipient_ids {
-        let (cert_data, cert_info) = store::resolve_signer(&keystore, recipient_id)?;
-        store::ensure_cert_usable_for_encryption(&cert_info)?;
-        let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, true)?;
+        let (key_data, key_info) = store::resolve_signer(&keystore, recipient_id)?;
+        store::ensure_key_usable_for_encryption(&key_info)?;
+        let key_info = wecanencrypt::parse_key_bytes(&key_data, true)?;
 
-        for sk in &cert_info.subkeys {
+        for sk in &key_info.subkeys {
             if sk.is_revoked {
                 continue;
             }
@@ -237,24 +238,24 @@ pub fn sign_file_detached(
 
     // Sign with the first available key
     for signer_id in signer_ids {
-        if let Ok((cert_data, cert_info)) = store::resolve_signer(&keystore, signer_id) {
-            if store::ensure_cert_usable_for_signing(&cert_info).is_err() {
+        if let Ok((key_data, key_info)) = store::resolve_signer(&keystore, signer_id) {
+            if store::ensure_key_usable_for_signing(&key_info).is_err() {
                 continue;
             }
-            if !cert_info.is_secret {
+            if !key_info.is_secret {
                 continue;
             }
             let desc = format!(
                 "Enter passphrase to sign with key {}",
-                cert_info
+                key_info
                     .user_ids
                     .first()
                     .map(|u| u.value.as_str())
-                    .unwrap_or(&cert_info.fingerprint)
+                    .unwrap_or(&key_info.fingerprint)
             );
-            let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
+            let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
 
-            let signature = wecanencrypt::sign_bytes_detached(&cert_data, &data, &passphrase)
+            let signature = wecanencrypt::sign_bytes_detached(&key_data, &data, &passphrase)
                 .context("Signing failed")?;
 
             std::fs::write(&sig_file, signature.as_bytes())
@@ -287,9 +288,9 @@ pub fn verify_file_signature(
     let sig_bytes = std::fs::read(&sig_file)?;
 
     for key_id in signing_keys {
-        if let Ok((cert_data, _info)) = store::resolve_signer(&keystore, key_id) {
+        if let Ok((key_data, _info)) = store::resolve_signer(&keystore, key_id) {
             if matches!(
-                wecanencrypt::verify_bytes_detached(&cert_data, &data, &sig_bytes),
+                wecanencrypt::verify_bytes_detached(&key_data, &data, &sig_bytes),
                 Ok(true)
             ) {
                 return Ok(());

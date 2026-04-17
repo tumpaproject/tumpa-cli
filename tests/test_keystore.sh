@@ -1,6 +1,6 @@
 #!/bin/bash
 # Integration tests for tcli key management flags:
-#   --import, --export, --info, --delete, --search, --fetch
+#   --import, --export, --info, --desc, --delete, --search, --fetch
 #
 # Prerequisites:
 #   - tcli built (cargo build)
@@ -134,6 +134,65 @@ test_output_contains "info nistp384 shows algo" "ECDSA\|ECDH" "$TCLI" --info "$F
 # Info by short key ID (last 16 chars)
 SHORT_ID="${FP_PUBLIC:24}"
 test_output_contains "info by key ID" "$FP_PUBLIC" "$TCLI" --info "$SHORT_ID"
+
+echo ""
+
+# ----------------------------------------------------------
+echo "[2b] Desc (info for a file that isn't in the keystore)"
+# ----------------------------------------------------------
+
+# --desc reads a key file directly (no keystore access) and renders
+# the same format as --info. Verify it works without the key being
+# imported.
+
+# Drop all test keys first, then run --desc on a file.
+cleanup_test_keys
+
+test_output_contains "desc shows fingerprint (armored)" \
+    "$FP_PUBLIC" "$TCLI" --desc "$KEYS_DIR/public.asc"
+test_output_contains "desc shows UID (armored)" \
+    "test user" "$TCLI" --desc "$KEYS_DIR/public.asc"
+test_output_contains "desc shows Created (armored)" \
+    "Created:" "$TCLI" --desc "$KEYS_DIR/public.asc"
+test_output_contains "desc shows Subkeys (armored)" \
+    "Subkeys:" "$TCLI" --desc "$KEYS_DIR/public.asc"
+test_output_contains "desc shows pub marker (public cert)" \
+    "^pub " "$TCLI" --desc "$KEYS_DIR/public.asc"
+
+# Binary (non-armored) .pub also works.
+test_output_contains "desc shows fingerprint (binary)" \
+    "$FP_CV25519" "$TCLI" --desc "$KEYS_DIR/cv25519.pub"
+
+# --desc must NOT import the file into the keystore.
+"$TCLI" --desc "$KEYS_DIR/public.asc" >/dev/null 2>&1
+test_output_not_contains "desc does not import key" \
+    "$FP_PUBLIC" "$TCLI" --list-keys
+
+# Missing file yields an error and non-zero exit.
+echo -n "  desc fails on missing file ... "
+if "$TCLI" --desc /tmp/tcli-desc-nonexistent.asc >/dev/null 2>&1; then
+    echo "FAIL (expected non-zero exit)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+    echo "OK"
+    PASS_COUNT=$((PASS_COUNT + 1))
+fi
+
+# Non-key file yields an error.
+NONKEY=$(mktemp)
+echo "not a key" > "$NONKEY"
+echo -n "  desc fails on non-key file ... "
+if "$TCLI" --desc "$NONKEY" >/dev/null 2>&1; then
+    echo "FAIL (expected non-zero exit)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+    echo "OK"
+    PASS_COUNT=$((PASS_COUNT + 1))
+fi
+rm -f "$NONKEY"
+
+# Restore keystore state for the subsequent sections.
+"$TCLI" --import "$KEYS_DIR" >/dev/null 2>&1
 
 echo ""
 

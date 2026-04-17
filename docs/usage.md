@@ -144,6 +144,12 @@ With your key imported, set up the workflows you need:
 - [tpass](#tpass--native-password-store) — manage passwords
 - [Agent](#agent-passphrase-cache--ssh) — cache passphrases and SSH auth
 
+On Linux, consider installing the ready-made systemd **user** units
+from [`contrib/systemd/`](../contrib/systemd/) once you start using
+the agent — they start it at login and restart on crash. The
+[Starting the agent automatically](#starting-the-agent-automatically)
+section has the one-liner.
+
 ---
 
 ## Key management
@@ -195,6 +201,22 @@ tcli --info <FINGERPRINT>
 
 Shows algorithm, capabilities, UIDs (primary first), subkeys with
 full fingerprints, creation and expiry timestamps.
+
+### Inspecting a key file before importing
+
+```
+tcli --desc mykey.asc
+tcli --desc /path/to/key.pub
+```
+
+Renders the same detail view as `--info`, but reads directly from a
+key file (armored or binary, public or secret) instead of the
+keystore. Nothing is imported or written — useful for reviewing a
+cert someone sent you before deciding to trust it.
+
+The first line's leading marker is `sec` for a file that carries
+secret key material, `pub` otherwise. Missing or unparseable files
+return a non-zero exit code with a clear error.
 
 ### Searching keys
 
@@ -814,18 +836,78 @@ logs to `~/.tumpa/agent.log`.
 
 To stop: `launchctl unload ~/Library/LaunchAgents/rocks.tumpa.agent.plist`
 
-#### Linux (shell profile)
+#### Linux (systemd user service, recommended)
 
-Add to `~/.bashrc` or `~/.zshrc`:
+Ready-made user units ship under
+[`contrib/systemd/`](../contrib/systemd/). Three variants are
+provided and they are mutually exclusive via `Conflicts=`, so
+switching between them is a single `systemctl --user enable --now …`:
+
+| Unit                          | Runs                     | GPG cache | SSH agent |
+|-------------------------------|--------------------------|:---:|:---:|
+| `tumpa-agent.service`         | `tcli agent --ssh`       | ✓   | ✓   |
+| `tumpa-gpg-agent.service`     | `tcli agent`             | ✓   | —   |
+| `tumpa-ssh-agent.service`     | `tcli ssh-agent -H …`    | —   | ✓   |
+
+Install and enable (combined agent shown — swap the unit name for
+the other variants):
 
 ```bash
-# Start the agent if not already running
+mkdir -p ~/.config/systemd/user
+cp contrib/systemd/tumpa-*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now tumpa-agent.service
+```
+
+The units call `%h/.cargo/bin/tcli` by default (from
+`cargo install tumpa-cli`). If your binary is elsewhere, edit the
+unit via `systemctl --user edit --full tumpa-agent.service` and
+adjust `ExecStart=`. The systemd-scoped approach handles crash
+restart, clean shutdown, and logging via the journal:
+
+```bash
+journalctl --user -u tumpa-agent.service -f
+```
+
+Wire up `SSH_AUTH_SOCK` for every shell the user session spawns via
+an `environment.d` drop-in (same pattern `gnome-keyring-daemon`
+uses — no `.bashrc`/`.zshrc` hack needed):
+
+```bash
+mkdir -p ~/.config/environment.d
+echo 'SSH_AUTH_SOCK=${XDG_RUNTIME_DIR}/tcli-ssh.sock' \
+    > ~/.config/environment.d/tumpa-ssh-agent.conf
+```
+
+Re-login (or `systemctl --user daemon-reexec`) for the environment
+drop-in to take effect.
+
+Environment overrides (`PINENTRY_PROGRAM`, `TUMPA_KEYSTORE`,
+`RUST_LOG`) can go in `~/.config/tumpa/env` — the units pick it up
+automatically. Do **not** put `TUMPA_PASSPHRASE=…` in that file;
+prefer pinentry.
+
+For full details and troubleshooting, see
+[`contrib/systemd/README.md`](../contrib/systemd/README.md). For the
+design rationale (why three units, why user-scoped, why no socket
+activation yet), see
+[`docs/adr/0004-systemd-user-service.md`](adr/0004-systemd-user-service.md).
+
+#### Linux (without systemd)
+
+If your system uses `runit`, `s6`, `openrc`, or no service manager
+at all, add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
 if ! pgrep -f "tcli agent" >/dev/null; then
     tcli agent --ssh &
     disown
 fi
 export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
 ```
+
+This is a fallback — it does not restart the agent on crash and
+only runs in interactive shells.
 
 ### Querying socket paths
 

@@ -4,7 +4,7 @@ use std::io::{stderr, stdin, stdout};
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-use tumpa_cli::{gpg, keystore, ssh, store};
+use tumpa_cli::{gpg, keystore, pinentry, ssh, store};
 
 use cli::*;
 
@@ -82,6 +82,7 @@ fn main() {
             output,
         }) => keystore::cmd_export(&key_id, armor, binary, output.as_ref(), keystore_path.as_ref()),
         Ok(Mode::Info { key_id }) => keystore::cmd_info(&key_id, keystore_path.as_ref()),
+        Ok(Mode::Desc { path }) => keystore::cmd_desc(&path),
         Ok(Mode::Delete { key_id, force }) => {
             keystore::cmd_delete(&key_id, force, keystore_path.as_ref())
         }
@@ -179,22 +180,22 @@ fn ssh_export(
 
 fn list_keys(keystore_path: Option<&std::path::PathBuf>) -> anyhow::Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
-    let certs = keystore.list_certs()?;
+    let keys = keystore.list_keys()?;
 
-    if certs.is_empty() {
+    if keys.is_empty() {
         println!("No keys in keystore.");
         return Ok(());
     }
 
-    for cert in &certs {
-        let secret_marker = if cert.is_secret { "sec" } else { "pub" };
-        let uid = cert
+    for key in &keys {
+        let secret_marker = if key.is_secret { "sec" } else { "pub" };
+        let uid = key
             .user_ids
             .first()
             .map(|u| u.value.as_str())
             .unwrap_or("<no UID>");
 
-        println!("{} {} {}", secret_marker, cert.fingerprint, uid);
+        println!("{} {} {}", secret_marker, key.fingerprint, uid);
     }
 
     Ok(())
@@ -221,7 +222,10 @@ fn card_status() -> anyhow::Result<()> {
         println!("Serial number ....: {}", info.serial_number);
 
         if let Some(ref name) = info.cardholder_name {
-            println!("Name of cardholder: {}", name);
+            let formatted = pinentry::format_cardholder_name(name);
+            if !formatted.is_empty() {
+                println!("Name of cardholder: {}", formatted);
+            }
         }
 
         if let Some(ref url) = info.public_key_url {

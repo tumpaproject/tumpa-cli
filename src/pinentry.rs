@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
@@ -118,33 +119,102 @@ fn try_agent_put(fingerprint: &str, passphrase: &Zeroizing<String>) {
     let _ = reader.read_line(&mut response);
 }
 
-/// Try to get passphrase via pinentry Assuan protocol.
+/// Candidate pinentry programs, in preference order.
 ///
-/// If `PINENTRY_PROGRAM` is set, only that program is tried. Otherwise,
-/// `pinentry` is tried first; on macOS `pinentry-mac` is tried as a
-/// fallback when `pinentry` is not on `PATH` (since Homebrew's
-/// `pinentry-mac` only installs under that name).
-fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
-    let candidates: Vec<String> = if let Ok(explicit) = std::env::var("PINENTRY_PROGRAM") {
-        vec![explicit]
+/// If `PINENTRY_PROGRAM` is set, only that program is tried. Otherwise:
+/// - On macOS, `pinentry-mac` (GUI, works without a TTY) is preferred,
+///   then bare `pinentry`. Homebrew absolute paths are appended so an
+///   agent spawned by launchd with a reduced PATH still finds the
+///   binary.
+/// - Elsewhere, `pinentry` is the only default.
+pub fn pinentry_candidates() -> Vec<String> {
+    if let Ok(explicit) = std::env::var("PINENTRY_PROGRAM") {
+        return vec![explicit];
+    }
+    if cfg!(target_os = "macos") {
+        vec![
+            "pinentry-mac".to_string(),
+            "/opt/homebrew/bin/pinentry-mac".to_string(),
+            "/usr/local/bin/pinentry-mac".to_string(),
+            "pinentry".to_string(),
+        ]
     } else {
-        let mut v = vec!["pinentry".to_string()];
-        if cfg!(target_os = "macos") {
-            v.push("pinentry-mac".to_string());
-        }
-        v
-    };
+        vec!["pinentry".to_string()]
+    }
+}
 
-    for program in &candidates {
-        match try_pinentry_with(program, description, prompt)? {
-            Some(pass) => return Ok(pass),
-            None => log::debug!("{} not on PATH, trying next pinentry", program),
+/// Resolve the first available pinentry candidate to an absolute path.
+///
+/// Absolute paths are checked with `metadata()`; bare names are resolved
+/// by walking `PATH`. Returns `None` if nothing resolves — callers should
+/// still attempt the candidates (the runtime PATH may differ from the
+/// PATH seen here) but the absence is worth logging at agent startup.
+pub fn resolve_pinentry() -> Option<(String, PathBuf)> {
+    for name in pinentry_candidates() {
+        if let Some(path) = which_on_path(&name) {
+            return Some((name, path));
         }
     }
-    anyhow::bail!(
-        "no pinentry program found (tried: {})",
-        candidates.join(", ")
-    );
+    None
+}
+
+fn which_on_path(name: &str) -> Option<PathBuf> {
+    let p = Path::new(name);
+    if p.is_absolute() {
+        return if p.is_file() { Some(p.to_path_buf()) } else { None };
+    }
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let cand = dir.join(name);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Try to get passphrase via pinentry Assuan protocol.
+///
+/// Iterates `pinentry_candidates()` in order. A candidate that isn't on
+/// PATH (spawn failure) falls through to the next; a protocol/runtime
+/// error from a spawned candidate is logged and also falls through, so
+/// a broken `pinentry` (e.g. curses with no TTY) does not mask a
+/// working `pinentry-mac`. User cancellation is preserved and does not
+/// trigger further fallbacks.
+fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
+    let candidates = pinentry_candidates();
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for program in &candidates {
+        match try_pinentry_with(program, description, prompt) {
+            Ok(Some(pass)) => return Ok(pass),
+            Ok(None) => log::debug!("{} not on PATH, trying next pinentry", program),
+            Err(e) => {
+                if is_user_cancel(&e) {
+                    return Err(e);
+                }
+                log::debug!("{} failed ({:#}), trying next pinentry", program, e);
+                last_err = Some(e);
+            }
+        }
+    }
+
+    if let Some(e) = last_err {
+        Err(e).context(format!(
+            "all pinentry candidates failed (tried: {})",
+            candidates.join(", ")
+        ))
+    } else {
+        anyhow::bail!(
+            "no pinentry program found (tried: {})",
+            candidates.join(", ")
+        );
+    }
+}
+
+fn is_user_cancel(e: &anyhow::Error) -> bool {
+    let s = format!("{:#}", e);
+    s.contains("cancelled by user")
 }
 
 /// Run the Assuan conversation with a specific pinentry program.
@@ -223,4 +293,101 @@ fn rpassword_prompt(prompt: &str) -> Result<Zeroizing<String>> {
     let pass = rpassword::prompt_password(format!("{}: ", prompt))
         .context("Failed to read passphrase from terminal")?;
     Ok(Zeroizing::new(pass))
+}
+
+/// Format an ISO/IEC 7816-6 cardholder name for human display.
+///
+/// OpenPGP cards store the cardholder name per ISO/IEC 7816-6 §8.2:
+/// `Surname<<GivenNames` with `<` standing in for spaces within each
+/// component, and optional trailing `<` characters padding the field.
+/// Display convention is given names first, then surname.
+///
+/// Handles single-component names (no `<<`), missing surname, missing
+/// given names, multi-word components, and trailing padding.
+///
+/// Examples:
+///   "Das<<Kushal"           → "Kushal Das"
+///   "Van<Der<Berg<<Kushal"  → "Kushal Van Der Berg"
+///   "Madonna"               → "Madonna"
+///   "<<Kushal"              → "Kushal"
+///   "Das<<"                 → "Das"
+///   "Das<<<<<<"             → "Das"
+///   ""                      → ""
+pub fn format_cardholder_name(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('<');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    match trimmed.split_once("<<") {
+        Some((surname, given)) => {
+            let surname = surname.replace('<', " ").trim().to_string();
+            let given = given.replace('<', " ").trim().to_string();
+            match (given.is_empty(), surname.is_empty()) {
+                (false, false) => format!("{} {}", given, surname),
+                (false, true) => given,
+                (true, false) => surname,
+                (true, true) => String::new(),
+            }
+        }
+        None => trimmed.replace('<', " ").trim().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod cardholder_tests {
+    use super::format_cardholder_name;
+
+    #[test]
+    fn full_surname_given() {
+        assert_eq!(format_cardholder_name("Das<<Kushal"), "Kushal Das");
+    }
+
+    #[test]
+    fn multi_word_surname() {
+        assert_eq!(
+            format_cardholder_name("Van<Der<Berg<<Kushal"),
+            "Kushal Van Der Berg"
+        );
+    }
+
+    #[test]
+    fn multi_word_given() {
+        assert_eq!(
+            format_cardholder_name("Das<<Kushal<Sunil"),
+            "Kushal Sunil Das"
+        );
+    }
+
+    #[test]
+    fn single_name_no_separator() {
+        assert_eq!(format_cardholder_name("Madonna"), "Madonna");
+    }
+
+    #[test]
+    fn only_given_name() {
+        assert_eq!(format_cardholder_name("<<Kushal"), "Kushal");
+    }
+
+    #[test]
+    fn only_surname() {
+        assert_eq!(format_cardholder_name("Das<<"), "Das");
+    }
+
+    #[test]
+    fn trailing_padding_stripped() {
+        assert_eq!(format_cardholder_name("Das<<Kushal<<<<"), "Kushal Das");
+        assert_eq!(format_cardholder_name("Das<<<<<<"), "Das");
+    }
+
+    #[test]
+    fn empty_input() {
+        assert_eq!(format_cardholder_name(""), "");
+        assert_eq!(format_cardholder_name("<<<"), "");
+    }
+
+    #[test]
+    fn single_given_name_no_surname_with_spaces() {
+        assert_eq!(format_cardholder_name("<<Kushal<Das"), "Kushal Das");
+    }
 }

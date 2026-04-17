@@ -141,6 +141,17 @@ tcli --list-keys
 Keys are managed through the [tumpa](https://github.com/tumpaproject/tumpa)
 desktop application and stored in `~/.tumpa/keys.db`.
 
+### Optional: run the agent at login
+
+On Linux, ship-ready systemd **user** units are in
+[`contrib/systemd/`](contrib/systemd/). Pick one (combined GPG+SSH,
+GPG-only, or SSH-only) — they are mutually exclusive via
+`Conflicts=`, so `systemctl --user enable --now tumpa-agent.service`
+is the one-liner for the common case. Full walkthrough and the
+`SSH_AUTH_SOCK` wiring are covered under
+[Agent → Starting the agent automatically](#starting-the-agent-automatically)
+below.
+
 ## Usage
 
 ### Signing
@@ -194,7 +205,8 @@ For card operations, the PIN is requested the same way.
 tcli --import mykey.asc              # import from file
 tcli --import /path/to/keys/ -r      # import from directory (recursive)
 tcli --export <FP> -o key.asc        # export (armored)
-tcli --info <FP>                     # detailed key info
+tcli --info <FP>                     # detailed info for a keystore key
+tcli --desc mykey.asc                # detailed info for a key file (no import)
 tcli --search "Kushal"               # search by name
 tcli --search --email user@example.com  # search by email
 tcli --fetch user@example.com        # fetch via WKD
@@ -291,15 +303,33 @@ Add to `~/.zshrc`:
 export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
 ```
 
-**Linux** -- add to `~/.bashrc` or `~/.zshrc`:
+**Linux (systemd user service)** -- copy the ready-made units from
+`contrib/systemd/` and enable one:
 
 ```bash
-if ! pgrep -f "tcli agent" >/dev/null; then
-    tcli agent --ssh &
-    disown
-fi
-export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+mkdir -p ~/.config/systemd/user
+cp contrib/systemd/tumpa-*.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now tumpa-agent.service    # GPG + SSH
+# or
+systemctl --user enable --now tumpa-gpg-agent.service   # GPG only
+# or
+systemctl --user enable --now tumpa-ssh-agent.service   # SSH only
 ```
+
+Point your shell at the SSH socket via an
+`environment.d` drop-in (systemd reads this into every user session):
+
+```bash
+mkdir -p ~/.config/environment.d
+echo 'SSH_AUTH_SOCK=${XDG_RUNTIME_DIR}/tcli-ssh.sock' \
+    > ~/.config/environment.d/tumpa-ssh-agent.conf
+```
+
+See [`contrib/systemd/README.md`](contrib/systemd/README.md) for
+customisation (binary path, environment overrides, troubleshooting)
+and [`docs/adr/0004-systemd-user-service.md`](docs/adr/0004-systemd-user-service.md)
+for the design rationale.
 
 ### Without agent
 

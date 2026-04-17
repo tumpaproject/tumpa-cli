@@ -27,13 +27,13 @@ pub fn sign(
 
     // Open keystore and resolve the signer key
     let keystore = store::open_keystore(keystore_path)?;
-    let (cert_data, cert_info) = store::resolve_signer(&keystore, signer_id)?;
-    store::ensure_cert_usable_for_signing(&cert_info)?;
+    let (key_data, key_info) = store::resolve_signer(&keystore, signer_id)?;
+    store::ensure_key_usable_for_signing(&key_info)?;
 
-    let signature = try_sign_on_card(&buffer, &cert_data, &cert_info, &mut err)
+    let signature = try_sign_on_card(&buffer, &key_data, &key_info, &mut err)
         .or_else(|card_err| {
             log::info!("Card signing failed ({}), trying software key", card_err);
-            sign_with_software_key(&buffer, &cert_data, &cert_info, &mut err)
+            sign_with_software_key(&buffer, &key_data, &key_info, &mut err)
                 .map_err(|sw_err| {
                     // If the software fallback also fails, include the card error
                     // so the user knows why the card path failed too
@@ -59,12 +59,12 @@ pub fn sign(
 /// Try to sign using a connected OpenPGP card.
 fn try_sign_on_card(
     data: &[u8],
-    cert_data: &[u8],
-    cert_info: &wecanencrypt::CertificateInfo,
+    key_data: &[u8],
+    key_info: &wecanencrypt::KeyInfo,
     err: &mut impl Write,
 ) -> Result<String> {
     // Check if any connected card has the signing key for this cert
-    let matches = wecanencrypt::card::find_cards_for_key(cert_data)
+    let matches = wecanencrypt::card::find_cards_for_key(key_data)
         .context("Failed to enumerate cards")?;
 
     // Find a card with a signing slot match
@@ -81,11 +81,12 @@ fn try_sign_on_card(
             // Fetch card details for the pinentry prompt
             let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
 
-            let uid = primary_uid(cert_info);
+            let uid = primary_uid(key_info);
 
             let mut desc = format!("Please unlock the card\n\nNumber: {}", card_match.card.serial_number);
             if let Some(ref info) = card_info {
-                if let Some(ref name) = info.cardholder_name {
+                if let Some(ref raw) = info.cardholder_name {
+                    let name = pinentry::format_cardholder_name(raw);
                     if !name.is_empty() {
                         desc.push_str(&format!("\nHolder: {}", name));
                     }
@@ -94,11 +95,11 @@ fn try_sign_on_card(
             }
             desc.push_str(&format!("\n\nSigning as: {}", uid));
 
-            let pin = pinentry::get_passphrase(&desc, "PIN", Some(&cert_info.fingerprint))?;
+            let pin = pinentry::get_passphrase(&desc, "PIN", Some(&key_info.fingerprint))?;
 
             let signature = wecanencrypt::card::sign_bytes_detached_on_card(
                 data,
-                cert_data,
+                key_data,
                 pin.as_bytes(),
             )
             .context("Card signing failed")?;
@@ -106,41 +107,41 @@ fn try_sign_on_card(
             writeln!(
                 err,
                 "tcli: Signed with card {} key {}",
-                card_ident, cert_info.fingerprint
+                card_ident, key_info.fingerprint
             )?;
 
             return Ok(signature);
         }
     }
 
-    anyhow::bail!("No card found with signing key for {}", cert_info.fingerprint)
+    anyhow::bail!("No card found with signing key for {}", key_info.fingerprint)
 }
 
 /// Sign using a software key from the tumpa keystore.
 fn sign_with_software_key(
     data: &[u8],
-    cert_data: &[u8],
-    cert_info: &wecanencrypt::CertificateInfo,
+    key_data: &[u8],
+    key_info: &wecanencrypt::KeyInfo,
     err: &mut impl Write,
 ) -> Result<String> {
-    if !cert_info.is_secret {
+    if !key_info.is_secret {
         anyhow::bail!(
             "No secret key available for {}. Import a secret key into tumpa first.",
-            cert_info.fingerprint
+            key_info.fingerprint
         );
     }
 
-    let desc = format!("Enter passphrase for key {}", primary_uid(cert_info));
+    let desc = format!("Enter passphrase for key {}", primary_uid(key_info));
 
-    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
+    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
 
-    let signature = wecanencrypt::sign_bytes_detached(cert_data, data, &passphrase)
+    let signature = wecanencrypt::sign_bytes_detached(key_data, data, &passphrase)
         .context("Software key signing failed")?;
 
     writeln!(
         err,
         "tcli: Signed with software key {}",
-        cert_info.fingerprint
+        key_info.fingerprint
     )?;
 
     Ok(signature)
@@ -151,12 +152,12 @@ fn sign_with_software_key(
 ///
 /// Prefers the UID marked `is_primary` (RFC 9580 primary UID flag), then
 /// the first non-revoked UID, then the fingerprint.
-fn primary_uid(cert_info: &wecanencrypt::CertificateInfo) -> &str {
-    cert_info
+fn primary_uid(key_info: &wecanencrypt::KeyInfo) -> &str {
+    key_info
         .user_ids
         .iter()
         .find(|u| u.is_primary && !u.revoked)
-        .or_else(|| cert_info.user_ids.iter().find(|u| !u.revoked))
+        .or_else(|| key_info.user_ids.iter().find(|u| !u.revoked))
         .map(|u| u.value.as_str())
-        .unwrap_or(&cert_info.fingerprint)
+        .unwrap_or(&key_info.fingerprint)
 }
