@@ -115,6 +115,26 @@ tcli --import my-secret-key.asc
 This imports both the secret key material and the public certificate.
 If `~/.tumpa/keys.db` doesn't exist yet, it is created automatically.
 
+### Migrate from GnuPG
+
+If your keys already live in GnuPG, feed `gpg --export` (or
+`gpg --export-secret-keys`) straight into `tcli --import`. The
+stream can contain many keys concatenated — every key is imported
+or merged:
+
+```
+tcli --import <(gpg --export)                # all public keys
+tcli --import <(gpg --export-secret-keys)    # public + secret material
+gpg --export | tcli --import -               # same via a pipe
+gpg --export | tcli --import                 # no path = read stdin
+```
+
+The process-substitution form (`<(...)`) works because bash exposes
+the pipe as `/dev/fd/N`, which `tcli` reads like any other file.
+Each key inside the stream runs through the same merge-on-duplicate
+flow as a single-file import — re-running the command later picks
+up renewed expiries and new certifications instead of duplicating.
+
 ### Verify the import
 
 ```
@@ -163,10 +183,19 @@ line or through the tumpa desktop application.
 ```
 tcli --import mykey.asc
 tcli --import /path/to/keys/ --recursive
+tcli --import <(gpg --export)                # process substitution
+gpg --export | tcli --import -               # stdin (explicit)
+gpg --export | tcli --import                 # stdin (implicit)
 ```
 
 Accepts armored and binary OpenPGP files. For directories, imports all
 `.asc`, `.gpg`, `.pub`, `.key`, `.pgp` files.
+
+A path of `-` (or no paths at all) reads a keyring from stdin. Any
+input — file, directory entry, process substitution, or stdin — may
+contain **multiple keys concatenated**, the shape `gpg --export`
+produces. Every key in the stream is imported or merged; a malformed
+key is reported and skipped without aborting the rest.
 
 When importing a key that already exists in the keystore, `tcli` merges
 the new data into the existing certificate instead of skipping it. This
@@ -178,6 +207,9 @@ what's already stored, the key is reported as "Unchanged".
 $ tcli --import updated_key.asc
 Updated A85FF376759C994A... (Alice <alice@example.com>) — merged new signatures
 ```
+
+See [ADR 0006](adr/0006-import-from-gpg-and-stdin.md) for the design
+rationale behind multi-key and stdin support.
 
 ### Fetching keys via WKD
 

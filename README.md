@@ -85,6 +85,16 @@ The first step is importing your OpenPGP key. The keystore directory
 tcli --import my-secret-key.asc
 ```
 
+Already have keys in GnuPG? Import the whole keyring in one shot —
+both process substitution and stdin work, and multi-key streams
+are split into individual keys:
+
+```
+tcli --import <(gpg --export)          # all public keys from gpg
+gpg --export | tcli --import -         # same via a pipe
+gpg --export-secret-keys | tcli --import -
+```
+
 Verify it was imported:
 
 ```
@@ -226,6 +236,8 @@ For card operations, the PIN is requested the same way.
 ```
 tcli --import mykey.asc              # import from file
 tcli --import /path/to/keys/ -r      # import from directory (recursive)
+tcli --import <(gpg --export)        # migrate from gpg in one go
+gpg --export | tcli --import -       # or read keyring bytes from stdin
 tcli --export <FP> -o key.asc        # export (armored)
 tcli --info <FP>                     # detailed info for a keystore key
 tcli --desc mykey.asc                # detailed info for a key file (no import)
