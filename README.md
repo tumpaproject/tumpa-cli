@@ -4,10 +4,12 @@ A command-line tool for OpenPGP operations, SSH agent, and
 password management, backed by the
 [tumpa](https://github.com/tumpaproject/tumpa) keystore.
 
-Two binaries are provided:
+Three binaries are provided:
 
-- **`tcli`** -- drop-in GnuPG replacement for git signing, encryption/decryption,
-  key management, and SSH agent
+- **`tcli`** -- human-facing key management and SSH agent: import, export,
+  search, fetch, describe, list, delete, card status, agent daemons
+- **`tclig`** -- GnuPG drop-in for programs that invoke `gpg` (git signing,
+  `pass`, anything with a `gpg.program` hook)
 - **`tpass`** -- drop-in replacement for [password-store](https://www.passwordstore.org/)
   (`pass`), calling the tumpa keystore directly without GPG
 
@@ -16,6 +18,25 @@ stored in `~/.tumpa/keys.db`.
 
 For detailed usage instructions, see the
 [Usage Guide](https://github.com/tumpaproject/tumpa-cli/blob/main/docs/usage.md).
+
+## Upgrading from 0.1.x
+
+As of 0.2, the GPG drop-in flags (`-bsau`, `--verify`, `-e`, `-d`,
+`--list-keys --with-colons`, `--decrypt --list-only`, etc.) have
+moved out of `tcli` into a new binary **`tclig`**. `tcli` is now the
+human-facing key-management UI only.
+
+If you configured git with `gpg.program = tcli`, or symlinked
+`gpg2` to `tcli`, re-point them at `tclig`:
+
+```
+git config --global gpg.program tclig
+ln -sf $(which tclig) ~/bin/gpg2
+```
+
+Everything you typed at the `tcli` prompt as a human (`tcli
+--import`, `tcli --list-keys`, `tcli agent --ssh`, etc.) is
+unchanged.
 
 ## Features
 
@@ -39,7 +60,7 @@ For detailed usage instructions, see the
 cargo install tumpa-cli
 ```
 
-Two binaries are installed to `~/.cargo/bin/`: `tcli` and `tpass`.
+Three binaries are installed to `~/.cargo/bin/`: `tcli`, `tclig`, and `tpass`.
 
 ### System dependencies
 
@@ -94,10 +115,11 @@ tpass --completions fish > ~/.config/fish/completions/tpass.fish
 
 ### Git
 
-Configure git to use `tcli` for signing:
+Configure git to use `tclig` for signing (it's the GPG drop-in; `tcli`
+is the human-facing key manager and doesn't accept `gpg` flags):
 
 ```
-git config --global gpg.program tcli
+git config --global gpg.program tclig
 git config --global user.signingkey <FINGERPRINT>
 git config --global commit.gpgsign true
 ```
@@ -121,13 +143,13 @@ format (`~/.password-store/`). See the
 [Usage Guide](https://github.com/tumpaproject/tumpa-cli/blob/main/docs/usage.md#tpass--native-password-store)
 for full documentation.
 
-### password-store (`pass`) via tcli
+### password-store (`pass`) via tclig
 
-Alternatively, use the original `pass` with `tcli` as the GPG backend:
+Alternatively, use the original `pass` with `tclig` as the GPG backend:
 
 ```
 mkdir -p ~/bin
-ln -s $(which tcli) ~/bin/gpg2
+ln -s $(which tclig) ~/bin/gpg2
 export PATH="$HOME/bin:$PATH"
 pass init <FINGERPRINT>
 ```
@@ -156,23 +178,23 @@ below.
 
 ### Signing
 
-`tcli` is normally invoked by git, not directly. When git runs
-`gpg.program --detach-sign ...`, `tcli` handles it transparently.
+`tclig` is normally invoked by git, not directly. When git runs
+`gpg.program --detach-sign ...`, `tclig` handles it transparently.
 
 If a hardware OpenPGP card is connected and holds the signing key,
-`tcli` uses the card. Otherwise it uses the software key from the
+`tclig` uses the card. Otherwise it uses the software key from the
 tumpa keystore.
 
 ### Verification
 
-Git invokes `tcli --verify <sigfile> -` automatically for commands
+Git invokes `tclig --verify <sigfile> -` automatically for commands
 like `git verify-commit`, `git verify-tag`, and `git log --show-signature`.
 
 ### Encryption
 
 ```
-echo "secret" | tcli -e -r <FINGERPRINT> -o output.gpg
-tcli -e -r <FP1> -r <FP2> -o output.gpg input.txt
+echo "secret" | tclig -e -r <FINGERPRINT> -o output.gpg
+tclig -e -r <FP1> -r <FP2> -o output.gpg input.txt
 ```
 
 Multiple recipients are supported. Any recipient can decrypt.
@@ -180,8 +202,8 @@ Multiple recipients are supported. Any recipient can decrypt.
 ### Decryption
 
 ```
-tcli -d output.gpg             # decrypt to stdout
-tcli -d -o plaintext.txt file.gpg  # decrypt to file
+tclig -d output.gpg             # decrypt to stdout
+tclig -d -o plaintext.txt file.gpg  # decrypt to file
 ```
 
 The secret key is auto-detected from the encrypted message.
@@ -189,7 +211,7 @@ Decrypted output files are created with `0600` permissions.
 
 ### Passphrase / PIN entry
 
-`tcli` acquires passphrases in this order:
+Both `tcli` and `tclig` acquire passphrases in this order:
 
 1. **Agent cache** -- if `tcli agent` is running, cached passphrases
    are returned without prompting

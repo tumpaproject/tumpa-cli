@@ -1,8 +1,8 @@
 #!/bin/bash
-# Cross-compatibility test: verify tpass and pass (with tcli as GPG) interoperate.
+# Cross-compatibility test: verify tpass and pass (with tclig as GPG) interoperate.
 #
 # Prerequisites:
-#   - tpass and tcli built (cargo build)
+#   - tpass, tcli, and tclig built (cargo build)
 #   - pass installed
 #   - At least one secret key with an encryption subkey in ~/.tumpa/keys.db
 #   - TUMPA_PASSPHRASE set for non-interactive testing
@@ -16,9 +16,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TPASS="$PROJECT_DIR/target/debug/tpass"
 TCLI="$PROJECT_DIR/target/debug/tcli"
+TCLIG="$PROJECT_DIR/target/debug/tclig"
 
 if [[ ! -x "$TPASS" ]]; then
     echo "ERROR: tpass not found. Run 'cargo build' first."
+    exit 1
+fi
+
+if [[ ! -x "$TCLIG" ]]; then
+    echo "ERROR: tclig not found. Run 'cargo build' first."
     exit 1
 fi
 
@@ -54,11 +60,11 @@ echo "Using key: $KEY_FP"
 TEST_DIR=$(mktemp -d)
 export PASSWORD_STORE_DIR="$TEST_DIR/store"
 
-# Create GPG wrapper so pass uses tcli
+# Create GPG wrapper so pass uses tclig
 WRAPPER_DIR="$TEST_DIR/bin"
 mkdir -p "$WRAPPER_DIR"
-ln -sf "$TCLI" "$WRAPPER_DIR/gpg2"
-ln -sf "$TCLI" "$WRAPPER_DIR/gpg"
+ln -sf "$TCLIG" "$WRAPPER_DIR/gpg2"
+ln -sf "$TCLIG" "$WRAPPER_DIR/gpg"
 export PATH="$WRAPPER_DIR:$PATH"
 
 PASS_COUNT=0
