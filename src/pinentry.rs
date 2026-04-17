@@ -294,3 +294,100 @@ fn rpassword_prompt(prompt: &str) -> Result<Zeroizing<String>> {
         .context("Failed to read passphrase from terminal")?;
     Ok(Zeroizing::new(pass))
 }
+
+/// Format an ISO/IEC 7816-6 cardholder name for human display.
+///
+/// OpenPGP cards store the cardholder name per ISO/IEC 7816-6 §8.2:
+/// `Surname<<GivenNames` with `<` standing in for spaces within each
+/// component, and optional trailing `<` characters padding the field.
+/// Display convention is given names first, then surname.
+///
+/// Handles single-component names (no `<<`), missing surname, missing
+/// given names, multi-word components, and trailing padding.
+///
+/// Examples:
+///   "Das<<Kushal"           → "Kushal Das"
+///   "Van<Der<Berg<<Kushal"  → "Kushal Van Der Berg"
+///   "Madonna"               → "Madonna"
+///   "<<Kushal"              → "Kushal"
+///   "Das<<"                 → "Das"
+///   "Das<<<<<<"             → "Das"
+///   ""                      → ""
+pub fn format_cardholder_name(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('<');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    match trimmed.split_once("<<") {
+        Some((surname, given)) => {
+            let surname = surname.replace('<', " ").trim().to_string();
+            let given = given.replace('<', " ").trim().to_string();
+            match (given.is_empty(), surname.is_empty()) {
+                (false, false) => format!("{} {}", given, surname),
+                (false, true) => given,
+                (true, false) => surname,
+                (true, true) => String::new(),
+            }
+        }
+        None => trimmed.replace('<', " ").trim().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod cardholder_tests {
+    use super::format_cardholder_name;
+
+    #[test]
+    fn full_surname_given() {
+        assert_eq!(format_cardholder_name("Das<<Kushal"), "Kushal Das");
+    }
+
+    #[test]
+    fn multi_word_surname() {
+        assert_eq!(
+            format_cardholder_name("Van<Der<Berg<<Kushal"),
+            "Kushal Van Der Berg"
+        );
+    }
+
+    #[test]
+    fn multi_word_given() {
+        assert_eq!(
+            format_cardholder_name("Das<<Kushal<Sunil"),
+            "Kushal Sunil Das"
+        );
+    }
+
+    #[test]
+    fn single_name_no_separator() {
+        assert_eq!(format_cardholder_name("Madonna"), "Madonna");
+    }
+
+    #[test]
+    fn only_given_name() {
+        assert_eq!(format_cardholder_name("<<Kushal"), "Kushal");
+    }
+
+    #[test]
+    fn only_surname() {
+        assert_eq!(format_cardholder_name("Das<<"), "Das");
+    }
+
+    #[test]
+    fn trailing_padding_stripped() {
+        assert_eq!(format_cardholder_name("Das<<Kushal<<<<"), "Kushal Das");
+        assert_eq!(format_cardholder_name("Das<<<<<<"), "Das");
+    }
+
+    #[test]
+    fn empty_input() {
+        assert_eq!(format_cardholder_name(""), "");
+        assert_eq!(format_cardholder_name("<<<"), "");
+    }
+
+    #[test]
+    fn single_given_name_no_surname_with_spaces() {
+        assert_eq!(format_cardholder_name("<<Kushal<Das"), "Kushal Das");
+    }
+}

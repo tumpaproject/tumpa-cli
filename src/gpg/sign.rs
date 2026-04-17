@@ -85,7 +85,8 @@ fn try_sign_on_card(
 
             let mut desc = format!("Please unlock the card\n\nNumber: {}", card_match.card.serial_number);
             if let Some(ref info) = card_info {
-                if let Some(ref name) = info.cardholder_name {
+                if let Some(ref raw) = info.cardholder_name {
+                    let name = pinentry::format_cardholder_name(raw);
                     if !name.is_empty() {
                         desc.push_str(&format!("\nHolder: {}", name));
                     }

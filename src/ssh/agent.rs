@@ -336,7 +336,9 @@ impl TumpaBackend {
                 match cached {
                     Some(p) => p,
                     None => {
-                        let holder = cardholder_name.filter(|n| !n.is_empty());
+                        let holder = cardholder_name
+                            .map(pinentry::format_cardholder_name)
+                            .filter(|n| !n.is_empty());
                         let desc = if let Some(name) = holder {
                             format!("Please unlock the card\n\n{}\n\nSSH authentication", name)
                         } else {
