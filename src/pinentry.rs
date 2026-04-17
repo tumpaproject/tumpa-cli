@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
@@ -118,33 +119,102 @@ fn try_agent_put(fingerprint: &str, passphrase: &Zeroizing<String>) {
     let _ = reader.read_line(&mut response);
 }
 
-/// Try to get passphrase via pinentry Assuan protocol.
+/// Candidate pinentry programs, in preference order.
 ///
-/// If `PINENTRY_PROGRAM` is set, only that program is tried. Otherwise,
-/// `pinentry` is tried first; on macOS `pinentry-mac` is tried as a
-/// fallback when `pinentry` is not on `PATH` (since Homebrew's
-/// `pinentry-mac` only installs under that name).
-fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
-    let candidates: Vec<String> = if let Ok(explicit) = std::env::var("PINENTRY_PROGRAM") {
-        vec![explicit]
+/// If `PINENTRY_PROGRAM` is set, only that program is tried. Otherwise:
+/// - On macOS, `pinentry-mac` (GUI, works without a TTY) is preferred,
+///   then bare `pinentry`. Homebrew absolute paths are appended so an
+///   agent spawned by launchd with a reduced PATH still finds the
+///   binary.
+/// - Elsewhere, `pinentry` is the only default.
+pub fn pinentry_candidates() -> Vec<String> {
+    if let Ok(explicit) = std::env::var("PINENTRY_PROGRAM") {
+        return vec![explicit];
+    }
+    if cfg!(target_os = "macos") {
+        vec![
+            "pinentry-mac".to_string(),
+            "/opt/homebrew/bin/pinentry-mac".to_string(),
+            "/usr/local/bin/pinentry-mac".to_string(),
+            "pinentry".to_string(),
+        ]
     } else {
-        let mut v = vec!["pinentry".to_string()];
-        if cfg!(target_os = "macos") {
-            v.push("pinentry-mac".to_string());
-        }
-        v
-    };
+        vec!["pinentry".to_string()]
+    }
+}
 
-    for program in &candidates {
-        match try_pinentry_with(program, description, prompt)? {
-            Some(pass) => return Ok(pass),
-            None => log::debug!("{} not on PATH, trying next pinentry", program),
+/// Resolve the first available pinentry candidate to an absolute path.
+///
+/// Absolute paths are checked with `metadata()`; bare names are resolved
+/// by walking `PATH`. Returns `None` if nothing resolves — callers should
+/// still attempt the candidates (the runtime PATH may differ from the
+/// PATH seen here) but the absence is worth logging at agent startup.
+pub fn resolve_pinentry() -> Option<(String, PathBuf)> {
+    for name in pinentry_candidates() {
+        if let Some(path) = which_on_path(&name) {
+            return Some((name, path));
         }
     }
-    anyhow::bail!(
-        "no pinentry program found (tried: {})",
-        candidates.join(", ")
-    );
+    None
+}
+
+fn which_on_path(name: &str) -> Option<PathBuf> {
+    let p = Path::new(name);
+    if p.is_absolute() {
+        return if p.is_file() { Some(p.to_path_buf()) } else { None };
+    }
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let cand = dir.join(name);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Try to get passphrase via pinentry Assuan protocol.
+///
+/// Iterates `pinentry_candidates()` in order. A candidate that isn't on
+/// PATH (spawn failure) falls through to the next; a protocol/runtime
+/// error from a spawned candidate is logged and also falls through, so
+/// a broken `pinentry` (e.g. curses with no TTY) does not mask a
+/// working `pinentry-mac`. User cancellation is preserved and does not
+/// trigger further fallbacks.
+fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
+    let candidates = pinentry_candidates();
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for program in &candidates {
+        match try_pinentry_with(program, description, prompt) {
+            Ok(Some(pass)) => return Ok(pass),
+            Ok(None) => log::debug!("{} not on PATH, trying next pinentry", program),
+            Err(e) => {
+                if is_user_cancel(&e) {
+                    return Err(e);
+                }
+                log::debug!("{} failed ({:#}), trying next pinentry", program, e);
+                last_err = Some(e);
+            }
+        }
+    }
+
+    if let Some(e) = last_err {
+        Err(e).context(format!(
+            "all pinentry candidates failed (tried: {})",
+            candidates.join(", ")
+        ))
+    } else {
+        anyhow::bail!(
+            "no pinentry program found (tried: {})",
+            candidates.join(", ")
+        );
+    }
+}
+
+fn is_user_cancel(e: &anyhow::Error) -> bool {
+    let s = format!("{:#}", e);
+    s.contains("cancelled by user")
 }
 
 /// Run the Assuan conversation with a specific pinentry program.

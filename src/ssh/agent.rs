@@ -48,6 +48,7 @@ impl TumpaBackend {
             card_identities: Arc::new(Mutex::new(Vec::new())),
             known_card_idents: Arc::new(Mutex::new(HashSet::new())),
         };
+        log_pinentry_at_startup();
         backend.refresh_card_identities();
         backend
     }
@@ -64,6 +65,7 @@ impl TumpaBackend {
             card_identities: Arc::new(Mutex::new(Vec::new())),
             known_card_idents: Arc::new(Mutex::new(HashSet::new())),
         };
+        log_pinentry_at_startup();
         backend.refresh_card_identities();
         backend
     }
@@ -669,4 +671,26 @@ fn parse_ssh_pubkey_line(line: &str) -> Result<KeyData, String> {
     let pubkey = ssh_key::PublicKey::from_openssh(line)
         .map_err(|e| format!("Failed to parse SSH public key: {}", e))?;
     Ok(pubkey.key_data().clone())
+}
+
+/// Resolve the preferred pinentry program once at agent startup and log it.
+///
+/// Agents spawned by launchd often inherit a trimmed PATH, so the bare
+/// name may not resolve. Logging the absolute path (or the fact that
+/// nothing resolved) makes "agent fell back to STDIN" failures obvious
+/// in the logs instead of requiring a post-mortem.
+fn log_pinentry_at_startup() {
+    match pinentry::resolve_pinentry() {
+        Some((name, path)) => log::info!(
+            "pinentry: using {} (resolved to {})",
+            name,
+            path.display()
+        ),
+        None => log::warn!(
+            "pinentry: no candidate resolved on PATH ({:?}) — \
+             passphrase prompts will fall back to STDIN. \
+             Set PINENTRY_PROGRAM=/opt/homebrew/bin/pinentry-mac or install pinentry.",
+            std::env::var("PATH").unwrap_or_default(),
+        ),
+    }
 }
