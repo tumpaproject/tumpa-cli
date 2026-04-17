@@ -90,18 +90,18 @@ impl TumpaBackend {
                 if let Some(ref auth_fp) = info.authentication_fingerprint {
                     let auth_fp_upper = auth_fp.to_uppercase();
                     if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
-                        if let Ok(Some(cert_data)) =
+                        if let Ok(Some(key_data)) =
                             keystore.find_by_subkey_fingerprint(&auth_fp_upper)
                         {
                             if let Ok(ssh_pubkey) =
-                                wecanencrypt::get_ssh_pubkey(&cert_data, Some(&card.ident))
+                                wecanencrypt::get_ssh_pubkey(&key_data, Some(&card.ident))
                             {
-                                if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
+                                if let Ok(parsed_pubkey) = parse_ssh_pubkey_line(&ssh_pubkey) {
                                     log::info!("  Cached SSH identity for card {}", card.ident);
                                     new_identities.push(CardSshIdentity {
                                         card_ident: card.ident.clone(),
                                         cardholder_name: info.cardholder_name.clone(),
-                                        ssh_key_data: key_data,
+                                        ssh_key_data: parsed_pubkey,
                                         comment: format!("card:{}", card.ident),
                                     });
                                 }
@@ -180,12 +180,12 @@ impl Session for TumpaBackend {
         // 2. Software key identities from keystore
         if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
             if let Ok(secret_keys) = keystore.list_secret_keys() {
-                for cert_info in &secret_keys {
-                    if cert_info.is_revoked {
+                for key_info in &secret_keys {
+                    if key_info.is_revoked {
                         continue;
                     }
 
-                    let has_auth = cert_info.subkeys.iter().any(|sk| {
+                    let has_auth = key_info.subkeys.iter().any(|sk| {
                         matches!(sk.key_type, wecanencrypt::KeyType::Authentication)
                             && !sk.is_revoked
                     });
@@ -193,25 +193,25 @@ impl Session for TumpaBackend {
                         continue;
                     }
 
-                    if let Ok(cert_data) = keystore.export_cert(&cert_info.fingerprint) {
+                    if let Ok(key_data) = keystore.export_key(&key_info.fingerprint) {
                         if let Ok(ssh_pubkey) = wecanencrypt::get_ssh_pubkey(
-                            &cert_data,
+                            &key_data,
                             Some(
-                                cert_info
+                                key_info
                                     .user_ids
                                     .first()
                                     .map(|u| u.value.as_str())
-                                    .unwrap_or(&cert_info.fingerprint),
+                                    .unwrap_or(&key_info.fingerprint),
                             ),
                         ) {
-                            if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey) {
-                                let comment = cert_info
+                            if let Ok(parsed_pubkey) = parse_ssh_pubkey_line(&ssh_pubkey) {
+                                let comment = key_info
                                     .user_ids
                                     .first()
                                     .map(|u| u.value.clone())
-                                    .unwrap_or_else(|| cert_info.fingerprint.clone());
+                                    .unwrap_or_else(|| key_info.fingerprint.clone());
                                 identities.push(Identity {
-                                    pubkey: key_data,
+                                    pubkey: parsed_pubkey,
                                     comment,
                                 });
                             }
@@ -271,25 +271,25 @@ impl Session for TumpaBackend {
         // No card match — try software keys from keystore
         if let Ok(keystore) = store::open_keystore(self.keystore_path.as_ref()) {
             if let Ok(secret_keys) = keystore.list_secret_keys() {
-                for cert_info in &secret_keys {
-                    if cert_info.is_revoked {
+                for key_info in &secret_keys {
+                    if key_info.is_revoked {
                         continue;
                     }
-                    if let Ok(cert_data) = keystore.export_cert(&cert_info.fingerprint) {
-                        let comment = cert_info
+                    if let Ok(key_data) = keystore.export_key(&key_info.fingerprint) {
+                        let comment = key_info
                             .user_ids
                             .first()
                             .map(|u| u.value.as_str())
-                            .unwrap_or(&cert_info.fingerprint);
+                            .unwrap_or(&key_info.fingerprint);
                         if let Ok(ssh_pubkey_line) =
-                            wecanencrypt::get_ssh_pubkey(&cert_data, Some(comment))
+                            wecanencrypt::get_ssh_pubkey(&key_data, Some(comment))
                         {
-                            if let Ok(key_data) = parse_ssh_pubkey_line(&ssh_pubkey_line) {
-                                if key_data == request.pubkey {
+                            if let Ok(parsed_pubkey) = parse_ssh_pubkey_line(&ssh_pubkey_line) {
+                                if parsed_pubkey == request.pubkey {
                                     return self
                                         .sign_with_software_key(
-                                            &cert_data,
-                                            &cert_info.fingerprint,
+                                            &key_data,
+                                            &key_info.fingerprint,
                                             comment,
                                             &request,
                                         )
@@ -494,7 +494,7 @@ impl TumpaBackend {
 
     async fn sign_with_software_key(
         &self,
-        cert_data: &[u8],
+        key_data: &[u8],
         fingerprint: &str,
         key_description: &str,
         request: &SignRequest,
@@ -522,7 +522,7 @@ impl TumpaBackend {
         let sign_data = prepare_sign_data(request).ok_or(AgentError::Failure)?;
 
         let result = wecanencrypt::ssh_sign_raw(
-            cert_data,
+            key_data,
             &sign_data.data,
             &passphrase,
             sign_data.hash_alg,

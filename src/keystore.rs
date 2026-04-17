@@ -74,21 +74,21 @@ fn import_file(
         }
     };
 
-    // If the key already exists, merge new signatures into the stored cert
-    if let Ok(cert_info) = wecanencrypt::parse_cert_bytes(&data, false) {
-        if keystore.contains(&cert_info.fingerprint).unwrap_or(false) {
-            let uid = cert_info
+    // If the key already exists, merge new signatures into the stored key
+    if let Ok(key_info) = wecanencrypt::parse_key_bytes(&data, false) {
+        if keystore.contains(&key_info.fingerprint).unwrap_or(false) {
+            let uid = key_info
                 .user_ids
                 .first()
                 .map(|u| u.value.as_str())
                 .unwrap_or("");
-            match merge_and_reimport(keystore, &cert_info.fingerprint, &data) {
+            match merge_and_reimport(keystore, &key_info.fingerprint, &data) {
                 Ok(true) => {
-                    println!("Updated {} ({}) — merged new signatures", cert_info.fingerprint, uid);
+                    println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid);
                     *updated += 1;
                 }
                 Ok(false) => {
-                    println!("Unchanged {} ({}) — no new data", cert_info.fingerprint, uid);
+                    println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid);
                     *updated += 1;
                 }
                 Err(e) => {
@@ -100,9 +100,9 @@ fn import_file(
         }
     }
 
-    match keystore.import_cert(&data) {
+    match keystore.import_key(&data) {
         Ok(fp) => {
-            let info = keystore.get_cert_info(&fp).ok();
+            let info = keystore.get_key_info(&fp).ok();
             let uid = info
                 .and_then(|i| i.user_ids.first().map(|u| u.value.clone()))
                 .unwrap_or_default();
@@ -116,19 +116,19 @@ fn import_file(
     }
 }
 
-/// Merge new certificate data into an existing keystore entry.
+/// Merge new key data into an existing keystore entry.
 /// Returns Ok(true) if the merge produced changes, Ok(false) if identical.
 fn merge_and_reimport(
     keystore: &wecanencrypt::KeyStore,
     fingerprint: &str,
     new_data: &[u8],
 ) -> Result<bool> {
-    let existing = keystore.export_cert(fingerprint)?;
+    let existing = keystore.export_key(fingerprint)?;
     let merged = wecanencrypt::merge_keys(&existing, new_data)
-        .context("Certificate merge failed")?;
+        .context("Key merge failed")?;
 
-    // Re-import the merged cert (INSERT OR REPLACE updates the row)
-    keystore.import_cert(&merged)?;
+    // Re-import the merged key (INSERT OR REPLACE updates the row)
+    keystore.import_key(&merged)?;
     Ok(existing != *merged)
 }
 
@@ -141,13 +141,13 @@ pub fn cmd_export(
     keystore_path: Option<&PathBuf>,
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
-    let (_cert_data, cert_info) = store::resolve_signer(&keystore, key_id)?;
+    let (_key_data, key_info) = store::resolve_signer(&keystore, key_id)?;
 
     if binary {
-        // Parse the stored cert and re-serialize as binary OpenPGP packets
+        // Parse the stored key and re-serialize as binary OpenPGP packets
         use pgp::composed::Deserializable;
         use pgp::ser::Serialize;
-        let raw = keystore.export_cert(&cert_info.fingerprint)?;
+        let raw = keystore.export_key(&key_info.fingerprint)?;
         let cursor = std::io::Cursor::new(&raw);
         let data = if let Ok((pk, _)) = pgp::composed::SignedPublicKey::from_armor_single(cursor) {
             let mut buf = Vec::new();
@@ -159,7 +159,7 @@ pub fn cmd_export(
         match output {
             Some(path) => {
                 std::fs::write(path, &data)?;
-                eprintln!("Exported {} to {:?}", cert_info.fingerprint, path);
+                eprintln!("Exported {} to {:?}", key_info.fingerprint, path);
             }
             None => {
                 io::stdout().write_all(&data)?;
@@ -167,11 +167,11 @@ pub fn cmd_export(
         }
     } else {
         // Default: armored
-        let armored = keystore.export_cert_armored(&cert_info.fingerprint)?;
+        let armored = keystore.export_key_armored(&key_info.fingerprint)?;
         match output {
             Some(path) => {
                 std::fs::write(path, &armored)?;
-                eprintln!("Exported {} to {:?}", cert_info.fingerprint, path);
+                eprintln!("Exported {} to {:?}", key_info.fingerprint, path);
             }
             None => {
                 print!("{}", armored);
@@ -185,32 +185,32 @@ pub fn cmd_export(
 /// Show detailed information about a key.
 pub fn cmd_info(key_id: &str, keystore_path: Option<&PathBuf>) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
-    let (cert_data, cert_info) = store::resolve_signer(&keystore, key_id)?;
-    print_cert_info(&cert_data, &cert_info);
+    let (key_data, key_info) = store::resolve_signer(&keystore, key_id)?;
+    print_key_info(&key_data, &key_info);
     Ok(())
 }
 
 /// Show detailed information about a key file without importing it.
 ///
-/// Parses the cert bytes directly and reuses the same renderer as
+/// Parses the key bytes directly and reuses the same renderer as
 /// `--info`. Accepts both armored and binary, and both public and
 /// secret key files. Never touches the keystore.
 pub fn cmd_desc(path: &Path) -> Result<()> {
-    let cert_data =
+    let key_data =
         std::fs::read(path).with_context(|| format!("Failed to read {:?}", path))?;
-    let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)
+    let key_info = wecanencrypt::parse_key_bytes(&key_data, false)
         .with_context(|| format!("Failed to parse key from {:?}", path))?;
-    print_cert_info(&cert_data, &cert_info);
+    print_key_info(&key_data, &key_info);
     Ok(())
 }
 
-/// Print detailed certificate information.
-fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) {
-    let key_type = if cert_info.is_secret { "sec" } else { "pub" };
+/// Print detailed key information.
+fn print_key_info(key_data: &[u8], key_info: &wecanencrypt::KeyInfo) {
+    let key_type = if key_info.is_secret { "sec" } else { "pub" };
     let time_fmt = "%Y-%m-%d %H:%M:%S UTC";
 
     // Get primary key algorithm details
-    let primary_algo = wecanencrypt::get_key_cipher_details(cert_data)
+    let primary_algo = wecanencrypt::get_key_cipher_details(key_data)
         .ok()
         .and_then(|details| details.into_iter().next())
         .map(|d| format_algo(&d.algorithm, d.bit_length))
@@ -218,7 +218,7 @@ fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) 
 
     // Primary key capabilities
     let mut primary_caps = Vec::new();
-    if cert_info.can_primary_sign {
+    if key_info.can_primary_sign {
         primary_caps.push("sign");
     }
     primary_caps.push("certify"); // primary can always certify
@@ -226,22 +226,22 @@ fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) 
     println!(
         "{}  {}  {}  [{}]",
         key_type,
-        cert_info.fingerprint,
+        key_info.fingerprint,
         primary_algo,
         primary_caps.join(", ")
     );
     println!(
         "     Created:  {}",
-        cert_info.creation_time.format(time_fmt)
+        key_info.creation_time.format(time_fmt)
     );
-    if let Some(ref exp) = cert_info.expiration_time {
+    if let Some(ref exp) = key_info.expiration_time {
         println!("     Expires:  {}", exp.format(time_fmt));
     } else {
         println!("     Expires:  never");
     }
 
-    if cert_info.is_revoked {
-        if let Some(ref rev_time) = cert_info.revocation_time {
+    if key_info.is_revoked {
+        if let Some(ref rev_time) = key_info.revocation_time {
             println!("     Revoked:  {}", rev_time.format(time_fmt));
         } else {
             println!("     Revoked:  yes");
@@ -249,7 +249,7 @@ fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) 
     }
 
     // UIDs (primary first)
-    let mut uids: Vec<_> = cert_info.user_ids.iter().filter(|u| !u.revoked).collect();
+    let mut uids: Vec<_> = key_info.user_ids.iter().filter(|u| !u.revoked).collect();
     uids.sort_by_key(|u| std::cmp::Reverse(u.is_primary));
 
     if !uids.is_empty() {
@@ -265,9 +265,9 @@ fn print_cert_info(cert_data: &[u8], cert_info: &wecanencrypt::CertificateInfo) 
     }
 
     // Subkeys
-    if !cert_info.subkeys.is_empty() {
+    if !key_info.subkeys.is_empty() {
         println!("     Subkeys:");
-        for sk in &cert_info.subkeys {
+        for sk in &key_info.subkeys {
             let revoked = if sk.is_revoked { " [REVOKED]" } else { "" };
             let algo = format_algo(&sk.algorithm, sk.bit_length);
             let expiry = sk
@@ -301,9 +301,9 @@ fn format_algo(algorithm: &str, bit_length: usize) -> String {
 /// Delete a key from the keystore.
 pub fn cmd_delete(key_id: &str, force: bool, keystore_path: Option<&PathBuf>) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
-    let (_cert_data, cert_info) = store::resolve_signer(&keystore, key_id)?;
+    let (_key_data, key_info) = store::resolve_signer(&keystore, key_id)?;
 
-    let uid = cert_info
+    let uid = key_info
         .user_ids
         .first()
         .map(|u| u.value.as_str())
@@ -312,8 +312,8 @@ pub fn cmd_delete(key_id: &str, force: bool, keystore_path: Option<&PathBuf>) ->
     if !force {
         eprint!(
             "Delete {} {} ({})? [y/N] ",
-            if cert_info.is_secret { "SECRET key" } else { "public key" },
-            cert_info.fingerprint,
+            if key_info.is_secret { "SECRET key" } else { "public key" },
+            key_info.fingerprint,
             uid
         );
         io::stderr().flush()?;
@@ -325,8 +325,8 @@ pub fn cmd_delete(key_id: &str, force: bool, keystore_path: Option<&PathBuf>) ->
         }
     }
 
-    keystore.delete_cert(&cert_info.fingerprint)?;
-    println!("Deleted {} ({})", cert_info.fingerprint, uid);
+    keystore.delete_key(&key_info.fingerprint)?;
+    println!("Deleted {} ({})", key_info.fingerprint, uid);
 
     Ok(())
 }
@@ -346,14 +346,14 @@ pub fn cmd_search(query: &str, email: bool, keystore_path: Option<&PathBuf>) -> 
         return Ok(());
     }
 
-    for cert in &results {
-        let key_type = if cert.is_secret { "sec" } else { "pub" };
-        let uid = cert
+    for key in &results {
+        let marker = if key.is_secret { "sec" } else { "pub" };
+        let uid = key
             .user_ids
             .first()
             .map(|u| u.value.as_str())
             .unwrap_or("<no UID>");
-        println!("{} {} {}", key_type, cert.fingerprint, uid);
+        println!("{} {} {}", marker, key.fingerprint, uid);
     }
 
     println!("\n{} key(s) found.", results.len());
@@ -365,12 +365,12 @@ pub fn cmd_search(query: &str, email: bool, keystore_path: Option<&PathBuf>) -> 
 pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) -> Result<()> {
     eprintln!("Fetching key for {} via WKD...", email);
 
-    let cert_data = wecanencrypt::fetch_key_by_email(email)
+    let key_data = wecanencrypt::fetch_key_by_email(email)
         .context(format!("WKD lookup failed for {}", email))?;
 
-    let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)?;
+    let key_info = wecanencrypt::parse_key_bytes(&key_data, false)?;
 
-    print_cert_info(&cert_data, &cert_info);
+    print_key_info(&key_data, &key_info);
 
     if dry_run {
         return Ok(());
@@ -378,9 +378,9 @@ pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) ->
 
     // Import or merge
     let keystore = store::open_keystore(keystore_path)?;
-    let already_exists = keystore.contains(&cert_info.fingerprint)?;
+    let already_exists = keystore.contains(&key_info.fingerprint)?;
 
-    let uid = cert_info
+    let uid = key_info
         .user_ids
         .first()
         .map(|u| u.value.as_str())
@@ -400,14 +400,14 @@ pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) ->
     }
 
     if already_exists {
-        match merge_and_reimport(&keystore, &cert_info.fingerprint, &cert_data) {
-            Ok(true) => println!("Updated {} ({}) — merged new signatures", cert_info.fingerprint, uid),
-            Ok(false) => println!("Unchanged {} ({}) — no new data", cert_info.fingerprint, uid),
+        match merge_and_reimport(&keystore, &key_info.fingerprint, &key_data) {
+            Ok(true) => println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid),
+            Ok(false) => println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid),
             Err(e) => anyhow::bail!("Merge failed: {}", e),
         }
     } else {
-        keystore.import_cert(&cert_data)?;
-        println!("Imported {} ({})", cert_info.fingerprint, uid);
+        keystore.import_key(&key_data)?;
+        println!("Imported {} ({})", key_info.fingerprint, uid);
     }
 
     Ok(())

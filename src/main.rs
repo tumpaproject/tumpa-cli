@@ -180,22 +180,22 @@ fn ssh_export(
 
 fn list_keys(keystore_path: Option<&std::path::PathBuf>) -> anyhow::Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
-    let certs = keystore.list_certs()?;
+    let keys = keystore.list_keys()?;
 
-    if certs.is_empty() {
+    if keys.is_empty() {
         println!("No keys in keystore.");
         return Ok(());
     }
 
-    for cert in &certs {
-        let secret_marker = if cert.is_secret { "sec" } else { "pub" };
-        let uid = cert
+    for key in &keys {
+        let secret_marker = if key.is_secret { "sec" } else { "pub" };
+        let uid = key
             .user_ids
             .first()
             .map(|u| u.value.as_str())
             .unwrap_or("<no UID>");
 
-        println!("{} {} {}", secret_marker, cert.fingerprint, uid);
+        println!("{} {} {}", secret_marker, key.fingerprint, uid);
     }
 
     Ok(())

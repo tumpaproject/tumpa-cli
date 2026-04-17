@@ -18,14 +18,14 @@ pub fn encrypt(
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
 
-    // Resolve each recipient to cert data
-    let mut cert_data_list: Vec<Vec<u8>> = Vec::new();
+    // Resolve each recipient to key data
+    let mut key_data_list: Vec<Vec<u8>> = Vec::new();
     for recipient_id in recipients {
-        let (cert_data, cert_info) = store::resolve_signer(&keystore, recipient_id)?;
-        store::ensure_cert_usable_for_encryption(&cert_info)?;
-        cert_data_list.push(cert_data);
+        let (key_data, key_info) = store::resolve_signer(&keystore, recipient_id)?;
+        store::ensure_key_usable_for_encryption(&key_info)?;
+        key_data_list.push(key_data);
     }
-    let cert_refs: Vec<&[u8]> = cert_data_list.iter().map(|c| c.as_slice()).collect();
+    let key_refs: Vec<&[u8]> = key_data_list.iter().map(|c| c.as_slice()).collect();
 
     // Read plaintext
     let plaintext = match input {
@@ -42,7 +42,7 @@ pub fn encrypt(
     };
 
     // Encrypt
-    let ciphertext = wecanencrypt::encrypt_bytes_to_multiple(&cert_refs, &plaintext, armor)
+    let ciphertext = wecanencrypt::encrypt_bytes_to_multiple(&key_refs, &plaintext, armor)
         .context("Encryption failed")?;
 
     // Write output
