@@ -20,8 +20,8 @@ pub fn list_keys_colon(
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
 
-    let certs = if key_ids.is_empty() {
-        keystore.list_certs()?
+    let keys = if key_ids.is_empty() {
+        keystore.list_keys()?
     } else {
         let mut results = Vec::new();
         for kid in key_ids {
@@ -32,9 +32,9 @@ pub fn list_keys_colon(
         results
     };
 
-    for cert in &certs {
-        let creation_epoch = cert.creation_time.timestamp();
-        let expiry_epoch = cert
+    for key in &keys {
+        let creation_epoch = key.creation_time.timestamp();
+        let expiry_epoch = key
             .expiration_time
             .map(|t| t.timestamp().to_string())
             .unwrap_or_default();
@@ -45,7 +45,7 @@ pub fn list_keys_colon(
         let key_type = "pub";
         // Field 12: capabilities of primary key
         let mut primary_caps = String::new();
-        if cert.can_primary_sign {
+        if key.can_primary_sign {
             primary_caps.push('s');
         }
         primary_caps.push('c'); // primary can always certify
@@ -56,20 +56,20 @@ pub fn list_keys_colon(
         println!(
             "{}:-:0:0:{}:{}:{}:::::{primary_caps}:",
             key_type,
-            cert.key_id.to_uppercase(),
+            key.key_id.to_uppercase(),
             creation_epoch,
             expiry_epoch,
         );
 
         // UID lines
-        for uid in &cert.user_ids {
+        for uid in &key.user_ids {
             if !uid.revoked {
                 println!("uid:-::::::::{}:", sanitize_uid(&uid.value));
             }
         }
 
         // Subkey lines
-        for sk in &cert.subkeys {
+        for sk in &key.subkeys {
             if sk.is_revoked {
                 continue;
             }
@@ -108,27 +108,27 @@ pub fn list_secret_keys_colon(
     keystore_path: Option<&PathBuf>,
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
-    let certs = keystore.list_secret_keys()?;
+    let keys = keystore.list_secret_keys()?;
 
-    for cert in &certs {
-        let creation_epoch = cert.creation_time.timestamp();
+    for key in &keys {
+        let creation_epoch = key.creation_time.timestamp();
 
         // sec line (12 fields)
         println!(
             "sec:-:0:0:{}:{}:::::::",
-            cert.key_id.to_uppercase(),
+            key.key_id.to_uppercase(),
             creation_epoch,
         );
 
         // UID lines
-        for uid in &cert.user_ids {
+        for uid in &key.user_ids {
             if !uid.revoked {
                 println!("uid:-::::::::{}:", sanitize_uid(&uid.value));
             }
         }
 
         // Subkey lines
-        for sk in &cert.subkeys {
+        for sk in &key.subkeys {
             if sk.is_revoked {
                 continue;
             }

@@ -39,42 +39,42 @@ pub fn decrypt(
             log::info!("Card decryption not available ({}), trying software key", card_err);
 
             // Find software secret key
-            let mut cert_data = None;
+            let mut key_data = None;
             let mut matched_info = None;
 
             for kid in &key_ids {
                 if let Ok(Some(data)) = keystore.find_by_key_id(kid) {
-                    let info = wecanencrypt::parse_cert_bytes(&data, true)?;
+                    let info = wecanencrypt::parse_key_bytes(&data, true)?;
                     if info.is_secret {
-                        cert_data = Some(data);
+                        key_data = Some(data);
                         matched_info = Some(info);
                         break;
                     }
                 }
             }
 
-            let cert_data = cert_data.ok_or_else(|| {
+            let key_data = key_data.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Card decryption failed: {}\nNo software secret key found for key IDs: {}",
                     card_err,
                     key_ids.join(", ")
                 )
             })?;
-            let cert_info = matched_info.unwrap();
+            let key_info = matched_info.unwrap();
 
             let desc = format!(
                 "Enter passphrase to decrypt with key {}",
-                cert_info
+                key_info
                     .user_ids
                     .first()
                     .map(|u| u.value.as_str())
-                    .unwrap_or(&cert_info.fingerprint)
+                    .unwrap_or(&key_info.fingerprint)
             );
             let passphrase =
-                pinentry::get_passphrase(&desc, "Passphrase", Some(&cert_info.fingerprint))?;
+                pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
 
             Zeroizing::new(
-                wecanencrypt::decrypt_bytes(&cert_data, &ciphertext, &passphrase)
+                wecanencrypt::decrypt_bytes(&key_data, &ciphertext, &passphrase)
                     .context("Decryption failed")?,
             )
         }
@@ -129,15 +129,15 @@ fn try_decrypt_on_card(
                     continue;
                 }
 
-                if let Ok(Some(cert_data)) =
+                if let Ok(Some(key_data)) =
                     keystore.find_by_subkey_fingerprint(&enc_fp_upper)
                 {
-                    let cert_info = wecanencrypt::parse_cert_bytes(&cert_data, false)?;
-                    let uid = cert_info
+                    let key_info = wecanencrypt::parse_key_bytes(&key_data, false)?;
+                    let uid = key_info
                         .user_ids
                         .first()
                         .map(|u| u.value.as_str())
-                        .unwrap_or(&cert_info.fingerprint);
+                        .unwrap_or(&key_info.fingerprint);
 
                     let mut desc = format!("Please unlock the card\n\nNumber: {}", card_summary.serial_number);
                     if let Some(ref name) = card_info.cardholder_name {
@@ -150,12 +150,12 @@ fn try_decrypt_on_card(
                     let pin = pinentry::get_passphrase(
                         &desc,
                         "PIN",
-                        Some(&cert_info.fingerprint),
+                        Some(&key_info.fingerprint),
                     )?;
 
                     let plaintext = wecanencrypt::card::decrypt_bytes_on_card(
                         ciphertext,
-                        &cert_data,
+                        &key_data,
                         pin.as_bytes(),
                     )
                     .context("Card decryption failed")?;
