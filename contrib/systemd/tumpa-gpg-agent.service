@@ -1,0 +1,26 @@
+[Unit]
+Description=Tumpa GPG passphrase cache agent
+Documentation=https://github.com/tumpaproject/tumpa-cli
+After=graphical-session-pre.target
+# Mutually exclusive with the combined service (both bind
+# ~/.tumpa/agent.sock).
+Conflicts=tumpa-agent.service
+
+[Service]
+Type=simple
+# NOTE: this path assumes `cargo install tumpa-cli`. Override if your
+# binary lives elsewhere (e.g. /usr/local/bin/tcli or /usr/bin/tcli).
+ExecStart=%h/.cargo/bin/tcli agent
+EnvironmentFile=-%h/.config/tumpa/env
+Restart=on-failure
+RestartSec=2
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
