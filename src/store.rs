@@ -17,16 +17,27 @@ pub fn open_keystore(path: Option<&PathBuf>) -> Result<KeyStore> {
         }
     };
 
+    let preexisting = db_path.exists();
+    log::debug!(
+        "open_keystore: path={:?} preexisting={} size={:?}",
+        db_path,
+        preexisting,
+        db_path.metadata().ok().map(|m| m.len()),
+    );
+
     // Create parent directory if it doesn't exist
     if let Some(parent) = db_path.parent() {
         if !parent.exists() {
+            log::debug!("open_keystore: creating parent dir {:?}", parent);
             std::fs::create_dir_all(parent)
                 .context(format!("Failed to create keystore directory {:?}", parent))?;
         }
     }
 
-    KeyStore::open(&db_path)
-        .context(format!("Failed to open keystore at {:?}", db_path))
+    let ks = KeyStore::open(&db_path)
+        .context(format!("Failed to open keystore at {:?}", db_path))?;
+    log::debug!("open_keystore: opened OK ({:?})", db_path);
+    Ok(ks)
 }
 
 /// Resolve a signer ID (fingerprint, key ID, or subkey fingerprint) to key data + info.
