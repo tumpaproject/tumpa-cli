@@ -143,7 +143,8 @@ fn try_decrypt_on_card(
                         .unwrap_or(&key_info.fingerprint);
 
                     let mut desc = format!("Please unlock the card\n\nNumber: {}", card_info.serial_number);
-                    if let Some(ref name) = card_info.cardholder_name {
+                    if let Some(ref raw) = card_info.cardholder_name {
+                        let name = pinentry::format_cardholder_name(raw);
                         if !name.is_empty() {
                             desc.push_str(&format!("\nHolder: {}", name));
                         }

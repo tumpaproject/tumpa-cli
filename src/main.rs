@@ -4,7 +4,7 @@ use std::io::{stderr, stdin, stdout};
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-use tumpa_cli::{gpg, keystore, ssh, store};
+use tumpa_cli::{gpg, keystore, pinentry, ssh, store};
 
 use cli::*;
 
@@ -222,7 +222,10 @@ fn card_status() -> anyhow::Result<()> {
         println!("Serial number ....: {}", info.serial_number);
 
         if let Some(ref name) = info.cardholder_name {
-            println!("Name of cardholder: {}", name);
+            let formatted = pinentry::format_cardholder_name(name);
+            if !formatted.is_empty() {
+                println!("Name of cardholder: {}", formatted);
+            }
         }
 
         if let Some(ref url) = info.public_key_url {
