@@ -7,6 +7,12 @@ use crate::store;
 
 /// Import keys from files or directories.
 pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&PathBuf>) -> Result<()> {
+    log::debug!(
+        "cmd_import: paths={} recursive={} keystore_path={:?}",
+        paths.len(),
+        recursive,
+        keystore_path,
+    );
     let keystore = store::open_keystore(keystore_path)?;
 
     let mut imported = 0u32;
@@ -14,6 +20,7 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
     let mut failed = 0u32;
 
     for path in paths {
+        log::debug!("cmd_import: processing {:?} (is_dir={})", path, path.is_dir());
         if path.is_dir() {
             import_dir(&keystore, path, recursive, &mut imported, &mut updated, &mut failed)?;
         } else {
@@ -21,6 +28,10 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
         }
     }
 
+    log::debug!(
+        "cmd_import: done imported={} updated={} failed={}",
+        imported, updated, failed,
+    );
     println!("Imported {} new, {} updated, {} failed.", imported, updated, failed);
     Ok(())
 }
@@ -33,6 +44,7 @@ fn import_dir(
     updated: &mut u32,
     failed: &mut u32,
 ) -> Result<()> {
+    log::debug!("import_dir: scanning {:?} recursive={}", dir, recursive);
     let entries = std::fs::read_dir(dir)
         .context(format!("Failed to read directory {:?}", dir))?;
 
@@ -42,10 +54,11 @@ fn import_dir(
 
         if path.is_dir() && recursive {
             import_dir(keystore, &path, recursive, imported, updated, failed)?;
-        } else if path.is_file()
-            && is_key_file(&path) {
-                import_file(keystore, &path, imported, updated, failed);
-            }
+        } else if path.is_file() && is_key_file(&path) {
+            import_file(keystore, &path, imported, updated, failed);
+        } else {
+            log::trace!("import_dir: skipping {:?}", path);
+        }
     }
 
     Ok(())
@@ -65,38 +78,75 @@ fn import_file(
     updated: &mut u32,
     failed: &mut u32,
 ) {
+    log::debug!("import_file: {:?}", path);
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Failed to read {:?}: {}", path, e);
+            log::error!("import_file: read failed for {:?}: {:#}", path, e);
+            eprintln!("Failed to read {:?}: {:#}", path, e);
             *failed += 1;
             return;
         }
     };
+    log::debug!("import_file: read {} bytes from {:?}", data.len(), path);
 
     // If the key already exists, merge new signatures into the stored key
-    if let Ok(key_info) = wecanencrypt::parse_key_bytes(&data, false) {
-        if keystore.contains(&key_info.fingerprint).unwrap_or(false) {
-            let uid = key_info
-                .user_ids
-                .first()
-                .map(|u| u.value.as_str())
-                .unwrap_or("");
-            match merge_and_reimport(keystore, &key_info.fingerprint, &data) {
-                Ok(true) => {
-                    println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid);
-                    *updated += 1;
-                }
-                Ok(false) => {
-                    println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid);
-                    *updated += 1;
+    match wecanencrypt::parse_key_bytes(&data, false) {
+        Ok(key_info) => {
+            log::debug!(
+                "import_file: parsed {:?} fp={} secret={} uids={} subkeys={}",
+                path,
+                key_info.fingerprint,
+                key_info.is_secret,
+                key_info.user_ids.len(),
+                key_info.subkeys.len(),
+            );
+            let already_present = match keystore.contains(&key_info.fingerprint) {
+                Ok(b) => {
+                    log::debug!("import_file: contains({})={}", key_info.fingerprint, b);
+                    b
                 }
                 Err(e) => {
-                    eprintln!("Failed to merge {:?}: {}", path, e);
-                    *failed += 1;
+                    log::error!(
+                        "import_file: contains({}) failed: {:#}",
+                        key_info.fingerprint,
+                        e,
+                    );
+                    false
                 }
+            };
+            if already_present {
+                let uid = key_info
+                    .user_ids
+                    .first()
+                    .map(|u| u.value.as_str())
+                    .unwrap_or("");
+                match merge_and_reimport(keystore, &key_info.fingerprint, &data) {
+                    Ok(true) => {
+                        log::info!("import_file: merged fp={} (changed)", key_info.fingerprint);
+                        println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid);
+                        *updated += 1;
+                    }
+                    Ok(false) => {
+                        log::info!("import_file: merged fp={} (no change)", key_info.fingerprint);
+                        println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid);
+                        *updated += 1;
+                    }
+                    Err(e) => {
+                        log::error!("import_file: merge failed for {:?}: {:#}", path, e);
+                        eprintln!("Failed to merge {:?}: {:#}", path, e);
+                        *failed += 1;
+                    }
+                }
+                return;
             }
-            return;
+        }
+        Err(e) => {
+            log::debug!(
+                "import_file: parse_key_bytes failed for {:?}: {:#} (falling through to raw import)",
+                path,
+                e,
+            );
         }
     }
 
@@ -106,11 +156,13 @@ fn import_file(
             let uid = info
                 .and_then(|i| i.user_ids.first().map(|u| u.value.clone()))
                 .unwrap_or_default();
+            log::info!("import_file: imported fp={}", fp);
             println!("Imported {} ({})", fp, uid);
             *imported += 1;
         }
         Err(e) => {
-            eprintln!("Failed to import {:?}: {}", path, e);
+            log::error!("import_file: import_key failed for {:?}: {:#}", path, e);
+            eprintln!("Failed to import {:?}: {:#}", path, e);
             *failed += 1;
         }
     }
