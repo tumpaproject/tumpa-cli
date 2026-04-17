@@ -1,0 +1,30 @@
+[Unit]
+Description=Tumpa agent (GPG passphrase cache + SSH agent)
+Documentation=https://github.com/tumpaproject/tumpa-cli
+# User session must be up so $HOME and $XDG_RUNTIME_DIR are valid.
+After=graphical-session-pre.target
+# Do not start alongside the single-purpose variants — they bind the
+# same sockets (~/.tumpa/agent.sock and $XDG_RUNTIME_DIR/tcli-ssh.sock).
+Conflicts=tumpa-gpg-agent.service tumpa-ssh-agent.service
+
+[Service]
+Type=simple
+# NOTE: this path assumes `cargo install tumpa-cli`. Override if your
+# binary lives elsewhere (e.g. /usr/local/bin/tcli or /usr/bin/tcli).
+ExecStart=%h/.cargo/bin/tcli agent --ssh -H unix://%t/tcli-ssh.sock
+# Optional user overrides. Leading "-" means "file is optional".
+# PINENTRY_PROGRAM, TUMPA_KEYSTORE, RUST_LOG live here naturally.
+EnvironmentFile=-%h/.config/tumpa/env
+Restart=on-failure
+RestartSec=2
+# Agent processes handle secrets — opt into strict memory hygiene.
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
