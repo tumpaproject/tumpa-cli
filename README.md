@@ -13,7 +13,7 @@ Three binaries are provided:
 - **`tpass`** -- drop-in replacement for [password-store](https://www.passwordstore.org/)
   (`pass`), calling the tumpa keystore directly without GPG
 
-Both try hardware OpenPGP cards first, then fall back to software keys
+All 3 try hardware OpenPGP cards first, then fall back to software keys
 stored in `~/.tumpa/keys.db`.
 
 For detailed usage instructions, see the
@@ -21,7 +21,7 @@ For detailed usage instructions, see the
 
 ## Upgrading from 0.1.x
 
-As of 0.2, the GPG drop-in flags (`-bsau`, `--verify`, `-e`, `-d`,
+As of 0.3.0, the GPG drop-in flags (`-bsau`, `--verify`, `-e`, `-d`,
 `--list-keys --with-colons`, `--decrypt --list-only`, etc.) have
 moved out of `tcli` into a new binary **`tclig`**. `tcli` is now the
 human-facing key-management UI only.
