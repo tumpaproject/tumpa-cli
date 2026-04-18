@@ -334,6 +334,12 @@ else
     FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
+# Regression: non-init git subcommands must detect the existing repo.
+# Pre-fix, find_git_dir was invoked with prefix.join(".") and Path::parent()
+# skipped the CurDir component, so tpass misreported the store as non-git.
+pass_test "git status on existing repo" "$TPASS" git status
+pass_test "git log on existing repo" "$TPASS" git log --oneline
+
 # --- Summary ---
 
 echo ""
