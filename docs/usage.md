@@ -493,6 +493,21 @@ fingerprints), `pass` reencrypts all passwords to the new set of keys.
 `tclig` supports the `--decrypt --list-only` and `--list-keys --with-colons`
 commands that `pass` uses to detect which files need reencryption.
 
+### Browser extensions
+
+Browser extensions that speak to `pass` (via a native messaging host)
+work against the `gpg2 -> tclig` symlink, too:
+
+- **[PassFF](https://github.com/passff/passff)** — invokes gpg with
+  `--debug`. `tclig` accepts and ignores this flag.
+- **[Browserpass](https://github.com/browserpass/browserpass-extension)**
+  — its native host (`browserpass-native`) reads the `.gpg` file
+  itself and pipes the ciphertext to `gpg -d -`. `tclig` treats `-`
+  as stdin, matching gpg's convention.
+
+No configuration beyond the standard `gpg2 -> tclig` symlink is
+needed for either extension.
+
 ---
 
 ## tpass — native password store
@@ -756,6 +771,13 @@ Decrypt to a file:
 
 ```
 tclig -d -o document.txt secret.gpg
+```
+
+Decrypt ciphertext piped on stdin (pass `-` as the input file, same
+convention as `gpg`):
+
+```
+cat secret.gpg | tclig -d -
 ```
 
 `tclig` automatically determines which secret key can decrypt the
