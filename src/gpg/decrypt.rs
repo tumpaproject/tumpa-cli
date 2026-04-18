@@ -1,11 +1,24 @@
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
 use crate::pinentry;
 use crate::store;
+
+/// Read ciphertext from a file, or from stdin if `input` is `-`.
+fn read_ciphertext(input: &Path) -> Result<Vec<u8>> {
+    if input.as_os_str() == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("Failed to read encrypted data from stdin")?;
+        Ok(buf)
+    } else {
+        std::fs::read(input).context(format!("Failed to read encrypted file {:?}", input))
+    }
+}
 
 /// Decrypt a file.
 ///
@@ -19,8 +32,7 @@ pub fn decrypt(
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
 
-    let ciphertext =
-        std::fs::read(input).context(format!("Failed to read encrypted file {:?}", input))?;
+    let ciphertext = read_ciphertext(input)?;
 
     // Find which key IDs this message is encrypted for
     let key_ids = wecanencrypt::bytes_encrypted_for(&ciphertext)
@@ -178,8 +190,7 @@ pub fn decrypt_list_only(
     input: &PathBuf,
     _keystore_path: Option<&PathBuf>,
 ) -> Result<()> {
-    let ciphertext =
-        std::fs::read(input).context(format!("Failed to read encrypted file {:?}", input))?;
+    let ciphertext = read_ciphertext(input)?;
 
     let key_ids = wecanencrypt::bytes_encrypted_for(&ciphertext)
         .context("Failed to inspect encrypted message")?;
