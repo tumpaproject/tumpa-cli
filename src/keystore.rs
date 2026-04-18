@@ -514,7 +514,10 @@ pub fn cmd_search(query: &str, email: bool, keystore_path: Option<&PathBuf>) -> 
         let marker = if key.is_secret { "sec" } else { "pub" };
         let uid = key
             .user_ids
-            .first()
+            .iter()
+            .filter(|u| !u.revoked)
+            .max_by_key(|u| u.is_primary)
+            .or_else(|| key.user_ids.first())
             .map(|u| u.value.as_str())
             .unwrap_or("<no UID>");
         println!("{} {} {}", marker, key.fingerprint, uid);
