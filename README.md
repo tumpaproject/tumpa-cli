@@ -115,8 +115,14 @@ tcli --completions bash > ~/.local/share/bash-completion/completions/tcli
 tpass --completions bash > ~/.local/share/bash-completion/completions/tpass
 
 # Zsh
+mkdir -p ~/.zfunc
 tcli --completions zsh > ~/.zfunc/_tcli
 tpass --completions zsh > ~/.zfunc/_tpass
+
+# Add to .zshrc:
+# fpath=(~/.zfunc $fpath)
+# autoload -Uz compinit
+# compinit
 
 # Fish
 tcli --completions fish > ~/.config/fish/completions/tcli.fish
