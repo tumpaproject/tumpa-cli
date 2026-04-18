@@ -136,6 +136,12 @@ pub struct Args {
     /// GPG --list-config (used by pass to query groups).
     #[clap(long, hide = true)]
     pub list_config: bool,
+
+    #[clap(long, hide = true)]
+    pub debug: Option<String>,
+
+    #[clap(long, hide = true)]
+    pub debug_level: Option<String>,
 }
 
 pub enum Mode {
