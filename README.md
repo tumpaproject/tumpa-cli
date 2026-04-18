@@ -4,6 +4,22 @@ A command-line tool for OpenPGP operations, SSH agent, and
 password management, backed by the
 [tumpa](https://github.com/tumpaproject/tumpa) keystore.
 
+At a glance, tumpa-cli works as a drop-in for:
+
+- **Git** — commit and tag signing + verification via `gpg.program`
+- **pass** — [password-store](https://www.passwordstore.org/) replacement,
+  either through a native `tpass` binary or by pointing `pass` at `tclig`
+- **SSH** — OpenSSH-compatible agent serving keystore keys and OpenPGP
+  card auth subkeys
+- **Browserpass** — [Browserpass](https://github.com/browserpass/browserpass-extension)
+  browser extension via the `gpg2` → `tclig` symlink
+- **PassFF** — [PassFF](https://github.com/passff/passff) Firefox extension,
+  same `gpg2` → `tclig` path
+- **OpenPGP smart cards** — cards are tried first for sign / decrypt / SSH
+  auth, with a software-key fallback from `~/.tumpa/keys.db`
+- **[multiverse/bump-tag](https://github.com/SUNET/multiverse)** — emits
+  the `[GNUPG:]` status lines bump-tag greps for
+
 Three binaries are provided:
 
 - **`tcli`** -- human-facing key management and SSH agent: import, export,
