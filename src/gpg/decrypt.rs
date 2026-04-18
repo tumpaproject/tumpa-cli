@@ -26,7 +26,7 @@ fn read_ciphertext(input: &Path) -> Result<Vec<u8>> {
 /// it, prompts for the passphrase, and writes plaintext to `output`
 /// (or stdout if None).
 pub fn decrypt(
-    input: &PathBuf,
+    input: &Path,
     output: Option<&PathBuf>,
     keystore_path: Option<&PathBuf>,
 ) -> Result<()> {
@@ -187,7 +187,7 @@ fn try_decrypt_on_card(
 /// Produces output similar to `gpg --decrypt --list-only --keyid-format long`.
 /// Used by `pass` to detect whether reencryption is needed.
 pub fn decrypt_list_only(
-    input: &PathBuf,
+    input: &Path,
     _keystore_path: Option<&PathBuf>,
 ) -> Result<()> {
     let ciphertext = read_ciphertext(input)?;

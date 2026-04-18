@@ -44,6 +44,7 @@ unchanged.
 - **Signature verification** -- verify commits and tags with keys from the tumpa keystore
 - **Encryption / decryption** -- multi-recipient encryption, card-first decryption with software fallback
 - **password-store (`pass`) support** -- works as a drop-in GPG replacement for `pass`
+- **Browser extension support** -- [PassFF](https://github.com/passff/passff) and [Browserpass](https://github.com/browserpass/browserpass-extension) work via the `gpg2 -> tclig` symlink (ciphertext on stdin via `-`, `--debug` flag accepted)
 - **`tpass`** -- native password-store replacement, no GPG dependency
 - **OpenPGP card support** -- cards are tried first for signing, decryption, and SSH auth
 - **Unified agent** -- caches passphrases for GPG operations + optional SSH agent
