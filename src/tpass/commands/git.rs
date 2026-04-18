@@ -5,7 +5,9 @@ use crate::util::{config, git};
 /// `tpass git git-command-args...`
 pub fn cmd_git(args: &[String]) -> Result<()> {
     let prefix = config::store_dir();
-    let git_dir = git::find_git_dir(&prefix.join("."), &prefix);
+    // Pass a real child name, not ".": Path::parent() skips CurDir components,
+    // so prefix.join(".").parent() would jump above prefix and miss the repo.
+    let git_dir = git::find_git_dir(&prefix.join(".gpg-id"), &prefix);
 
     if args.first().map(|s| s.as_str()) == Some("init") {
         // Special case: git init
