@@ -242,6 +242,11 @@ git config user.email "upload@example.local"
 git config user.signingkey "$KEY_FP"
 git config commit.gpgsign true
 git config gpg.program "$TCLIG"
+# git 2.45+ regression workaround: without an explicit commitEncoding,
+# git hands raw (Latin-1) bytes to `gpg.program` at sign time but
+# transcodes them to UTF-8 before writing the commit object, which
+# breaks every non-UTF-8 commit's signature. See docs/git_sign_issue.md.
+git config i18n.commitEncoding iso-8859-1
 
 printf 'commit with non-ASCII byte \xa7\n' > "$TEST_DIR/msg.txt"
 echo "hello" > file1.txt

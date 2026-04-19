@@ -100,6 +100,13 @@ git config user.email "signtest@example.local"
 git config commit.gpgsign true
 git config user.signingkey "$KEY_FP"
 git config gpg.program "$TCLIG"
+# Workaround for a git 2.52+ regression: without an explicit
+# i18n.commitEncoding, git signs the raw (Latin-1) bytes but stores
+# the UTF-8-transcoded bytes, so the signature never verifies. Setting
+# iso-8859-1 tells git to tag the commit with an `encoding` header and
+# skip the transcode, keeping sign and store in agreement. See
+# docs/git_sign_issue.md for the full bisect and upstream attribution.
+git config i18n.commitEncoding iso-8859-1
 ok "git repo initialised with tclig as signer"
 
 # --- Step 3: commit with non-UTF-8 char in message, signed by tclig ---

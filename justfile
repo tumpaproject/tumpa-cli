@@ -35,3 +35,10 @@ test-all: test test-compat test-pass test-keystore
 
 # Build, lint, and test
 check: build lint test
+
+# Run test_git_sign.sh inside a Fedora 43 container (newer git than the
+# host Ubuntu 24.04 ships; matches the CI runner's git version band).
+# Builds the image on first run; `docker` must be available.
+docker-test-git-sign:
+    docker build -t tumpa-cli-fedora43 -f docker/Dockerfile .
+    docker run --rm -v "$(pwd):/src:Z" tumpa-cli-fedora43
