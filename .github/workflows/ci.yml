@@ -5,22 +5,43 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      libtumpa_ref:
+        description: "libtumpa git ref to check out (sibling path dep)"
+        required: false
+        default: "main"
 
 env:
   CARGO_TERM_COLOR: always
+  # tumpa-cli's Cargo.toml has libtumpa = { path = "../libtumpa" }, so the
+  # two repos must live side-by-side on disk. wecanencrypt is a normal
+  # crates.io dep.
+  LIBTUMPA_REF: ${{ github.event.inputs.libtumpa_ref || 'main' }}
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Checkout tumpa-cli
         uses: actions/checkout@v4
+        with:
+          path: tumpa-cli
+
+      - name: Checkout libtumpa (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: tumpaproject/libtumpa
+          ref: ${{ env.LIBTUMPA_REF }}
+          path: libtumpa
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pcscd libpcsclite-dev pcsc-tools libsqlite3-dev tree
+          sudo apt-get install -y \
+            pcscd libpcsclite-dev pcsc-tools \
+            libsqlite3-dev tree gnupg pass git
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -31,16 +52,63 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            tumpa-cli/target
+            libtumpa/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('tumpa-cli/Cargo.lock', 'libtumpa/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
+      - name: Build tumpa-cli
+        working-directory: tumpa-cli
         run: cargo build
 
       - name: Clippy
+        working-directory: tumpa-cli
         run: cargo clippy -- -D warnings
 
-      - name: Run keystore tests
+      - name: Cargo unit tests (tumpa-cli)
+        working-directory: tumpa-cli
+        run: cargo test
+
+      - name: Test keystore (test_keystore.sh)
+        working-directory: tumpa-cli
         run: ./tests/test_keystore.sh
+
+      - name: Test git commit signing (test_git_sign.sh)
+        working-directory: tumpa-cli
+        run: ./tests/test_git_sign.sh
+
+      - name: Provision RSA test key for tpass/pass tests
+        id: provision_key
+        working-directory: tumpa-cli
+        env:
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: |
+          FP=$(./tests/provision_test_key.sh)
+          if [ -z "$FP" ]; then
+            echo "ERROR: provision_test_key.sh returned no fingerprint" >&2
+            exit 1
+          fi
+          echo "Provisioned fingerprint: $FP"
+          echo "fp=$FP" >> "$GITHUB_OUTPUT"
+
+      - name: Test tcli + pass (test_pass.sh)
+        working-directory: tumpa-cli
+        env:
+          TUMPA_PASSPHRASE: testpass
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: ./tests/test_pass.sh ${{ steps.provision_key.outputs.fp }}
+
+      - name: Test tpass standalone (test_tpass.sh)
+        working-directory: tumpa-cli
+        env:
+          TUMPA_PASSPHRASE: testpass
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: ./tests/test_tpass.sh ${{ steps.provision_key.outputs.fp }}
+
+      - name: Test tpass <-> pass compat (test_tpass_compat.sh)
+        working-directory: tumpa-cli
+        env:
+          TUMPA_PASSPHRASE: testpass
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: ./tests/test_tpass_compat.sh ${{ steps.provision_key.outputs.fp }}
