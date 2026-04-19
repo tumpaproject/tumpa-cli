@@ -34,7 +34,18 @@ pub fn get_passphrase(
         }
     }
 
-    // 2. Check environment variable
+    // 2a. Admin-PIN prompts have a dedicated env var so non-interactive
+    // runs (tests, CI) can feed a distinct admin PIN without also
+    // exposing the key passphrase as the admin PIN.
+    if prompt.eq_ignore_ascii_case("Admin PIN") {
+        if let Ok(pin) = std::env::var("TUMPA_ADMIN_PIN") {
+            log::debug!("Using admin PIN from TUMPA_ADMIN_PIN env var");
+            return Ok(Zeroizing::new(pin));
+        }
+    }
+
+    // 2b. Fall back to the generic passphrase env var for user
+    // passphrases and user PINs.
     if let Ok(pass) = std::env::var("TUMPA_PASSPHRASE") {
         log::debug!("Using passphrase from TUMPA_PASSPHRASE env var");
         let pass = Zeroizing::new(pass);

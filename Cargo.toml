@@ -35,9 +35,18 @@ path = "src/tclig/main.rs"
 name = "tpass"
 path = "src/tpass/main.rs"
 
+[features]
+default = []
+# Opt-in, build-time gate for unfinished card surfaces: --upload-to-card,
+# --reset-card, and anything else tagged "experimental". Enabling this
+# feature compiles the flags into `tcli`; without it, the flags do not
+# exist on the binary at all. Release builds intended for end users
+# must NOT enable this feature.
+experimental = []
+
 [dependencies]
 wecanencrypt = { version = "0.11.0", features = ["keystore", "card", "network"] }
-libtumpa = { version = "0.1.0", features = ["card", "network"] }
+libtumpa = { version = "0.1.1", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).

@@ -1745,9 +1745,9 @@ dependencies = [
 
 [[package]]
 name = "libtumpa"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caf5b7ba26478d5d25af99e05821f1c68d17134a20558bbabfe4f4d557bb29f6"
+checksum = "11a6bece56c9c517c5d3e2ea2cfb3c72d22b466a85c3dbf8b4f4cd3aeda618fa"
 dependencies = [
  "anyhow",
  "chrono",

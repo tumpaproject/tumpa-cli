@@ -87,6 +87,30 @@ pub struct Args {
     #[clap(long)]
     pub email: bool,
 
+    // --- Experimental (compile-time gated behind the `experimental`
+    // Cargo feature; the flags below only exist on feature builds).
+
+    /// **Experimental.** Upload a secret key from the keystore to the
+    /// signing slot of a connected OpenPGP smart card. If the key has
+    /// both a sign-capable primary key and a sign-capable subkey,
+    /// pass `--which primary|sub` to disambiguate.
+    #[cfg(feature = "experimental")]
+    #[clap(long, value_name = "FINGERPRINT_OR_KEYID", hide = true)]
+    pub upload_to_card: Option<String>,
+
+    /// Select which sign-capable component of a certificate to upload
+    /// (for `--upload-to-card`). Values: `primary`, `sub`.
+    #[cfg(feature = "experimental")]
+    #[clap(long, value_name = "primary|sub", hide = true)]
+    pub which: Option<String>,
+
+    /// **Experimental.** Factory-reset the connected OpenPGP card:
+    /// block all PINs, wipe all slots, restore defaults (user PIN
+    /// `123456`, admin PIN `12345678`).
+    #[cfg(feature = "experimental")]
+    #[clap(long, hide = true)]
+    pub reset_card: bool,
+
     // --- Positional ---
 
     /// Positional arguments (input files for --import).
@@ -151,6 +175,9 @@ pub enum SubCommand {
     },
 }
 
+#[cfg(feature = "experimental")]
+pub use tumpa_cli::upload_card::WhichKey;
+
 pub enum Mode {
     ListKeys,
     Agent {
@@ -197,6 +224,13 @@ pub enum Mode {
         ssh: bool,
     },
     CardStatus,
+    #[cfg(feature = "experimental")]
+    UploadToCard {
+        key_id: String,
+        which: Option<WhichKey>,
+    },
+    #[cfg(feature = "experimental")]
+    ResetCard,
     Completions {
         shell: Shell,
     },
@@ -243,6 +277,34 @@ impl TryFrom<Args> for Mode {
 
         if value.card_status {
             return Ok(Mode::CardStatus);
+        }
+
+        // --- Experimental card ops (only compiled in with
+        // `--features experimental`) ---
+        #[cfg(feature = "experimental")]
+        {
+            if let Some(key_id) = value.upload_to_card.clone() {
+                let which = match value.which.as_deref() {
+                    None => None,
+                    Some("primary") => Some(WhichKey::Primary),
+                    Some("sub") | Some("subkey") => Some(WhichKey::Sub),
+                    Some(other) => {
+                        return Err(format!(
+                            "invalid --which value {:?}: expected `primary` or `sub`",
+                            other
+                        ))
+                    }
+                };
+                return Ok(Mode::UploadToCard { key_id, which });
+            }
+
+            if value.which.is_some() {
+                return Err("--which only applies to --upload-to-card".to_string());
+            }
+
+            if value.reset_card {
+                return Ok(Mode::ResetCard);
+            }
         }
 
         if let Some(socket_type) = value.show_socket {

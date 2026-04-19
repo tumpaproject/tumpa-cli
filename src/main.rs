@@ -5,6 +5,8 @@ use std::io::stdout;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use tumpa_cli::{keystore, pinentry, ssh, store};
+#[cfg(feature = "experimental")]
+use tumpa_cli::upload_card;
 
 use cli::*;
 
@@ -57,6 +59,12 @@ fn main() {
             Ok(())
         }
         Ok(Mode::CardStatus) => card_status(),
+        #[cfg(feature = "experimental")]
+        Ok(Mode::UploadToCard { key_id, which }) => {
+            upload_card::cmd_upload_to_card(&key_id, which, keystore_path.as_ref())
+        }
+        #[cfg(feature = "experimental")]
+        Ok(Mode::ResetCard) => upload_card::cmd_reset_card(),
         Ok(Mode::ShowSocket { ssh }) => {
             if ssh {
                 match tumpa_cli::agent::default_ssh_socket_path() {
@@ -81,7 +89,7 @@ fn main() {
     };
 
     if let Err(e) = res {
-        eprintln!("Error: {e}");
+        eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
 }
