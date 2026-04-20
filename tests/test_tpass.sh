@@ -61,6 +61,19 @@ export PASSWORD_STORE_DIR="$TEST_DIR/store"
 OUTSIDE_DIR="$TEST_DIR/outside"
 mkdir -p "$OUTSIDE_DIR"
 
+# Give git a committer identity so `tpass git init` can make its
+# initial commit. Fresh CI runners (and any `HOME` without a
+# gitconfig) lack user.name / user.email. tpass's `git_commit`
+# helper in src/tpass/util/git.rs uses `.status()?`, which only
+# errors on spawn failure -- not on a non-zero git exit -- so a
+# missing identity causes `git commit` to silently fail. The
+# following `git log` assertion then exits 128 and, combined with
+# `set -e`, kills the whole test script.
+export GIT_AUTHOR_NAME="Test tpass"
+export GIT_AUTHOR_EMAIL="test-tpass@example.local"
+export GIT_COMMITTER_NAME="Test tpass"
+export GIT_COMMITTER_EMAIL="test-tpass@example.local"
+
 PASS_COUNT=0
 FAIL_COUNT=0
 
