@@ -30,12 +30,30 @@ and direct encryption/decryption.
 cargo install tumpa-cli
 ```
 
-Two binaries are installed to `~/.cargo/bin/`:
 
-- `tcli` — GPG replacement for git signing and SSH agent
-- `tpass` — drop-in replacement for `pass` (password-store)
+Three binaries are installed to `~/.cargo/bin/`:
+
+- **`tcli`** -- human-facing key management and SSH agent: import, export,
+  search, fetch, describe, list, delete, card status, agent daemons
+- **`tclig`** -- GnuPG drop-in for programs that invoke `gpg` (git signing,
+  `pass`, anything with a `gpg.program` hook)
+- **`tpass`** -- drop-in replacement for [password-store](https://www.passwordstore.org/)
+  (`pass`), calling the tumpa keystore directly without GPG
+
+All 3 try hardware OpenPGP cards first, then fall back to software keys
+stored in `~/.tumpa/keys.db`.
+
 
 Make sure `~/.cargo/bin/` is in your `PATH`.
+
+
+### Homebrew
+
+```
+brew tap tumpaproject/tumpa-cli
+brew install tumpa-cli
+```
+
 
 ### From source
 
@@ -106,7 +124,7 @@ The first step after installation is importing your OpenPGP key. The
 keystore directory (`~/.tumpa/`) and database file (`keys.db`) are
 created automatically on first use — no manual setup needed.
 
-### Import your secret key
+### Import your public/secret key
 
 ```
 tcli --import my-secret-key.asc

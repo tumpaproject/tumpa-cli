@@ -79,6 +79,13 @@ cargo install tumpa-cli
 
 Three binaries are installed to `~/.cargo/bin/`: `tcli`, `tclig`, and `tpass`.
 
+### Homebrew
+
+```
+brew tap tumpaproject/tumpa-cli
+brew install tumpa-cli
+```
+
 ### System dependencies
 
 On Linux, card support requires PC/SC libraries:
@@ -322,36 +329,10 @@ tcli agent --cache-ttl 3600                 # custom TTL (1 hour)
 
 ### Starting the agent automatically
 
-**macOS** -- create `~/Library/LaunchAgents/rocks.tumpa.agent.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>rocks.tumpa.agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/USERNAME/.cargo/bin/tcli</string>
-        <string>agent</string>
-        <string>--ssh</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardErrorPath</key>
-    <string>/Users/USERNAME/.tumpa/agent.log</string>
-</dict>
-</plist>
-```
-
-Replace `USERNAME` with your macOS username, then:
+#### Via homebrew
 
 ```
-launchctl load ~/Library/LaunchAgents/rocks.tumpa.agent.plist
+brew services start tumpa-cli
 ```
 
 Add to `~/.zshrc`:
