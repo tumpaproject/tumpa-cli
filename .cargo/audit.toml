@@ -1,0 +1,16 @@
+# cargo-audit configuration. Read by `cargo audit` and by the
+# `rustsec/audit-check` GitHub Action.
+#
+# Entries should be reviewed periodically. Remove a line as soon as
+# the upstream fix lands.
+
+[advisories]
+ignore = [
+    # rsa 0.9.x — Marvin Attack: potential key recovery through timing
+    # sidechannels in PKCS#1 v1.5 decryption.
+    #   https://rustsec.org/advisories/RUSTSEC-2023-0071
+    #   https://github.com/RustCrypto/RSA/issues/19
+    # No fixed upstream release is available. Pulled in transitively via
+    # wecanencrypt, pgp, ssh-key, and ssh-agent-lib.
+    "RUSTSEC-2023-0071",
+]

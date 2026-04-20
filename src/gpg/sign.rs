@@ -1,15 +1,22 @@
+use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+
+use libtumpa::sign::{
+    sign_detached as libtumpa_sign_detached, Secret, SecretRequest, SignBackend,
+};
+use libtumpa::{Passphrase, Pin};
 
 use crate::pinentry;
 use crate::store;
 
 /// Sign data from stdin and write detached signature to stdout.
 ///
-/// Tries hardware OpenPGP cards first, falls back to software keys
-/// from the tumpa keystore.
+/// Delegates the card-first / software-fallback dispatch to
+/// `libtumpa::sign::sign_detached`. Pinentry / passphrase / PIN acquisition
+/// stays here; libtumpa never prompts.
 pub fn sign(
     mut data: impl Read,
     mut out: impl Write,
@@ -28,22 +35,54 @@ pub fn sign(
     // Open keystore and resolve the signer key
     let keystore = store::open_keystore(keystore_path)?;
     let (key_data, key_info) = store::resolve_signer(&keystore, signer_id)?;
+    // libtumpa::sign_detached also calls ensure_key_usable_for_signing, but
+    // we keep this early to surface the same error message git users have
+    // seen historically.
     store::ensure_key_usable_for_signing(&key_info)?;
 
-    let signature = try_sign_on_card(&buffer, &key_data, &key_info, &mut err)
-        .or_else(|card_err| {
-            log::info!("Card signing failed ({}), trying software key", card_err);
-            sign_with_software_key(&buffer, &key_data, &key_info, &mut err)
-                .map_err(|sw_err| {
-                    // If the software fallback also fails, include the card error
-                    // so the user knows why the card path failed too
-                    anyhow::anyhow!(
-                        "Card signing failed: {}\nSoftware key fallback failed: {}",
-                        card_err,
-                        sw_err
-                    )
-                })
-        })?;
+    // Track which card was used so we can emit the historical
+    // `tcli: Signed with card <ident> ...` message after libtumpa returns.
+    let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
+
+    let result = libtumpa_sign_detached(&key_data, &key_info, &buffer, |req| match req {
+        SecretRequest::CardPin {
+            card_ident,
+            key_info,
+        } => {
+            *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+            let pin = prompt_card_pin(card_ident, key_info)
+                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            Ok(Secret::Pin(Pin::new(pin.into_bytes())))
+        }
+        SecretRequest::KeyPassphrase { key_info } => {
+            let pass = prompt_key_passphrase(key_info)
+                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            Ok(Secret::Passphrase(Passphrase::new(pass)))
+        }
+    });
+
+    let (signature, backend) = result.map_err(|e| anyhow!("{e}"))?;
+
+    match backend {
+        SignBackend::Card => {
+            let ident = card_ident_used
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string());
+            writeln!(
+                err,
+                "tcli: Signed with card {} key {}",
+                ident, key_info.fingerprint
+            )?;
+        }
+        SignBackend::Software => {
+            writeln!(
+                err,
+                "tcli: Signed with software key {}",
+                key_info.fingerprint
+            )?;
+        }
+    }
 
     // Write signature to stdout
     out.write_all(signature.as_bytes())
@@ -56,95 +95,36 @@ pub fn sign(
     Ok(())
 }
 
-/// Try to sign using a connected OpenPGP card.
-fn try_sign_on_card(
-    data: &[u8],
-    key_data: &[u8],
-    key_info: &wecanencrypt::KeyInfo,
-    err: &mut impl Write,
-) -> Result<String> {
-    // Check if any connected card has the signing key for this cert
-    let matches = wecanencrypt::card::find_cards_for_key(key_data)
-        .context("Failed to enumerate cards")?;
+/// Prompt the user for the card PIN via pinentry, including card-status
+/// context (cardholder, signature counter) when available.
+fn prompt_card_pin(card_ident: &str, key_info: &wecanencrypt::KeyInfo) -> Result<String> {
+    let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
+    let uid = primary_uid(key_info);
 
-    // Find a card with a signing slot match
-    for card_match in &matches {
-        let has_signing = card_match
-            .matching_slots
-            .iter()
-            .any(|s| matches!(s.slot, wecanencrypt::card::KeySlot::Signature));
+    // Card serial: derive from ident, fall back to ident itself.
+    let serial = card_ident.split(':').nth(1).unwrap_or(card_ident);
 
-        if has_signing {
-            let card_ident = &card_match.card.ident;
-            log::info!("Found card {} with signing key", card_ident);
-
-            // Fetch card details for the pinentry prompt
-            let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
-
-            let uid = primary_uid(key_info);
-
-            let mut desc = format!("Please unlock the card\n\nNumber: {}", card_match.card.serial_number);
-            if let Some(ref info) = card_info {
-                if let Some(ref raw) = info.cardholder_name {
-                    let name = pinentry::format_cardholder_name(raw);
-                    if !name.is_empty() {
-                        desc.push_str(&format!("\nHolder: {}", name));
-                    }
-                }
-                desc.push_str(&format!("\nCounter: {}", info.signature_counter));
+    let mut desc = format!("Please unlock the card\n\nNumber: {}", serial);
+    if let Some(ref info) = card_info {
+        if let Some(ref raw) = info.cardholder_name {
+            let name = pinentry::format_cardholder_name(raw);
+            if !name.is_empty() {
+                desc.push_str(&format!("\nHolder: {}", name));
             }
-            desc.push_str(&format!("\n\nSigning as: {}", uid));
-
-            let pin = pinentry::get_passphrase(&desc, "PIN", Some(&key_info.fingerprint))?;
-
-            let signature = wecanencrypt::card::sign_bytes_detached_on_card(
-                data,
-                key_data,
-                pin.as_bytes(),
-            )
-            .context("Card signing failed")?;
-
-            writeln!(
-                err,
-                "tcli: Signed with card {} key {}",
-                card_ident, key_info.fingerprint
-            )?;
-
-            return Ok(signature);
         }
+        desc.push_str(&format!("\nCounter: {}", info.signature_counter));
     }
+    desc.push_str(&format!("\n\nSigning as: {}", uid));
 
-    anyhow::bail!("No card found with signing key for {}", key_info.fingerprint)
+    let pin = pinentry::get_passphrase(&desc, "PIN", Some(&key_info.fingerprint))?;
+    Ok(pin.to_string())
 }
 
-/// Sign using a software key from the tumpa keystore.
-fn sign_with_software_key(
-    data: &[u8],
-    key_data: &[u8],
-    key_info: &wecanencrypt::KeyInfo,
-    err: &mut impl Write,
-) -> Result<String> {
-    if !key_info.is_secret {
-        anyhow::bail!(
-            "No secret key available for {}. Import a secret key into tumpa first.",
-            key_info.fingerprint
-        );
-    }
-
+/// Prompt the user for the secret-key passphrase via pinentry.
+fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<String> {
     let desc = format!("Enter passphrase for key {}", primary_uid(key_info));
-
-    let passphrase = pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
-
-    let signature = wecanencrypt::sign_bytes_detached(key_data, data, &passphrase)
-        .context("Software key signing failed")?;
-
-    writeln!(
-        err,
-        "tcli: Signed with software key {}",
-        key_info.fingerprint
-    )?;
-
-    Ok(signature)
+    let pass = pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
+    Ok(pass.to_string())
 }
 
 /// Get the primary UID string from a certificate, falling back to the first

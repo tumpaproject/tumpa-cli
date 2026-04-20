@@ -12,15 +12,50 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Checkout tumpa-cli
         uses: actions/checkout@v4
+        with:
+          path: tumpa-cli
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pcscd libpcsclite-dev pcsc-tools libsqlite3-dev tree
+          sudo apt-get install -y \
+            pcscd libpcsclite-dev pcsc-tools \
+            libsqlite3-dev tree gnupg pass git
+
+      # Install the jcecard IFD handler: a virtual OpenPGP smartcard
+      # that speaks the full IMPORT KEY APDU flow wecanencrypt needs
+      # for --upload-to-card. Same recipe wecanencrypt's own CI uses.
+      # The tarball ships the reader driver, the Info.plist bundle,
+      # the reader.conf.d entry, and the install script.
+      - name: Install jcecard IFD handler
+        run: |
+          wget https://kushaldas.in/ifd-jcecard.tar.gz
+          echo "7189722f005f902fc7cee90b3cbfca30305c4195a4f083f6678de23204ccda30  ifd-jcecard.tar.gz" | sha256sum -c -
+          tar xvf ifd-jcecard.tar.gz
+          cd ifd-jcecard
+          sudo ./install-jcecard.sh
+
+      # Start pcscd bound to the jcecard reader. `--disable-polkit` is
+      # required on Ubuntu 24.04+ in CI; `JCECARD_STORAGE_DIR` points the
+      # virtual card at a persistent state file (default PINs — user
+      # 123456, admin 12345678 — on first boot).
+      - name: Start pcscd with jcecard
+        run: |
+          mkdir -p $HOME/.jcecard
+          sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
+          sudo pkill -9 pcscd 2>/dev/null || true
+          sleep 1
+          sudo JCECARD_STORAGE_DIR=$HOME/.jcecard \
+              /usr/sbin/pcscd --foreground --debug --disable-polkit \
+              > /tmp/pcscd_debug.log 2>&1 &
+          sleep 5
+          pgrep pcscd && echo "pcscd is running"
+          pcsc_scan -r
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -31,16 +66,99 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            tumpa-cli/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('tumpa-cli/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
+      # Release-shape build and lint. `experimental` is a Cargo
+      # feature, default-off; this step guards that end-user builds
+      # (no feature) still compile and lint clean. The binaries
+      # produced here drive test_keystore.sh and test_git_sign.sh.
+      - name: Build tumpa-cli (default, no experimental)
+        working-directory: tumpa-cli
         run: cargo build
 
-      - name: Clippy
+      - name: Clippy (default)
+        working-directory: tumpa-cli
         run: cargo clippy -- -D warnings
 
-      - name: Run keystore tests
+      - name: Cargo unit tests (tumpa-cli)
+        working-directory: tumpa-cli
+        run: cargo test
+
+      - name: Test keystore (test_keystore.sh)
+        working-directory: tumpa-cli
         run: ./tests/test_keystore.sh
+
+      - name: Test git commit signing (test_git_sign.sh)
+        working-directory: tumpa-cli
+        run: ./tests/test_git_sign.sh
+
+      # Rebuild with the experimental feature on. Only this binary
+      # has `--upload-to-card` and `--reset-card`; test_upload_card.sh
+      # requires it and exits 2 with an explanatory message if run
+      # against a default build.
+      - name: Build tumpa-cli (--features experimental)
+        working-directory: tumpa-cli
+        run: cargo build --features experimental
+
+      - name: Clippy (--features experimental)
+        working-directory: tumpa-cli
+        run: cargo clippy --features experimental -- -D warnings
+
+      # Full --upload-to-card exercise against the jcecard virtual
+      # OpenPGP card. Stage A validates the CLI surface; Stage B
+      # factory-resets the card, uploads the primary signing key,
+      # has tclig sign a commit (including a non-UTF-8 byte), and
+      # verifies the signature with both tclig and real gpg.
+      - name: Test --upload-to-card + card-signed commit (test_upload_card.sh)
+        working-directory: tumpa-cli
+        env:
+          TCLI_TEST_CARD_UPLOAD: "1"
+          ADMIN_PIN: "12345678"
+          TUMPA_PASSPHRASE: testpass
+        run: ./tests/test_upload_card.sh
+
+      - name: Provision RSA test key for tpass/pass tests
+        id: provision_key
+        working-directory: tumpa-cli
+        env:
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: |
+          FP=$(./tests/provision_test_key.sh)
+          if [ -z "$FP" ]; then
+            echo "ERROR: provision_test_key.sh returned no fingerprint" >&2
+            exit 1
+          fi
+          echo "Provisioned fingerprint: $FP"
+          echo "fp=$FP" >> "$GITHUB_OUTPUT"
+
+      - name: Test tcli + pass (test_pass.sh)
+        working-directory: tumpa-cli
+        env:
+          TUMPA_PASSPHRASE: testpass
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: ./tests/test_pass.sh ${{ steps.provision_key.outputs.fp }}
+
+      - name: Test tpass standalone (test_tpass.sh)
+        working-directory: tumpa-cli
+        env:
+          TUMPA_PASSPHRASE: testpass
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: ./tests/test_tpass.sh ${{ steps.provision_key.outputs.fp }}
+
+      - name: Test tpass <-> pass compat (test_tpass_compat.sh)
+        working-directory: tumpa-cli
+        env:
+          TUMPA_PASSPHRASE: testpass
+          TUMPA_KEYSTORE: ${{ github.workspace }}/ci-keys.db
+        run: ./tests/test_tpass_compat.sh ${{ steps.provision_key.outputs.fp }}
+
+      - name: Upload pcscd debug log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcscd-debug-log
+          path: /tmp/pcscd_debug.log
+          retention-days: 1
