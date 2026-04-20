@@ -69,6 +69,84 @@ unchanged.
 - **Passphrase handling** -- agent cache, pinentry, `TUMPA_PASSPHRASE` env var, or terminal prompt
 - **Compatible with [multiverse/bump-tag](https://github.com/SUNET/multiverse)** -- produces the `[GNUPG:]` status lines git expects
 
+## Quickstart
+
+For the common case — a hardware OpenPGP card holding the signing
+key, with just the **public** key imported into the keystore so
+`tcli` knows which card-backed key to use.
+
+**1. Install**
+
+```
+# macOS (Homebrew)
+brew tap tumpaproject/tumpa-cli
+brew install tumpa-cli
+
+# Linux / from source
+cargo install tumpa-cli
+```
+
+Linux also needs PC/SC libraries for card support — see
+[System dependencies](#system-dependencies) below.
+
+**2. Import the public key matching your card**
+
+```
+tcli --import my-public-key.asc
+```
+
+The secret bits live on the card; the keystore only needs the public
+key so `tcli` can resolve the fingerprint and route signing /
+decryption to the card.
+
+**3. Verify the key and the card**
+
+```
+tcli --info <FINGERPRINT>     # details for the imported key
+tcli --card-status            # connected cards, serial, PIN retries
+```
+
+**4. Configure git**
+
+```
+git config --global gpg.program tclig
+git config --global user.signingkey <FINGERPRINT>
+git config --global commit.gpgsign true
+```
+
+`tclig` (not `tcli`) is the GPG drop-in that git talks to.
+
+**5. Start the agent at login**
+
+**macOS (Homebrew)**:
+
+```
+brew services start tumpa-cli
+```
+
+Then add to `~/.zshrc` so SSH clients find the agent:
+
+```bash
+export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
+```
+
+**Linux (systemd user service)** — see
+[`contrib/systemd/README.md`](contrib/systemd/README.md) for the
+ready-made unit files. The one-liner for the common case is:
+
+```
+systemctl --user enable --now tumpa-agent.service
+```
+
+Point your shell at the SSH socket via an `environment.d` drop-in
+(systemd reads this into every user session):
+
+```bash
+mkdir -p ~/.config/environment.d
+echo 'SSH_AUTH_SOCK=${XDG_RUNTIME_DIR}/tcli-ssh.sock' \
+    > ~/.config/environment.d/tumpa-ssh-agent.conf
+```
+
 ## Installation
 
 ### From source
