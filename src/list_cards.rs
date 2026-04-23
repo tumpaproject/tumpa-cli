@@ -11,6 +11,8 @@
 
 use anyhow::{Context, Result};
 
+use crate::pinentry::format_cardholder_name;
+
 pub fn cmd_list_cards() -> Result<()> {
     let cards = wecanencrypt::card::list_all_cards()
         .map_err(|e| anyhow::anyhow!("{e}"))
@@ -52,7 +54,15 @@ pub fn cmd_list_cards() -> Result<()> {
         sw = serial_w,
     );
     for c in &cards {
-        let holder = c.cardholder_name.as_deref().unwrap_or("(unset)");
+        // OpenPGP card "Name of cardholder" is stored in the ICAO 9303
+        // MRZ shape (SURNAME<<GIVEN_NAMES, e.g. `Das<<Kushal`). Convert
+        // to human "Given Surname" form before rendering.
+        let holder = c
+            .cardholder_name
+            .as_deref()
+            .map(format_cardholder_name)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "(unset)".to_string());
         println!(
             "{:<iw$}  {:<mw$}  {:<sw$}  {}",
             c.ident,
