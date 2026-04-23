@@ -111,6 +111,22 @@ pub struct Args {
     #[clap(long, hide = true)]
     pub reset_card: bool,
 
+    /// **Experimental.** List all connected OpenPGP smart cards with
+    /// their ident, manufacturer, serial, and cardholder name. Use the
+    /// printed IDENT as the value for `--card-ident` on the upload /
+    /// reset commands when multiple cards are attached.
+    #[cfg(feature = "experimental")]
+    #[clap(long, hide = true)]
+    pub list_cards: bool,
+
+    /// **Experimental.** Target card ident (e.g. `000F:CB9A5355`) for
+    /// `--upload-to-card` and `--reset-card`. Use `--list-cards` to see
+    /// idents of attached cards. If omitted, there must be exactly one
+    /// OpenPGP card connected.
+    #[cfg(feature = "experimental")]
+    #[clap(long, value_name = "IDENT", hide = true)]
+    pub card_ident: Option<String>,
+
     // --- Positional ---
 
     /// Positional arguments (input files for --import).
@@ -228,9 +244,14 @@ pub enum Mode {
     UploadToCard {
         key_id: String,
         which: Option<WhichKey>,
+        card_ident: Option<String>,
     },
     #[cfg(feature = "experimental")]
-    ResetCard,
+    ResetCard {
+        card_ident: Option<String>,
+    },
+    #[cfg(feature = "experimental")]
+    ListCards,
     Completions {
         shell: Shell,
     },
@@ -283,6 +304,10 @@ impl TryFrom<Args> for Mode {
         // `--features experimental`) ---
         #[cfg(feature = "experimental")]
         {
+            if value.list_cards {
+                return Ok(Mode::ListCards);
+            }
+
             if let Some(key_id) = value.upload_to_card.clone() {
                 let which = match value.which.as_deref() {
                     None => None,
@@ -295,7 +320,11 @@ impl TryFrom<Args> for Mode {
                         ))
                     }
                 };
-                return Ok(Mode::UploadToCard { key_id, which });
+                return Ok(Mode::UploadToCard {
+                    key_id,
+                    which,
+                    card_ident: value.card_ident.clone(),
+                });
             }
 
             if value.which.is_some() {
@@ -303,7 +332,15 @@ impl TryFrom<Args> for Mode {
             }
 
             if value.reset_card {
-                return Ok(Mode::ResetCard);
+                return Ok(Mode::ResetCard {
+                    card_ident: value.card_ident.clone(),
+                });
+            }
+
+            if value.card_ident.is_some() {
+                return Err(
+                    "--card-ident only applies to --upload-to-card or --reset-card".to_string(),
+                );
             }
         }
 

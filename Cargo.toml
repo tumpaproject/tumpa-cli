@@ -1,6 +1,6 @@
 [package]
 name = "tumpa-cli"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 description = "OpenPGP operations and SSH agent backed by tumpa keystore."
 license = "GPL-3.0-or-later"
@@ -45,8 +45,8 @@ default = []
 experimental = []
 
 [dependencies]
-wecanencrypt = { version = "0.12.1", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.1.4", features = ["card", "network"] }
+wecanencrypt = { version = "0.14", features = ["keystore", "card-pcsc", "network"] }
+libtumpa = { version = "0.2", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).

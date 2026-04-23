@@ -13,4 +13,16 @@ ignore = [
     # No fixed upstream release is available. Pulled in transitively via
     # wecanencrypt, pgp, ssh-key, and ssh-agent-lib.
     "RUSTSEC-2023-0071",
+
+    # rand 0.8.5 — unsound when a *custom* log::Log implementation
+    # calls rand::rng() from inside its log() method and a reseed
+    # races with that call.
+    #   https://rustsec.org/advisories/RUSTSEC-2026-0097
+    #   https://github.com/rust-random/rand/pull/1763
+    # tumpa-cli uses env_logger (stock implementation, never calls
+    # into rand from the logger path), so none of the advisory's
+    # preconditions are reachable. Pulled in transitively via
+    # pgp -> num-bigint-dig / rsa / dsa and ssh-key; a bump depends
+    # on the RustCrypto ecosystem completing its rand 0.9 migration.
+    "RUSTSEC-2026-0097",
 ]

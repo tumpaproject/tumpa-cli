@@ -1,19 +1,23 @@
 //! **Experimental.** Upload a secret key from the keystore to an
 //! OpenPGP smart card's signing slot.
 //!
-//! Gated behind `tcli --experimental --upload-to-card`.  If the
+//! Gated behind `tcli --experimental --upload-to-card`. If the
 //! certificate carries both a sign-capable primary key and a
 //! sign-capable signing subkey, the caller must pass `--which
 //! primary|sub` to disambiguate.
 //!
-//! This module resolves the key from the tumpa keystore, prompts for
-//! the key passphrase and card admin PIN via `pinentry`, and then
-//! delegates the actual APDU-level upload to `wecanencrypt::card::upload`.
+//! Upload goes through `libtumpa::card::upload::upload`, which runs a
+//! preflight algorithm check (e.g. rejects legacy `Cv25519` on Nitrokey
+//! before any destructive I/O) and then **factory-resets** the card
+//! before writing the selected slot. Cardholder name, URL, user PIN,
+//! and admin PIN are cleared back to factory defaults. Only the key
+//! passphrase is prompted — the admin PIN is managed internally by
+//! libtumpa (it uses the factory default after reset).
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use wecanencrypt::card::upload::CardKeySlot;
+use libtumpa::card::upload::{flags, upload};
 use wecanencrypt::KeyType;
 
 use crate::{pinentry, store};
@@ -40,6 +44,7 @@ pub fn cmd_upload_to_card(
     key_id: &str,
     which: Option<WhichKey>,
     keystore_path: Option<&PathBuf>,
+    card_ident: Option<&str>,
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
     let (_raw, key_info) = store::resolve_signer(&keystore, key_id)?;
@@ -53,12 +58,6 @@ pub fn cmd_upload_to_card(
 
     // Decide which component of the cert we should upload.
     let target = select_sign_target(&key_info, which)?;
-
-    // We always re-export the stored copy (authoritative) so we feed the
-    // wecanencrypt upload API the same bytes the keystore holds.
-    let secret_data = keystore
-        .export_key(&key_info.fingerprint)
-        .with_context(|| format!("failed to read key {}", key_info.fingerprint))?;
 
     let uid = key_info
         .user_ids
@@ -77,64 +76,45 @@ pub fn cmd_upload_to_card(
     let key_pass = pinentry::get_passphrase(&key_desc, "Passphrase", None)
         .context("failed to read key passphrase")?;
 
-    // --- Prompt for admin PIN ---
+    // --- Warn about destructive reset ---
 
-    let admin_desc = format!(
-        "Enter Admin PIN for the OpenPGP card\nuploading signing key {}\nfor {}",
-        key_info.fingerprint, uid
+    let target_label = match target {
+        SignTarget::Primary => "primary key",
+        SignTarget::Sub => "signing subkey",
+    };
+    eprintln!(
+        "Warning: --upload-to-card factory-resets the card first \
+         (cardholder name, URL, user PIN, and admin PIN are cleared \
+         to defaults) before writing the {} of {}.\n\
+         Press Ctrl-C within 3 seconds to abort.",
+        target_label, key_info.fingerprint
     );
-    let admin_pin = pinentry::get_passphrase(&admin_desc, "Admin PIN", None)
-        .context("failed to read admin PIN")?;
+    std::thread::sleep(std::time::Duration::from_secs(3));
 
     // --- Upload ---
 
-    eprintln!(
-        "Uploading {} key of {} to the signing slot of the connected card...",
-        match target {
-            SignTarget::Primary => "primary",
-            SignTarget::Sub => "signing subkey",
-        },
-        key_info.fingerprint
-    );
+    let which_flags = match target {
+        SignTarget::Primary => flags::PRIMARY_TO_SIGNING,
+        SignTarget::Sub => flags::SIGNING_SUBKEY,
+    };
 
-    match target {
-        SignTarget::Primary => {
-            wecanencrypt::card::upload::upload_primary_key_to_card(
-                &secret_data,
-                key_pass.as_bytes(),
-                CardKeySlot::Signing,
-                admin_pin.as_bytes(),
-            )
-            .with_context(|| {
-                format!(
-                    "failed to upload primary key of {} to card",
-                    key_info.fingerprint
-                )
-            })?;
-        }
-        SignTarget::Sub => {
-            let subkey_fp = pick_signing_subkey_fingerprint(&key_info)
-                .context("no sign-capable subkey found on certificate")?;
-            wecanencrypt::card::upload::upload_subkey_by_fingerprint(
-                &secret_data,
-                key_pass.as_bytes(),
-                &subkey_fp,
-                CardKeySlot::Signing,
-                admin_pin.as_bytes(),
-            )
-            .with_context(|| {
-                format!("failed to upload signing subkey {} to card", subkey_fp)
-            })?;
-        }
-    }
+    upload(
+        &keystore,
+        &key_info.fingerprint,
+        &key_pass,
+        which_flags,
+        card_ident,
+    )
+    .with_context(|| {
+        format!(
+            "failed to upload {} of {} to card",
+            target_label, key_info.fingerprint
+        )
+    })?;
 
     eprintln!(
         "OK. Signing slot now holds the {} of {}.",
-        match target {
-            SignTarget::Primary => "primary key",
-            SignTarget::Sub => "signing subkey",
-        },
-        key_info.fingerprint
+        target_label, key_info.fingerprint
     );
 
     Ok(())
@@ -197,16 +177,6 @@ fn select_sign_target(
     }
 }
 
-fn pick_signing_subkey_fingerprint(key_info: &wecanencrypt::KeyInfo) -> Option<String> {
-    key_info
-        .subkeys
-        .iter()
-        .find(|sk| {
-            sk.key_type == KeyType::Signing && !sk.is_revoked && !store::subkey_is_expired(sk)
-        })
-        .map(|sk| sk.fingerprint.clone())
-}
-
 /// **Experimental.** Factory-reset the connected OpenPGP card.
 ///
 /// `TERMINATE DF` on an OpenPGP card requires the admin PIN to be in
@@ -218,19 +188,17 @@ fn pick_signing_subkey_fingerprint(key_info: &wecanencrypt::KeyInfo) -> Option<S
 ///
 /// After the reset the card is back to defaults: user PIN `123456`,
 /// admin PIN `12345678`, all key slots empty.
-pub fn cmd_reset_card() -> Result<()> {
+pub fn cmd_reset_card(card_ident: Option<&str>) -> Result<()> {
     eprintln!("Blocking admin PIN (3 wrong verifies) and resetting card...");
 
     // Force the admin PIN into the blocked state. We don't care about the
     // outcome of each verify — each one consumes a retry regardless of
-    // whether the real admin PIN matches. Using `None` for `ident` lets
-    // wecanencrypt pick the first connected card, matching the rest of
-    // the tcli card surface.
+    // whether the real admin PIN matches.
     for _ in 0..3 {
-        let _ = wecanencrypt::card::verify_admin_pin(b"00000000", None);
+        let _ = wecanencrypt::card::verify_admin_pin(b"00000000", card_ident);
     }
 
-    wecanencrypt::card::reset_card(None)
+    wecanencrypt::card::reset_card(card_ident)
         .with_context(|| "factory reset failed after blocking admin PIN")?;
 
     eprintln!("Card reset. User PIN=123456, admin PIN=12345678, all slots cleared.");

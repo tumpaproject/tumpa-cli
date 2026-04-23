@@ -1040,8 +1040,30 @@ time. The agent is purely additive.
 
 ## Hardware OpenPGP cards
 
-`tcli` supports YubiKey and other OpenPGP-compatible smart cards for
-signing, decryption, and SSH authentication.
+`tcli` supports OpenPGP-compatible smart cards for signing, decryption,
+and SSH authentication. Regularly tested against:
+
+| Card | Supported algorithms | Notes |
+|---|---|---|
+| **YubiKey 4 / 5** | RSA 2048/4096, NIST P-256/P-384, Curve25519 | Curve25519 requires firmware ≥ 5.2.3 |
+| **Nitrokey 3** | RSA, `Cv25519Modern` (Ed25519 + X25519 per RFC 9580) | Legacy `Cv25519` (EdDSALegacy + ECDH/Curve25519), `Ed448`, and `X448` are rejected at upload time with a clear error |
+
+Other OpenPGP-card implementations may work but aren't on the test matrix.
+
+When uploading a key to a Nitrokey, generate it with `cv25519modern`:
+
+```
+tcli generate --cipher cv25519modern
+```
+
+Uploading a legacy `Cv25519` key to a Nitrokey exits with:
+
+```
+Error: failed to upload primary key of ABC... to card: Nitrokey GmbH does not support EdDSALegacy
+```
+
+No APDU is sent to the card in this case — the guard fires before the
+factory-reset step, so your card is never left in a half-reset state.
 
 ### Card status
 
@@ -1085,6 +1107,54 @@ first:
 Card PINs are prompted via pinentry, the same way as software key
 passphrases. Set `TUMPA_PASSPHRASE` for non-interactive card PIN
 entry (e.g., in CI).
+
+### Listing connected cards (experimental)
+
+`tcli` enumerates every OpenPGP card visible to PCSC with:
+
+```
+tcli --experimental --list-cards
+```
+
+Sample output:
+
+```
+IDENT          MANUFACTURER   SERIAL    HOLDER
+0000:00000001  Testcard       00000001  (unset)
+000F:CB9A5355  Nitrokey GmbH  CB9A5355  (unset)
+```
+
+The IDENT column is the value you pass to `--card-ident` on
+`--upload-to-card` / `--reset-card` when more than one card is
+attached.
+
+### Uploading a key to a card (experimental)
+
+Builds compiled with `--features experimental` expose:
+
+```
+tcli --experimental --upload-to-card FINGERPRINT [--which primary|sub] [--card-ident IDENT]
+```
+
+**Warning — destructive:** `--upload-to-card` **factory-resets the
+card first** (cardholder name, URL, user PIN, and admin PIN are
+cleared to defaults) before writing the selected signing-slot. Only
+the key passphrase is prompted; the admin PIN is managed internally
+and set to the factory default `12345678` after reset.
+
+With multiple cards attached, pass `--card-ident` (see
+`--list-cards` for the value). With a single card, `--card-ident`
+can be omitted.
+
+For Nitrokey, the key must be `Cv25519Modern` (Ed25519 + X25519) or
+RSA — see the compatibility table above. Legacy `Cv25519`, `Ed448`,
+and `X448` keys are rejected before any I/O hits the card.
+
+Factory-reset without upload (e.g. to re-provision):
+
+```
+tcli --experimental --reset-card [--card-ident IDENT]
+```
 
 ---
 
