@@ -260,6 +260,13 @@ impl TryFrom<Args> for Mode {
     type Error = String;
 
     fn try_from(value: Args) -> Result<Self, Self::Error> {
+        // `--list-cards` must win over subcommands (agent / ssh-agent /
+        // ssh-export), otherwise clap's subcommand match below would
+        // silently consume the invocation and ignore --list-cards.
+        if value.list_cards && value.subcmd.is_some() {
+            return Err("--list-cards cannot be combined with other flags".to_string());
+        }
+
         // Subcommands
         match value.subcmd {
             Some(SubCommand::Agent {
@@ -298,9 +305,12 @@ impl TryFrom<Args> for Mode {
             return Ok(Mode::CardStatus);
         }
 
-        // `--list-cards` is read-only and must be the only action flag
-        // on the command line. It ignores --keystore (doesn't touch the
-        // keystore at all) but rejects every other flag so users aren't
+        // `--list-cards` is read-only and must be the only flag on the
+        // command line. It ignores --keystore (doesn't touch the
+        // keystore at all) but rejects every other flag — action
+        // flags, positionals, and modifiers like --armor / --binary /
+        // --output / --recursive / --force / --dry-run / --email that
+        // only make sense with another action — so users aren't
         // surprised by silently-dropped arguments.
         if value.list_cards {
             if value.list_keys
@@ -315,6 +325,13 @@ impl TryFrom<Args> for Mode {
                 || value.card_status
                 || value.completions.is_some()
                 || !value.input_files.is_empty()
+                || value.armor
+                || value.binary
+                || value.output.is_some()
+                || value.recursive
+                || value.force
+                || value.dry_run
+                || value.email
             {
                 return Err("--list-cards cannot be combined with other flags".to_string());
             }
@@ -467,6 +484,30 @@ mod tests {
     #[test]
     fn list_cards_rejects_positional_inputs() {
         let err = parse(&["--list-cards", "some-key.asc"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_cards_rejects_modifier_flags() {
+        // Spot-check one modifier from each family (bool and Option).
+        for extra in [&["--armor"][..], &["--output", "/tmp/x"][..], &["--email"][..]] {
+            let mut argv = vec!["--list-cards"];
+            argv.extend_from_slice(extra);
+            let err = parse(&argv).unwrap_err();
+            assert!(
+                err.contains("--list-cards cannot be combined"),
+                "for {extra:?} got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_cards_rejects_subcommand() {
+        let err = parse(&["--list-cards", "ssh-agent", "-H", "unix:///tmp/s"])
+            .unwrap_err();
         assert!(
             err.contains("--list-cards cannot be combined"),
             "got: {err}"
