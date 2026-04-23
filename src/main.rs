@@ -72,7 +72,6 @@ fn main() {
         ),
         #[cfg(feature = "experimental")]
         Ok(Mode::ResetCard { card_ident }) => upload_card::cmd_reset_card(card_ident.as_deref()),
-        #[cfg(feature = "experimental")]
         Ok(Mode::ListCards) => tumpa_cli::list_cards::cmd_list_cards(),
         Ok(Mode::ShowSocket { ssh }) => {
             if ssh {

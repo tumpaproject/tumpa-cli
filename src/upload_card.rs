@@ -1,10 +1,11 @@
-//! **Experimental.** Upload a secret key from the keystore to an
-//! OpenPGP smart card's signing slot.
+//! Upload a secret key from the keystore to an OpenPGP smart card's
+//! signing slot.
 //!
-//! Gated behind `tcli --experimental --upload-to-card`. If the
-//! certificate carries both a sign-capable primary key and a
-//! sign-capable signing subkey, the caller must pass `--which
-//! primary|sub` to disambiguate.
+//! Available when `tcli` is built with the `experimental` Cargo
+//! feature (`cargo build --features experimental`). Invoked as
+//! `tcli --upload-to-card <FP>`; if the certificate carries both a
+//! sign-capable primary key and a sign-capable signing subkey, the
+//! caller must pass `--which primary|sub` to disambiguate.
 //!
 //! Upload goes through `libtumpa::card::upload::upload`, which runs a
 //! preflight algorithm check (e.g. rejects legacy `Cv25519` on Nitrokey
@@ -82,10 +83,13 @@ pub fn cmd_upload_to_card(
         SignTarget::Primary => "primary key",
         SignTarget::Sub => "signing subkey",
     };
+    // Worded conditionally: libtumpa's preflight guard may still
+    // reject this upload (e.g. unsupported algorithm on the target
+    // card), in which case no reset actually runs.
     eprintln!(
-        "Warning: --upload-to-card factory-resets the card first \
-         (cardholder name, URL, user PIN, and admin PIN are cleared \
-         to defaults) before writing the {} of {}.\n\
+        "Warning: if this upload proceeds, the card will be \
+         factory-reset (cardholder name, URL, user PIN, and admin PIN \
+         cleared to defaults) before writing the {} of {}.\n\
          Press Ctrl-C within 3 seconds to abort.",
         target_label, key_info.fingerprint
     );

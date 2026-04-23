@@ -1,10 +1,10 @@
-//! **Experimental.** Enumerate connected OpenPGP smart cards.
+//! Enumerate connected OpenPGP smart cards.
 //!
-//! Gated behind `tcli --experimental --list-cards`. Prints a table of
-//! the ident, manufacturer, serial, and cardholder name of every card
-//! visible to wecanencrypt's PCSC enumeration. The IDENT column is the
-//! value callers pass to `--card-ident` on `--upload-to-card` or
-//! `--reset-card`.
+//! Invoked as `tcli --list-cards`. Prints a table of the ident,
+//! manufacturer, serial, and cardholder name of every card visible
+//! to wecanencrypt's PCSC enumeration. The IDENT column is the value
+//! callers pass to `--card-ident` on `--upload-to-card` or
+//! `--reset-card` (experimental-feature builds).
 //!
 //! Read-only: no PIN prompts, no APDU writes. One ATR-level read per
 //! card (via `list_all_cards`) to populate `CardSummary`.

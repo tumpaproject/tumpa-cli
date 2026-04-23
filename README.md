@@ -62,7 +62,7 @@ unchanged.
 - **password-store (`pass`) support** -- works as a drop-in GPG replacement for `pass`
 - **Browser extension support** -- [PassFF](https://github.com/passff/passff) and [Browserpass](https://github.com/browserpass/browserpass-extension) work via the `gpg2 -> tclig` symlink (ciphertext on stdin via `-`, `--debug` flag accepted)
 - **`tpass`** -- native password-store replacement, no GPG dependency
-- **OpenPGP card support** -- cards are tried first for signing, decryption, and SSH auth. Tested against **Yubikey 4/5** (RSA 2048/4096, NIST P-256/P-384; Curve25519 on firmware ≥ 5.2.3) and **Nitrokey 3** (RSA and `Cv25519Modern` — Ed25519 + X25519 per RFC 9580). Nitrokey rejects legacy `Cv25519` and `Cv448Modern` keys at upload time
+- **OpenPGP card support** -- cards are tried first for signing, decryption, and SSH auth. Tested against **Yubikey 4/5** (RSA 2048/4096, NIST P-256/P-384; Curve25519 on firmware ≥ 5.2.3) and **Nitrokey 3** (RSA and `Cv25519Modern` — Ed25519 + X25519 per RFC 9580). Nitrokey rejects legacy `Cv25519` (EdDSALegacy + ECDH/Curve25519) along with `Ed448` and `X448` keys at upload time
 - **Unified agent** -- caches passphrases for GPG operations + optional SSH agent
 - **Key management** -- import, export, search, delete, and fetch keys via WKD
 - **SSH agent** -- serve authentication subkeys from the keystore and connected cards

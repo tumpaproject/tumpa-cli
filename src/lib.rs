@@ -4,7 +4,6 @@ pub mod keystore;
 pub mod pinentry;
 pub mod ssh;
 pub mod store;
-#[cfg(feature = "experimental")]
 pub mod list_cards;
 #[cfg(feature = "experimental")]
 pub mod upload_card;

@@ -111,12 +111,10 @@ pub struct Args {
     #[clap(long, hide = true)]
     pub reset_card: bool,
 
-    /// **Experimental.** List all connected OpenPGP smart cards with
-    /// their ident, manufacturer, serial, and cardholder name. Use the
-    /// printed IDENT as the value for `--card-ident` on the upload /
-    /// reset commands when multiple cards are attached.
-    #[cfg(feature = "experimental")]
-    #[clap(long, hide = true)]
+    /// List all connected OpenPGP smart cards with their ident,
+    /// manufacturer, serial, and cardholder name. Mutually exclusive
+    /// with every other flag; prints the table to stdout and exits.
+    #[clap(long)]
     pub list_cards: bool,
 
     /// **Experimental.** Target card ident (e.g. `000F:CB9A5355`) for
@@ -194,6 +192,7 @@ pub enum SubCommand {
 #[cfg(feature = "experimental")]
 pub use tumpa_cli::upload_card::WhichKey;
 
+#[derive(Debug)]
 pub enum Mode {
     ListKeys,
     Agent {
@@ -240,6 +239,7 @@ pub enum Mode {
         ssh: bool,
     },
     CardStatus,
+    ListCards,
     #[cfg(feature = "experimental")]
     UploadToCard {
         key_id: String,
@@ -250,8 +250,6 @@ pub enum Mode {
     ResetCard {
         card_ident: Option<String>,
     },
-    #[cfg(feature = "experimental")]
-    ListCards,
     Completions {
         shell: Shell,
     },
@@ -300,14 +298,45 @@ impl TryFrom<Args> for Mode {
             return Ok(Mode::CardStatus);
         }
 
+        // `--list-cards` is read-only and must be the only action flag
+        // on the command line. It ignores --keystore (doesn't touch the
+        // keystore at all) but rejects every other flag so users aren't
+        // surprised by silently-dropped arguments.
+        if value.list_cards {
+            if value.list_keys
+                || value.import
+                || value.export.is_some()
+                || value.info.is_some()
+                || value.desc.is_some()
+                || value.delete.is_some()
+                || value.search.is_some()
+                || value.fetch.is_some()
+                || value.show_socket.is_some()
+                || value.card_status
+                || value.completions.is_some()
+                || !value.input_files.is_empty()
+            {
+                return Err("--list-cards cannot be combined with other flags".to_string());
+            }
+            #[cfg(feature = "experimental")]
+            {
+                if value.upload_to_card.is_some()
+                    || value.which.is_some()
+                    || value.reset_card
+                    || value.card_ident.is_some()
+                {
+                    return Err(
+                        "--list-cards cannot be combined with other flags".to_string(),
+                    );
+                }
+            }
+            return Ok(Mode::ListCards);
+        }
+
         // --- Experimental card ops (only compiled in with
         // `--features experimental`) ---
         #[cfg(feature = "experimental")]
         {
-            if value.list_cards {
-                return Ok(Mode::ListCards);
-            }
-
             if let Some(key_id) = value.upload_to_card.clone() {
                 let which = match value.which.as_deref() {
                     None => None,
@@ -405,5 +434,95 @@ impl TryFrom<Args> for Mode {
         }
 
         Ok(Mode::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Result<Mode, String> {
+        let args = Args::try_parse_from(
+            std::iter::once("tcli").chain(argv.iter().copied()),
+        )
+        .map_err(|e| e.to_string())?;
+        Mode::try_from(args)
+    }
+
+    #[test]
+    fn list_cards_alone_parses() {
+        assert!(matches!(parse(&["--list-cards"]), Ok(Mode::ListCards)));
+    }
+
+    #[test]
+    fn list_cards_rejects_other_action_flags() {
+        let err = parse(&["--list-cards", "--list-keys"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_cards_rejects_positional_inputs() {
+        let err = parse(&["--list-cards", "some-key.asc"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn list_cards_rejects_card_ident() {
+        let err =
+            parse(&["--list-cards", "--card-ident", "000F:ABCD"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn card_ident_without_upload_or_reset_errors() {
+        let err = parse(&["--card-ident", "000F:ABCD"]).unwrap_err();
+        assert!(
+            err.contains("--card-ident only applies to"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn upload_to_card_threads_card_ident() {
+        let mode =
+            parse(&["--upload-to-card", "ABCDEF", "--card-ident", "000F:ABCD"])
+                .unwrap();
+        match mode {
+            Mode::UploadToCard {
+                key_id,
+                card_ident,
+                which,
+            } => {
+                assert_eq!(key_id, "ABCDEF");
+                assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
+                assert!(which.is_none());
+            }
+            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn reset_card_threads_card_ident() {
+        let mode = parse(&["--reset-card", "--card-ident", "000F:ABCD"]).unwrap();
+        match mode {
+            Mode::ResetCard { card_ident } => {
+                assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
+            }
+            other => panic!("expected ResetCard, got {:?}", std::mem::discriminant(&other)),
+        }
     }
 }

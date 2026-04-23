@@ -1108,13 +1108,16 @@ Card PINs are prompted via pinentry, the same way as software key
 passphrases. Set `TUMPA_PASSPHRASE` for non-interactive card PIN
 entry (e.g., in CI).
 
-### Listing connected cards (experimental)
+### Listing connected cards
 
 `tcli` enumerates every OpenPGP card visible to PCSC with:
 
 ```
-tcli --experimental --list-cards
+tcli --list-cards
 ```
+
+`--list-cards` is always available (no Cargo feature needed) and
+cannot be combined with any other flag.
 
 Sample output:
 
@@ -1130,10 +1133,10 @@ attached.
 
 ### Uploading a key to a card (experimental)
 
-Builds compiled with `--features experimental` expose:
+Builds compiled with `cargo build --features experimental` expose:
 
 ```
-tcli --experimental --upload-to-card FINGERPRINT [--which primary|sub] [--card-ident IDENT]
+tcli --upload-to-card FINGERPRINT [--which primary|sub] [--card-ident IDENT]
 ```
 
 **Warning — destructive:** `--upload-to-card` **factory-resets the
@@ -1153,7 +1156,7 @@ and `X448` keys are rejected before any I/O hits the card.
 Factory-reset without upload (e.g. to re-provision):
 
 ```
-tcli --experimental --reset-card [--card-ident IDENT]
+tcli --reset-card [--card-ident IDENT]
 ```
 
 ---
