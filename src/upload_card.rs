@@ -221,27 +221,23 @@ fn select_sign_target(
 
 /// **Experimental.** Factory-reset the connected OpenPGP card.
 ///
-/// `TERMINATE DF` on an OpenPGP card requires the admin PIN to be in
-/// the blocked state (retry counter == 0). To make `--reset-card`
-/// idempotent regardless of the current PIN, we first exhaust the
-/// admin-PIN retry counter with three known-wrong verifies, then issue
-/// the factory reset. Same recipe wecanencrypt's own `card_tests.rs`
-/// uses between test cases.
+/// Delegates to `libtumpa::card::admin::factory_reset_card`, which
+/// drives the admin-PIN retry counter to zero (with rotating
+/// known-wrong candidates so a coincidental real-PIN match doesn't
+/// stall the loop) and then issues `TERMINATE DF` + factory reset.
+/// Multi-card targeting is enforced by libtumpa: passing
+/// `card_ident = None` while multiple cards are connected is
+/// rejected so the destructive reset can't silently land on the
+/// wrong card.
 ///
 /// After the reset the card is back to defaults: user PIN `123456`,
 /// admin PIN `12345678`, all key slots empty.
 pub fn cmd_reset_card(card_ident: Option<&str>) -> Result<()> {
-    eprintln!("Blocking admin PIN (3 wrong verifies) and resetting card...");
+    eprintln!("Resetting card to factory defaults...");
 
-    // Force the admin PIN into the blocked state. We don't care about the
-    // outcome of each verify — each one consumes a retry regardless of
-    // whether the real admin PIN matches.
-    for _ in 0..3 {
-        let _ = wecanencrypt::card::verify_admin_pin(b"00000000", card_ident);
-    }
-
-    wecanencrypt::card::reset_card(card_ident)
-        .with_context(|| "factory reset failed after blocking admin PIN")?;
+    libtumpa::card::admin::factory_reset_card(card_ident)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("factory reset failed")?;
 
     eprintln!("Card reset. User PIN=123456, admin PIN=12345678, all slots cleared.");
     Ok(())

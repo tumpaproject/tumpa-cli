@@ -163,9 +163,16 @@ fi
 # Fresh jcecard after a factory reset defaults to 12345678.
 export TUMPA_ADMIN_PIN="$ADMIN_PIN"
 
-# Optional multi-card disambiguation. If TCLI_CARD_IDENT is set, every
-# `tcli` call that touches a card has `--card-ident "$TCLI_CARD_IDENT"`
-# appended. Empty/unset = same behaviour as before (auto-pick).
+# Optional multi-card disambiguation. If TCLI_CARD_IDENT is set,
+# `tcli --upload-to-card` and `tcli --reset-card` are pinned to that
+# reader via `--card-ident`. The diagnostic `tcli --card-status` /
+# `tcli --list-cards` calls below are intentionally NOT filtered:
+# `--card-status` doesn't accept `--card-ident`, and `--list-cards`
+# is documented as mutually exclusive with every other flag. The
+# Stage-B verification logic below assumes the test always operates on
+# a freshly-reset card whose only populated slots are the ones the
+# test just wrote, so an unfiltered fingerprint grep stays
+# unambiguous.
 CARD_IDENT_ARGS=()
 if [[ -n "${TCLI_CARD_IDENT:-}" ]]; then
     CARD_IDENT_ARGS=(--card-ident "$TCLI_CARD_IDENT")
@@ -174,10 +181,15 @@ fi
 command -v gpg >/dev/null || { echo "ERROR: gpg not installed"; exit 1; }
 command -v git >/dev/null || { echo "ERROR: git not installed"; exit 1; }
 
-# A card must actually be reachable. Listing cards should succeed AND
-# return at least one connected reader.
-if ! "$TCLI" --card-status 2>&1 | grep -qE 'Serial number|Manufacturer'; then
+# A card must actually be reachable. `--list-cards` is the right probe
+# here: it does only ATR-level enumeration (one PCSC connect per
+# reader, no get_card_details / no APDU traffic that can transiently
+# fail on a freshly-attached jcecard slot), so a positive result is a
+# reliable yes/no on card presence. `--card-status` is reserved for
+# the diagnostic dump on failure where richer info is helpful.
+if ! "$TCLI" --list-cards 2>&1 | grep -qE '^[0-9A-Fa-f]{4}:'; then
     echo "ERROR: Stage B requested but no OpenPGP card detected." >&2
+    "$TCLI" --list-cards >&2 || true
     "$TCLI" --card-status >&2 || true
     exit 1
 fi

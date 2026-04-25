@@ -1056,13 +1056,20 @@ When uploading a key to a Nitrokey, generate it with `cv25519modern`:
 tcli generate --cipher cv25519modern
 ```
 
-Uploading a legacy `Cv25519` key to a Nitrokey exits with:
+Uploading a legacy `Cv25519` key to a Nitrokey exits with an error of
+the shape:
 
 ```
-Error: failed to upload primary key of ABC... to card: Nitrokey GmbH does not support EdDSALegacy
+Error: failed to upload signing slot (primary key) of ABC... to card
+
+Caused by:
+    Nitrokey GmbH does not support EdDSALegacy
 ```
 
-No APDU is sent to the card in this case — the guard fires before the
+The exact slot label in the first line reflects what was requested
+(`signing slot (primary key)`, `signing slot (signing subkey)`, plus
+any `--include-encryption` / `--include-authentication` slots). No
+APDU is sent to the card in this case — the guard fires before the
 factory-reset step, so your card is never left in a half-reset state.
 
 ### Card status

@@ -112,10 +112,19 @@ jobs:
       # factory-resets the card, uploads the primary signing key,
       # has tclig sign a commit (including a non-UTF-8 byte), and
       # verifies the signature with both tclig and real gpg.
+      #
+      # jcecard exposes two readers (Testcard 0000:00000001 + Nitrokey
+      # 000F:4E4B0001); pin every card-touching tcli call to the
+      # Nitrokey slot via TCLI_CARD_IDENT, otherwise libtumpa's
+      # multi-card guard refuses --reset-card / --upload-to-card with
+      # `multiple cards connected ...; pass an ident to pick one`.
+      # Stage B2's regression case is specifically the Nitrokey ECC
+      # upload path, so the Nitrokey slot is the right target.
       - name: Test --upload-to-card + card-signed commit (test_upload_card.sh)
         working-directory: tumpa-cli
         env:
           TCLI_TEST_CARD_UPLOAD: "1"
+          TCLI_CARD_IDENT: "000F:4E4B0001"
           ADMIN_PIN: "12345678"
           TUMPA_PASSPHRASE: testpass
         run: ./tests/test_upload_card.sh
