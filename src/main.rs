@@ -60,11 +60,25 @@ fn main() {
         }
         Ok(Mode::CardStatus) => card_status(),
         #[cfg(feature = "experimental")]
-        Ok(Mode::UploadToCard { key_id, which }) => {
-            upload_card::cmd_upload_to_card(&key_id, which, keystore_path.as_ref())
-        }
+        Ok(Mode::UploadToCard {
+            key_id,
+            which,
+            card_ident,
+            include_signing,
+            include_encryption,
+            include_authentication,
+        }) => upload_card::cmd_upload_to_card(
+            &key_id,
+            which,
+            keystore_path.as_ref(),
+            card_ident.as_deref(),
+            include_signing,
+            include_encryption,
+            include_authentication,
+        ),
         #[cfg(feature = "experimental")]
-        Ok(Mode::ResetCard) => upload_card::cmd_reset_card(),
+        Ok(Mode::ResetCard { card_ident }) => upload_card::cmd_reset_card(card_ident.as_deref()),
+        Ok(Mode::ListCards) => tumpa_cli::list_cards::cmd_list_cards(),
         Ok(Mode::ShowSocket { ssh }) => {
             if ssh {
                 match tumpa_cli::agent::default_ssh_socket_path() {

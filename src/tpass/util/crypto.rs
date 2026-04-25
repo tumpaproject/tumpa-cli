@@ -41,8 +41,8 @@ pub fn decrypt_file(
     keystore_path: Option<&PathBuf>,
 ) -> Result<Zeroizing<Vec<u8>>> {
     let keystore = store::open_keystore(keystore_path)?;
-    let ciphertext = std::fs::read(passfile)
-        .context(format!("Failed to read encrypted file {:?}", passfile))?;
+    let ciphertext =
+        std::fs::read(passfile).context(format!("Failed to read encrypted file {:?}", passfile))?;
 
     let key_ids = ltd::recipients_of(&ciphertext)
         .map_err(|e| anyhow::anyhow!("{e}"))
@@ -54,7 +54,10 @@ pub fn decrypt_file(
     match try_decrypt_on_card(&ciphertext, &keystore) {
         Ok(pt) => Ok(pt),
         Err(card_err) => {
-            log::info!("Card decryption not available ({}), trying software key", card_err);
+            log::info!(
+                "Card decryption not available ({}), trying software key",
+                card_err
+            );
             decrypt_with_software(&ciphertext, &keystore, &key_ids, &card_err)
         }
     }
@@ -93,7 +96,7 @@ fn try_decrypt_on_card(
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
-    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj) {
+    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj, Some(&card.card.ident)) {
         Ok(z) => {
             pinentry::cache_passphrase(&card.key_info.fingerprint, &pin);
             Ok(Zeroizing::new(z.to_vec()))
@@ -149,8 +152,8 @@ fn decrypt_with_software(
 
 /// Get key IDs a file is encrypted to (for reencrypt comparison).
 pub fn file_encrypted_for(passfile: &Path) -> Result<Vec<String>> {
-    let ciphertext = std::fs::read(passfile)
-        .context(format!("Failed to read encrypted file {:?}", passfile))?;
+    let ciphertext =
+        std::fs::read(passfile).context(format!("Failed to read encrypted file {:?}", passfile))?;
     let key_ids = ltd::recipients_of(&ciphertext)
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("Failed to inspect encrypted message")?;
@@ -225,17 +228,17 @@ pub fn sign_file_detached(
         let passphrase: Passphrase =
             pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
 
-        let signature =
-            match libtumpa::sign::sign_detached_with_key(&key_data, &data, &passphrase) {
-                Ok(sig) => {
-                    pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
-                    sig
-                }
-                Err(e) => {
-                    pinentry::clear_cached_passphrase(&key_info.fingerprint);
-                    return Err(anyhow::anyhow!("{e}")).context("Signing failed");
-                }
-            };
+        let signature = match libtumpa::sign::sign_detached_with_key(&key_data, &data, &passphrase)
+        {
+            Ok(sig) => {
+                pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+                sig
+            }
+            Err(e) => {
+                pinentry::clear_cached_passphrase(&key_info.fingerprint);
+                return Err(anyhow::anyhow!("{e}")).context("Signing failed");
+            }
+        };
 
         std::fs::write(&sig_file, signature.as_bytes())
             .context(format!("Failed to write signature file {:?}", sig_file))?;

@@ -111,6 +111,47 @@ pub struct Args {
     #[clap(long, hide = true)]
     pub reset_card: bool,
 
+    /// List all connected OpenPGP smart cards with their ident,
+    /// manufacturer, serial, and cardholder name. Mutually exclusive
+    /// with every other flag except `--keystore` (which is accepted
+    /// but ignored, since this command never touches the keystore);
+    /// prints the table to stdout and exits.
+    #[clap(long)]
+    pub list_cards: bool,
+
+    /// **Experimental.** Target card ident (e.g. `000F:CB9A5355`) for
+    /// `--upload-to-card` and `--reset-card`. Use `--list-cards` to see
+    /// idents of attached cards. If omitted, there must be exactly one
+    /// OpenPGP card connected.
+    #[cfg(feature = "experimental")]
+    #[clap(long, value_name = "IDENT", hide = true)]
+    pub card_ident: Option<String>,
+
+    /// **Experimental.** Use the signing subkey (not the primary) as the
+    /// occupant of the card's signing slot. Equivalent to `--which sub`
+    /// but composes with `--include-encryption` / `--include-authentication`
+    /// for a full GPG-keytocard-style upload that keeps the primary
+    /// off-card. Errors if combined with `--which primary`.
+    #[cfg(feature = "experimental")]
+    #[clap(long, hide = true)]
+    pub include_signing: bool,
+
+    /// **Experimental.** Also upload the encryption subkey to the
+    /// card's decryption slot in the same `--upload-to-card` call. The
+    /// cert must carry an encryption subkey or libtumpa rejects the
+    /// upload before the destructive card reset.
+    #[cfg(feature = "experimental")]
+    #[clap(long, hide = true)]
+    pub include_encryption: bool,
+
+    /// **Experimental.** Also upload the authentication subkey to the
+    /// card's authentication slot in the same `--upload-to-card` call.
+    /// The cert must carry an authentication subkey or libtumpa
+    /// rejects the upload before the destructive card reset.
+    #[cfg(feature = "experimental")]
+    #[clap(long, hide = true)]
+    pub include_authentication: bool,
+
     // --- Positional ---
 
     /// Positional arguments (input files for --import).
@@ -178,6 +219,7 @@ pub enum SubCommand {
 #[cfg(feature = "experimental")]
 pub use tumpa_cli::upload_card::WhichKey;
 
+#[derive(Debug)]
 pub enum Mode {
     ListKeys,
     Agent {
@@ -224,13 +266,20 @@ pub enum Mode {
         ssh: bool,
     },
     CardStatus,
+    ListCards,
     #[cfg(feature = "experimental")]
     UploadToCard {
         key_id: String,
         which: Option<WhichKey>,
+        card_ident: Option<String>,
+        include_signing: bool,
+        include_encryption: bool,
+        include_authentication: bool,
     },
     #[cfg(feature = "experimental")]
-    ResetCard,
+    ResetCard {
+        card_ident: Option<String>,
+    },
     Completions {
         shell: Shell,
     },
@@ -241,6 +290,13 @@ impl TryFrom<Args> for Mode {
     type Error = String;
 
     fn try_from(value: Args) -> Result<Self, Self::Error> {
+        // `--list-cards` must win over subcommands (agent / ssh-agent /
+        // ssh-export), otherwise clap's subcommand match below would
+        // silently consume the invocation and ignore --list-cards.
+        if value.list_cards && value.subcmd.is_some() {
+            return Err("--list-cards cannot be combined with other flags".to_string());
+        }
+
         // Subcommands
         match value.subcmd {
             Some(SubCommand::Agent {
@@ -279,6 +335,54 @@ impl TryFrom<Args> for Mode {
             return Ok(Mode::CardStatus);
         }
 
+        // `--list-cards` is read-only and must be the only flag on the
+        // command line. It ignores --keystore (doesn't touch the
+        // keystore at all) but rejects every other flag — action
+        // flags, positionals, and modifiers like --armor / --binary /
+        // --output / --recursive / --force / --dry-run / --email that
+        // only make sense with another action — so users aren't
+        // surprised by silently-dropped arguments.
+        if value.list_cards {
+            if value.list_keys
+                || value.import
+                || value.export.is_some()
+                || value.info.is_some()
+                || value.desc.is_some()
+                || value.delete.is_some()
+                || value.search.is_some()
+                || value.fetch.is_some()
+                || value.show_socket.is_some()
+                || value.card_status
+                || value.completions.is_some()
+                || !value.input_files.is_empty()
+                || value.armor
+                || value.binary
+                || value.output.is_some()
+                || value.recursive
+                || value.force
+                || value.dry_run
+                || value.email
+            {
+                return Err("--list-cards cannot be combined with other flags".to_string());
+            }
+            #[cfg(feature = "experimental")]
+            {
+                if value.upload_to_card.is_some()
+                    || value.which.is_some()
+                    || value.reset_card
+                    || value.card_ident.is_some()
+                    || value.include_signing
+                    || value.include_encryption
+                    || value.include_authentication
+                {
+                    return Err(
+                        "--list-cards cannot be combined with other flags".to_string(),
+                    );
+                }
+            }
+            return Ok(Mode::ListCards);
+        }
+
         // --- Experimental card ops (only compiled in with
         // `--features experimental`) ---
         #[cfg(feature = "experimental")]
@@ -295,15 +399,49 @@ impl TryFrom<Args> for Mode {
                         ))
                     }
                 };
-                return Ok(Mode::UploadToCard { key_id, which });
+                if value.include_signing && which == Some(WhichKey::Primary) {
+                    return Err(
+                        "--include-signing contradicts --which primary; \
+                         --include-signing means \"signing subkey into the \
+                         signing slot\""
+                            .to_string(),
+                    );
+                }
+                return Ok(Mode::UploadToCard {
+                    key_id,
+                    which,
+                    card_ident: value.card_ident.clone(),
+                    include_signing: value.include_signing,
+                    include_encryption: value.include_encryption,
+                    include_authentication: value.include_authentication,
+                });
             }
 
             if value.which.is_some() {
                 return Err("--which only applies to --upload-to-card".to_string());
             }
 
+            if value.include_signing
+                || value.include_encryption
+                || value.include_authentication
+            {
+                return Err(
+                    "--include-signing / --include-encryption / \
+                     --include-authentication only apply to --upload-to-card"
+                        .to_string(),
+                );
+            }
+
             if value.reset_card {
-                return Ok(Mode::ResetCard);
+                return Ok(Mode::ResetCard {
+                    card_ident: value.card_ident.clone(),
+                });
+            }
+
+            if value.card_ident.is_some() {
+                return Err(
+                    "--card-ident only applies to --upload-to-card or --reset-card".to_string(),
+                );
             }
         }
 
@@ -368,5 +506,206 @@ impl TryFrom<Args> for Mode {
         }
 
         Ok(Mode::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Result<Mode, String> {
+        let args = Args::try_parse_from(
+            std::iter::once("tcli").chain(argv.iter().copied()),
+        )
+        .map_err(|e| e.to_string())?;
+        Mode::try_from(args)
+    }
+
+    #[test]
+    fn list_cards_alone_parses() {
+        assert!(matches!(parse(&["--list-cards"]), Ok(Mode::ListCards)));
+    }
+
+    #[test]
+    fn list_cards_rejects_other_action_flags() {
+        let err = parse(&["--list-cards", "--list-keys"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_cards_rejects_positional_inputs() {
+        let err = parse(&["--list-cards", "some-key.asc"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_cards_rejects_modifier_flags() {
+        // Spot-check one modifier from each family (bool and Option).
+        for extra in [&["--armor"][..], &["--output", "/tmp/x"][..], &["--email"][..]] {
+            let mut argv = vec!["--list-cards"];
+            argv.extend_from_slice(extra);
+            let err = parse(&argv).unwrap_err();
+            assert!(
+                err.contains("--list-cards cannot be combined"),
+                "for {extra:?} got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_cards_rejects_subcommand() {
+        let err = parse(&["--list-cards", "ssh-agent", "-H", "unix:///tmp/s"])
+            .unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn list_cards_rejects_card_ident() {
+        let err =
+            parse(&["--list-cards", "--card-ident", "000F:ABCD"]).unwrap_err();
+        assert!(
+            err.contains("--list-cards cannot be combined"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn card_ident_without_upload_or_reset_errors() {
+        let err = parse(&["--card-ident", "000F:ABCD"]).unwrap_err();
+        assert!(
+            err.contains("--card-ident only applies to"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn upload_to_card_threads_card_ident() {
+        let mode =
+            parse(&["--upload-to-card", "ABCDEF", "--card-ident", "000F:ABCD"])
+                .unwrap();
+        match mode {
+            Mode::UploadToCard {
+                key_id,
+                card_ident,
+                which,
+                include_signing,
+                include_encryption,
+                include_authentication,
+            } => {
+                assert_eq!(key_id, "ABCDEF");
+                assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
+                assert!(which.is_none());
+                assert!(!include_signing);
+                assert!(!include_encryption);
+                assert!(!include_authentication);
+            }
+            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn upload_to_card_threads_include_subkey_flags() {
+        let mode = parse(&[
+            "--upload-to-card",
+            "ABCDEF",
+            "--which",
+            "primary",
+            "--include-encryption",
+            "--include-authentication",
+        ])
+        .unwrap();
+        match mode {
+            Mode::UploadToCard {
+                include_signing,
+                include_encryption,
+                include_authentication,
+                ..
+            } => {
+                assert!(!include_signing);
+                assert!(include_encryption);
+                assert!(include_authentication);
+            }
+            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn include_subkey_flags_require_upload_to_card() {
+        let err = parse(&["--include-signing"]).unwrap_err();
+        assert!(
+            err.contains("only apply to --upload-to-card"),
+            "got: {err}"
+        );
+        let err = parse(&["--include-encryption"]).unwrap_err();
+        assert!(
+            err.contains("only apply to --upload-to-card"),
+            "got: {err}"
+        );
+        let err = parse(&["--include-authentication"]).unwrap_err();
+        assert!(
+            err.contains("only apply to --upload-to-card"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn include_signing_threads_through_mode() {
+        let mode = parse(&[
+            "--upload-to-card",
+            "ABCDEF",
+            "--include-signing",
+        ])
+        .unwrap();
+        match mode {
+            Mode::UploadToCard {
+                include_signing, ..
+            } => assert!(include_signing),
+            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn include_signing_contradicts_which_primary() {
+        let err = parse(&[
+            "--upload-to-card",
+            "ABCDEF",
+            "--which",
+            "primary",
+            "--include-signing",
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("contradicts --which primary"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn reset_card_threads_card_ident() {
+        let mode = parse(&["--reset-card", "--card-ident", "000F:ABCD"]).unwrap();
+        match mode {
+            Mode::ResetCard { card_ident } => {
+                assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
+            }
+            other => panic!("expected ResetCard, got {:?}", std::mem::discriminant(&other)),
+        }
     }
 }
