@@ -24,6 +24,11 @@
 #   cargo build --features experimental && ./tests/test_upload_card.sh
 #   TCLI_TEST_CARD_UPLOAD=1 ADMIN_PIN=12345678 TUMPA_PASSPHRASE=testpass \
 #       ./tests/test_upload_card.sh
+#
+# Multi-card host (e.g. Nitrokey 3 + jcecard virtual reader): set
+# TCLI_CARD_IDENT="MANUFACTURER:SERIAL" to pin every card-touching tcli
+# call to that reader. Stage A doesn't need it; Stage B does, otherwise
+# libtumpa refuses with the multi-card guard.
 
 set -euo pipefail
 
@@ -158,6 +163,14 @@ fi
 # Fresh jcecard after a factory reset defaults to 12345678.
 export TUMPA_ADMIN_PIN="$ADMIN_PIN"
 
+# Optional multi-card disambiguation. If TCLI_CARD_IDENT is set, every
+# `tcli` call that touches a card has `--card-ident "$TCLI_CARD_IDENT"`
+# appended. Empty/unset = same behaviour as before (auto-pick).
+CARD_IDENT_ARGS=()
+if [[ -n "${TCLI_CARD_IDENT:-}" ]]; then
+    CARD_IDENT_ARGS=(--card-ident "$TCLI_CARD_IDENT")
+fi
+
 command -v gpg >/dev/null || { echo "ERROR: gpg not installed"; exit 1; }
 command -v git >/dev/null || { echo "ERROR: git not installed"; exit 1; }
 
@@ -173,7 +186,7 @@ fi
 # This makes Stage B idempotent across local reruns — critical for the
 # virtual jcecard, whose state file persists across pcscd restarts.
 # After reset the admin PIN is back to its default of 12345678.
-if ! "$TCLI" --reset-card >"$TEST_DIR/reset.out" 2>&1; then
+if ! "$TCLI" --reset-card "${CARD_IDENT_ARGS[@]}" >"$TEST_DIR/reset.out" 2>&1; then
     fail "card reset (Stage B setup)" "$(cat "$TEST_DIR/reset.out")"
     exit 1
 fi
@@ -223,7 +236,7 @@ expect_error_containing \
     "$TCLI" --upload-to-card "$KEY_FP"
 
 # B3: upload the PRIMARY with --which primary.
-if "$TCLI" --upload-to-card "$KEY_FP" --which primary \
+if "$TCLI" --upload-to-card "$KEY_FP" --which primary "${CARD_IDENT_ARGS[@]}" \
         >"$TEST_DIR/upload.out" 2>&1; then
     ok "upload primary → signing slot"
 else
@@ -279,6 +292,83 @@ if git verify-commit "$C1" 2>"$TEST_DIR/v2.err"; then
 else
     fail "gpg verify" "$(cat "$TEST_DIR/v2.err")"
 fi
+
+# ---------------------------------------------------------------------
+# Stage B2 — Cv25519Modern primary upload (Nitrokey regression case)
+# ---------------------------------------------------------------------
+#
+# Stage B above exercised an RSA primary; this section uploads a V4
+# CipherSuite::Cv25519Modern primary (Ed25519 Certify+Sign primary,
+# X25519 encryption subkey, Ed25519 authentication subkey) which is
+# the exact shape that triggered SW 6A80 on Nitrokey 3 (opcard-rs >=
+# 1.5) before wecanencrypt 0.14.1 added the `0x40` Curve25519 public-
+# key prefix. If wecanencrypt ever regresses on that fix, this case
+# fails first.
+#
+# Fixture is shared with the wecanencrypt repo (tests/files/v4_x25519_cs_primary.asc).
+# Passphrase is fixed at "redhat" — overrides TUMPA_PASSPHRASE just for
+# this upload.
+
+cd "$PROJECT_DIR"
+
+V4_FIXTURE="$PROJECT_DIR/tests/keys/v4_x25519_cs_primary.asc"
+V4_FP="605D5E93B30357B5F15378D3102F0E908B001D4F"
+V4_PASS="redhat"
+
+[[ -f "$V4_FIXTURE" ]] || {
+    fail "v4 Cv25519Modern fixture present" "missing $V4_FIXTURE"
+    exit 1
+}
+
+# Reset card so this case starts from a clean slate (the RSA upload
+# above left a key in the signing slot).
+if ! "$TCLI" --reset-card "${CARD_IDENT_ARGS[@]}" >"$TEST_DIR/reset2.out" 2>&1; then
+    fail "card reset before Cv25519Modern upload" "$(cat "$TEST_DIR/reset2.out")"
+    exit 1
+fi
+ok "card reset before Cv25519Modern upload"
+
+if ! "$TCLI" --import "$V4_FIXTURE" >"$TEST_DIR/v4_import.out" 2>&1; then
+    fail "import Cv25519Modern fixture" "$(cat "$TEST_DIR/v4_import.out")"
+    exit 1
+fi
+ok "imported Cv25519Modern fixture $V4_FP"
+
+if TUMPA_PASSPHRASE="$V4_PASS" "$TCLI" \
+        --upload-to-card "$V4_FP" \
+        --which primary \
+        --include-encryption \
+        --include-authentication \
+        "${CARD_IDENT_ARGS[@]}" \
+        >"$TEST_DIR/v4_upload.out" 2>&1; then
+    ok "upload Cv25519Modern primary + E + A subkeys (Nitrokey path)"
+else
+    fail "upload Cv25519Modern primary + E + A subkeys" \
+        "$(cat "$TEST_DIR/v4_upload.out")"
+    cat "$TEST_DIR/v4_upload.out"
+    exit 1
+fi
+
+# Confirm all three slots actually hold the expected subkey fingerprints.
+# X25519 encryption subkey of v4_x25519_cs_primary.asc:
+V4_ENC_FP="D0C8D771D446D6170531DB90068C54B217F6384F"
+# Ed25519 authentication subkey of v4_x25519_cs_primary.asc:
+V4_AUTH_FP="626936B80CF7A4E793B893236134A4EB28428F1C"
+
+# tcli --card-status prints fingerprints with spaces every 4 chars; strip
+# them out and compare against the bare hex to keep the assertion robust.
+status_out=$("$TCLI" --card-status 2>&1)
+status_compact=$(printf '%s' "$status_out" | tr -d '[:space:]' | tr 'a-f' 'A-F')
+
+for label in "$V4_FP:signing" "$V4_ENC_FP:encryption" "$V4_AUTH_FP:authentication"; do
+    fp=${label%:*}; slot=${label##*:}
+    if grep -qF "$fp" <<<"$status_compact"; then
+        ok "Nitrokey reports $slot slot fp $fp"
+    else
+        fail "Nitrokey reports $slot slot fp $fp" \
+            "card-status output: $status_out"
+    fi
+done
 
 echo ""
 echo "================================="

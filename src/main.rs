@@ -64,11 +64,17 @@ fn main() {
             key_id,
             which,
             card_ident,
+            include_signing,
+            include_encryption,
+            include_authentication,
         }) => upload_card::cmd_upload_to_card(
             &key_id,
             which,
             keystore_path.as_ref(),
             card_ident.as_deref(),
+            include_signing,
+            include_encryption,
+            include_authentication,
         ),
         #[cfg(feature = "experimental")]
         Ok(Mode::ResetCard { card_ident }) => upload_card::cmd_reset_card(card_ident.as_deref()),

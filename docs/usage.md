@@ -1136,14 +1136,19 @@ attached.
 Builds compiled with `cargo build --features experimental` expose:
 
 ```
-tcli --upload-to-card FINGERPRINT [--which primary|sub] [--card-ident IDENT]
+tcli --upload-to-card FINGERPRINT
+     [--which primary|sub]
+     [--include-signing]
+     [--include-encryption]
+     [--include-authentication]
+     [--card-ident IDENT]
 ```
 
 **Warning — destructive:** `--upload-to-card` **factory-resets the
 card first** (cardholder name, URL, user PIN, and admin PIN are
-cleared to defaults) before writing the selected signing-slot. Only
-the key passphrase is prompted; the admin PIN is managed internally
-and set to the factory default `12345678` after reset.
+cleared to defaults) before writing the selected slots. Only the key
+passphrase is prompted; the admin PIN is managed internally and set
+to the factory default `12345678` after reset.
 
 With multiple cards attached, pass `--card-ident` (see
 `--list-cards` for the value). With a single card, `--card-ident`
@@ -1152,6 +1157,63 @@ can be omitted.
 For Nitrokey, the key must be `Cv25519Modern` (Ed25519 + X25519) or
 RSA — see the compatibility table above. Legacy `Cv25519`, `Ed448`,
 and `X448` keys are rejected before any I/O hits the card.
+
+#### Selecting the signing-slot occupant
+
+By default `--upload-to-card` puts the **primary** key into the card's
+signing slot. The behaviour matters when a cert carries both a
+sign-capable primary and a signing subkey:
+
+- `--which primary` — primary into signing slot (the default if the
+  cert has no signing subkey).
+- `--which sub` — signing subkey into signing slot.
+- `--include-signing` — same as `--which sub`, but composes naturally
+  with the other `--include-*` flags below. Mutually exclusive with
+  `--which primary`.
+
+If the cert has both a sign-capable primary and a signing subkey,
+`tcli` refuses an ambiguous upload and asks for an explicit
+disambiguation (`--include-signing`, `--which primary`, or
+`--which sub`).
+
+#### Filling decryption and authentication slots in the same call
+
+`libtumpa` factory-resets the card once per `--upload-to-card`
+invocation, so multiple sequential uploads would wipe each other.
+To fill more than one slot, do it in a single call with the
+`--include-*` flags:
+
+- `--include-encryption` — also writes the encryption subkey to the
+  card's decryption slot.
+- `--include-authentication` — also writes the authentication subkey
+  to the card's authentication slot.
+
+If the cert lacks the requested subkey, libtumpa rejects the upload
+**before** the destructive reset.
+
+The GPG `keytocard` equivalent (offline primary, all three subkeys on
+the card) is therefore one command:
+
+```
+tcli --upload-to-card FINGERPRINT \
+     --include-signing --include-encryption --include-authentication \
+     [--card-ident IDENT]
+```
+
+For a `Cv25519Modern` cert with a Certify+Sign primary (no separate
+signing subkey) the same all-slot pattern uses `--which primary`
+instead of `--include-signing`:
+
+```
+tcli --upload-to-card FINGERPRINT \
+     --which primary --include-encryption --include-authentication \
+     [--card-ident IDENT]
+```
+
+After the upload, `tcli --card-status` shows the three slot
+fingerprints. They should match the primary's signing slot occupant,
+the encryption subkey, and the authentication subkey of the source
+cert.
 
 Factory-reset without upload (e.g. to re-provision):
 

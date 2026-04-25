@@ -46,6 +46,9 @@ pub fn cmd_upload_to_card(
     which: Option<WhichKey>,
     keystore_path: Option<&PathBuf>,
     card_ident: Option<&str>,
+    include_signing: bool,
+    include_encryption: bool,
+    include_authentication: bool,
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
     let (_raw, key_info) = store::resolve_signer(&keystore, key_id)?;
@@ -57,8 +60,19 @@ pub fn cmd_upload_to_card(
         );
     }
 
+    // `--include-signing` is the discoverable spelling of "use the
+    // signing subkey, not the primary"; folding it into `which` here
+    // lets `select_sign_target` reuse the same decision matrix it has
+    // for the older `--which sub` form. Contradiction with
+    // `--which primary` is rejected at parse time.
+    let effective_which = if include_signing && which.is_none() {
+        Some(WhichKey::Sub)
+    } else {
+        which
+    };
+
     // Decide which component of the cert we should upload.
-    let target = select_sign_target(&key_info, which)?;
+    let target = select_sign_target(&key_info, effective_which)?;
 
     let uid = key_info
         .user_ids
@@ -77,30 +91,51 @@ pub fn cmd_upload_to_card(
     let key_pass = pinentry::get_passphrase(&key_desc, "Passphrase", None)
         .context("failed to read key passphrase")?;
 
-    // --- Warn about destructive reset ---
+    // --- Build the slot bitmask ---
+
+    let mut which_flags = match target {
+        SignTarget::Primary => flags::PRIMARY_TO_SIGNING,
+        SignTarget::Sub => flags::SIGNING_SUBKEY,
+    };
+    if include_encryption {
+        which_flags |= flags::ENCRYPTION;
+    }
+    if include_authentication {
+        which_flags |= flags::AUTHENTICATION;
+    }
 
     let target_label = match target {
         SignTarget::Primary => "primary key",
         SignTarget::Sub => "signing subkey",
     };
+
+    // Human-readable list of slots about to be filled, for the warning
+    // and the success message.
+    let mut slots_label = vec![format!("signing slot ({})", target_label)];
+    if include_encryption {
+        slots_label.push("decryption slot (encryption subkey)".into());
+    }
+    if include_authentication {
+        slots_label.push("authentication slot (authentication subkey)".into());
+    }
+    let slots_human = slots_label.join(", ");
+
+    // --- Warn about destructive reset ---
+    //
     // Worded conditionally: libtumpa's preflight guard may still
     // reject this upload (e.g. unsupported algorithm on the target
-    // card), in which case no reset actually runs.
+    // card, or a missing encryption/authentication subkey when those
+    // were requested), in which case no reset actually runs.
     eprintln!(
         "Warning: if this upload proceeds, the card will be \
          factory-reset (cardholder name, URL, user PIN, and admin PIN \
-         cleared to defaults) before writing the {} of {}.\n\
+         cleared to defaults) before writing {} of {}.\n\
          Press Ctrl-C within 3 seconds to abort.",
-        target_label, key_info.fingerprint
+        slots_human, key_info.fingerprint
     );
     std::thread::sleep(std::time::Duration::from_secs(3));
 
     // --- Upload ---
-
-    let which_flags = match target {
-        SignTarget::Primary => flags::PRIMARY_TO_SIGNING,
-        SignTarget::Sub => flags::SIGNING_SUBKEY,
-    };
 
     upload(
         &keystore,
@@ -112,13 +147,13 @@ pub fn cmd_upload_to_card(
     .with_context(|| {
         format!(
             "failed to upload {} of {} to card",
-            target_label, key_info.fingerprint
+            slots_human, key_info.fingerprint
         )
     })?;
 
     eprintln!(
-        "OK. Signing slot now holds the {} of {}.",
-        target_label, key_info.fingerprint
+        "OK. Card now holds {} of {}.",
+        slots_human, key_info.fingerprint
     );
 
     Ok(())
