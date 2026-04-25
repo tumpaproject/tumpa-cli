@@ -1,19 +1,33 @@
-//! Upload a secret key from the keystore to an OpenPGP smart card's
-//! signing slot.
+//! Upload a secret key from the keystore to an OpenPGP smart card.
 //!
 //! Available when `tcli` is built with the `experimental` Cargo
 //! feature (`cargo build --features experimental`). Invoked as
-//! `tcli --upload-to-card <FP> [--card-ident <IDENT>]`; if the
-//! certificate carries both a sign-capable primary key and a
-//! sign-capable signing subkey, the caller must pass
-//! `--which primary|sub` to disambiguate. With multiple cards
-//! attached, `--card-ident` selects the target (see `--list-cards`
-//! for valid idents); with a single card it can be omitted.
+//! `tcli --upload-to-card <FP> [--card-ident <IDENT>]
+//!  [--which primary|sub] [--include-signing]
+//!  [--include-encryption] [--include-authentication]`.
+//!
+//! By default the certificate's primary key (or its signing subkey,
+//! when the primary is not sign-capable) is written to the card's
+//! signing slot. Pass `--which primary|sub` to disambiguate when the
+//! cert has both a sign-capable primary and a signing subkey;
+//! `--include-signing` is the discoverable alias for "use the signing
+//! subkey, leave the primary off-card", composing with the
+//! `--include-*` flags below.
+//!
+//! `--include-encryption` and `--include-authentication` extend the
+//! same call to fill the card's decryption / authentication slots
+//! from the cert's encryption / authentication subkeys. Slots not
+//! mentioned are left empty after the factory reset.
+//!
+//! With multiple cards attached, `--card-ident` selects the target
+//! (see `--list-cards` for valid idents); with a single card it can
+//! be omitted. libtumpa's multi-card guard rejects an implicit
+//! target when more than one card is connected.
 //!
 //! Upload goes through `libtumpa::card::upload::upload`, which runs a
 //! preflight algorithm check (e.g. rejects legacy `Cv25519` on Nitrokey
 //! before any destructive I/O) and then **factory-resets** the card
-//! before writing the selected slot. Cardholder name, URL, user PIN,
+//! before writing the selected slots. Cardholder name, URL, user PIN,
 //! and admin PIN are cleared back to factory defaults. Only the key
 //! passphrase is prompted — the admin PIN is managed internally by
 //! libtumpa (it uses the factory default after reset).
@@ -68,7 +82,26 @@ pub fn cmd_upload_to_card(
     // lets `select_sign_target` reuse the same decision matrix it has
     // for the older `--which sub` form. Contradiction with
     // `--which primary` is rejected at parse time.
+    //
+    // Pre-check the "no signing subkey" case here before the synthesis
+    // so the user gets an error that names `--include-signing`. If we
+    // let the synthesized `Some(Sub)` flow into `select_sign_target`,
+    // its generic message would say "drop `--which`" -- but the user
+    // never passed `--which`.
     let effective_which = if include_signing && which.is_none() {
+        let has_signing_subkey = key_info.subkeys.iter().any(|sk| {
+            sk.key_type == KeyType::Signing
+                && !sk.is_revoked
+                && !store::subkey_is_expired(sk)
+        });
+        if !has_signing_subkey {
+            bail!(
+                "certificate {} has no signing subkey — drop `--include-signing` \
+                 (the primary will be used as the signing-slot occupant) or \
+                 generate a signing subkey first",
+                key_info.fingerprint
+            );
+        }
         Some(WhichKey::Sub)
     } else {
         which

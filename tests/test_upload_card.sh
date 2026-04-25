@@ -26,9 +26,12 @@
 #       ./tests/test_upload_card.sh
 #
 # Multi-card host (e.g. Nitrokey 3 + jcecard virtual reader): set
-# TCLI_CARD_IDENT="MANUFACTURER:SERIAL" to pin every card-touching tcli
-# call to that reader. Stage A doesn't need it; Stage B does, otherwise
-# libtumpa refuses with the multi-card guard.
+# TCLI_CARD_IDENT to the IDENT printed by `tcli --list-cards` (e.g.
+# "000F:CB9A5355", i.e. MFG_ID:SERIAL where MFG_ID is the 4-hex
+# manufacturer code, NOT the human-readable manufacturer name) to pin
+# every card-touching tcli call to that reader. Stage A doesn't need
+# it; Stage B does, otherwise libtumpa refuses with the multi-card
+# guard.
 
 set -euo pipefail
 
