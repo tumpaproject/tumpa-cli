@@ -30,8 +30,12 @@ test-pass: build
 test-keystore: build
     ./tests/test_keystore.sh
 
+# Regression test for issue #19: agent must not cache a wrong passphrase
+test-agent-cache: build
+    TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_agent_no_bad_cache.sh
+
 # Run all test suites
-test-all: test test-compat test-pass test-keystore
+test-all: test test-compat test-pass test-keystore test-agent-cache
 
 # Build, lint, and test
 check: build lint test
