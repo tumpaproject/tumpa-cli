@@ -3,9 +3,12 @@
 //!
 //! Available when `tcli` is built with the `experimental` Cargo
 //! feature (`cargo build --features experimental`). Invoked as
-//! `tcli --upload-to-card <FP>`; if the certificate carries both a
-//! sign-capable primary key and a sign-capable signing subkey, the
-//! caller must pass `--which primary|sub` to disambiguate.
+//! `tcli --upload-to-card <FP> [--card-ident <IDENT>]`; if the
+//! certificate carries both a sign-capable primary key and a
+//! sign-capable signing subkey, the caller must pass
+//! `--which primary|sub` to disambiguate. With multiple cards
+//! attached, `--card-ident` selects the target (see `--list-cards`
+//! for valid idents); with a single card it can be omitted.
 //!
 //! Upload goes through `libtumpa::card::upload::upload`, which runs a
 //! preflight algorithm check (e.g. rejects legacy `Cv25519` on Nitrokey

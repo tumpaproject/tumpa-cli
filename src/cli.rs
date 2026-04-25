@@ -113,7 +113,9 @@ pub struct Args {
 
     /// List all connected OpenPGP smart cards with their ident,
     /// manufacturer, serial, and cardholder name. Mutually exclusive
-    /// with every other flag; prints the table to stdout and exits.
+    /// with every other flag except `--keystore` (which is accepted
+    /// but ignored, since this command never touches the keystore);
+    /// prints the table to stdout and exits.
     #[clap(long)]
     pub list_cards: bool,
 

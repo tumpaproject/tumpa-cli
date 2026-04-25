@@ -19,7 +19,7 @@ pub fn cmd_list_cards() -> Result<()> {
         .context("failed to enumerate OpenPGP cards")?;
 
     if cards.is_empty() {
-        eprintln!("No OpenPGP cards connected.");
+        println!("No OpenPGP cards connected.");
         return Ok(());
     }
 

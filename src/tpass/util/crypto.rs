@@ -96,7 +96,7 @@ fn try_decrypt_on_card(
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
-    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj) {
+    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj, Some(&card.card.ident)) {
         Ok(z) => {
             pinentry::cache_passphrase(&card.key_info.fingerprint, &pin);
             Ok(Zeroizing::new(z.to_vec()))
