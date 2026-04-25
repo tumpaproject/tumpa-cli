@@ -130,11 +130,12 @@ fn decrypt_with_software(
             .map(|u| u.value.as_str())
             .unwrap_or(&key_info.fingerprint)
     );
-    let passphrase =
+    // `Passphrase` is `Zeroizing<String>`; pass the value libtumpa
+    // expects directly without a plaintext `to_string()` copy.
+    let passphrase: Passphrase =
         pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
-    let pass = Passphrase::new(passphrase.to_string());
 
-    match ltd::decrypt_with_key(&key_data, ciphertext, &pass) {
+    match ltd::decrypt_with_key(&key_data, ciphertext, &passphrase) {
         Ok(z) => {
             pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
             Ok(Zeroizing::new(z.to_vec()))
@@ -219,20 +220,22 @@ pub fn sign_file_detached(
                 .map(|u| u.value.as_str())
                 .unwrap_or(&key_info.fingerprint)
         );
-        let passphrase =
+        // `Passphrase` is `Zeroizing<String>`; pass it directly to
+        // libtumpa to avoid an extra plaintext `to_string()` copy.
+        let passphrase: Passphrase =
             pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
-        let pass = Passphrase::new(passphrase.to_string());
 
-        let signature = match libtumpa::sign::sign_detached_with_key(&key_data, &data, &pass) {
-            Ok(sig) => {
-                pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
-                sig
-            }
-            Err(e) => {
-                pinentry::clear_cached_passphrase(&key_info.fingerprint);
-                return Err(anyhow::anyhow!("{e}")).context("Signing failed");
-            }
-        };
+        let signature =
+            match libtumpa::sign::sign_detached_with_key(&key_data, &data, &passphrase) {
+                Ok(sig) => {
+                    pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+                    sig
+                }
+                Err(e) => {
+                    pinentry::clear_cached_passphrase(&key_info.fingerprint);
+                    return Err(anyhow::anyhow!("{e}")).context("Signing failed");
+                }
+            };
 
         std::fs::write(&sig_file, signature.as_bytes())
             .context(format!("Failed to write signature file {:?}", sig_file))?;

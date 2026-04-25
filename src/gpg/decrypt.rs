@@ -154,11 +154,12 @@ fn decrypt_with_software(
             .map(|u| u.value.as_str())
             .unwrap_or(&key_info.fingerprint)
     );
-    let passphrase =
+    // `Passphrase` is `Zeroizing<String>`; pass the value libtumpa
+    // expects directly without a plaintext `to_string()` copy.
+    let passphrase: Passphrase =
         pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
-    let pass = Passphrase::new(passphrase.to_string());
 
-    match ltd::decrypt_with_key(&key_data, ciphertext, &pass) {
+    match ltd::decrypt_with_key(&key_data, ciphertext, &passphrase) {
         Ok(z) => {
             pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
             Ok(Zeroizing::new(z.to_vec()))

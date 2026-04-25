@@ -49,7 +49,9 @@ pub fn sign(
     // we can write it into the agent cache only after libtumpa
     // confirms the sign succeeded. libtumpa may call the closure twice
     // (CardPin then KeyPassphrase fallback); the final value is the
-    // one that actually drove the successful op.
+    // one that actually drove the successful op. The secret stays in
+    // `Zeroizing<String>` end-to-end so transient copies are wiped on
+    // drop.
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
     let result = libtumpa_sign_detached(&key_data, &key_info, &buffer, |req| match req {
@@ -58,16 +60,22 @@ pub fn sign(
             key_info,
         } => {
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
-            let pin = prompt_card_pin(card_ident, key_info)
+            let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            *last_secret.borrow_mut() = Some(Zeroizing::new(pin.clone()));
-            Ok(Secret::Pin(Pin::new(pin.into_bytes())))
+            // Pin is `Zeroizing<Vec<u8>>`; the source bytes get copied
+            // into a zeroizing Vec, then `pin` (the `Zeroizing<String>`)
+            // moves into `last_secret`.
+            let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
+            *last_secret.borrow_mut() = Some(pin);
+            Ok(Secret::Pin(pin_bytes))
         }
         SecretRequest::KeyPassphrase { key_info } => {
-            let pass = prompt_key_passphrase(key_info)
+            let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            *last_secret.borrow_mut() = Some(Zeroizing::new(pass.clone()));
-            Ok(Secret::Passphrase(Passphrase::new(pass)))
+            // `Passphrase` is `Zeroizing<String>`; cloning produces
+            // another zeroizing copy (no plaintext leak).
+            *last_secret.borrow_mut() = Some(pass.clone());
+            Ok(Secret::Passphrase(pass))
         }
     });
 
@@ -118,7 +126,13 @@ pub fn sign(
 
 /// Prompt the user for the card PIN via pinentry, including card-status
 /// context (cardholder, signature counter) when available.
-fn prompt_card_pin(card_ident: &str, key_info: &wecanencrypt::KeyInfo) -> Result<String> {
+///
+/// Returns `Zeroizing<String>` so the secret is wiped from memory when
+/// the value is dropped — never converted to a plain `String`.
+fn prompt_card_pin(
+    card_ident: &str,
+    key_info: &wecanencrypt::KeyInfo,
+) -> Result<Zeroizing<String>> {
     let card_info = wecanencrypt::card::get_card_details(Some(card_ident)).ok();
     let uid = primary_uid(key_info);
 
@@ -137,15 +151,16 @@ fn prompt_card_pin(card_ident: &str, key_info: &wecanencrypt::KeyInfo) -> Result
     }
     desc.push_str(&format!("\n\nSigning as: {}", uid));
 
-    let pin = pinentry::get_passphrase(&desc, "PIN", Some(&key_info.fingerprint))?;
-    Ok(pin.to_string())
+    pinentry::get_passphrase(&desc, "PIN", Some(&key_info.fingerprint))
 }
 
 /// Prompt the user for the secret-key passphrase via pinentry.
-fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<String> {
+///
+/// Returns `Zeroizing<String>` so the secret is wiped from memory when
+/// the value is dropped — never converted to a plain `String`.
+fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<Zeroizing<String>> {
     let desc = format!("Enter passphrase for key {}", primary_uid(key_info));
-    let pass = pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
-    Ok(pass.to_string())
+    pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))
 }
 
 /// Get the primary UID string from a certificate, falling back to the first
