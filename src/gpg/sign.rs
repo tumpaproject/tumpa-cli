@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
+use zeroize::Zeroizing;
 
 use libtumpa::sign::{
     sign_detached as libtumpa_sign_detached, Secret, SecretRequest, SignBackend,
@@ -44,6 +45,13 @@ pub fn sign(
     // `tcli: Signed with card <ident> ...` message after libtumpa returns.
     let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
 
+    // Capture the secret value produced by the latest closure call so
+    // we can write it into the agent cache only after libtumpa
+    // confirms the sign succeeded. libtumpa may call the closure twice
+    // (CardPin then KeyPassphrase fallback); the final value is the
+    // one that actually drove the successful op.
+    let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
+
     let result = libtumpa_sign_detached(&key_data, &key_info, &buffer, |req| match req {
         SecretRequest::CardPin {
             card_ident,
@@ -52,16 +60,29 @@ pub fn sign(
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
             let pin = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            *last_secret.borrow_mut() = Some(Zeroizing::new(pin.clone()));
             Ok(Secret::Pin(Pin::new(pin.into_bytes())))
         }
         SecretRequest::KeyPassphrase { key_info } => {
             let pass = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            *last_secret.borrow_mut() = Some(Zeroizing::new(pass.clone()));
             Ok(Secret::Passphrase(Passphrase::new(pass)))
         }
     });
 
-    let (signature, backend) = result.map_err(|e| anyhow!("{e}"))?;
+    let (signature, backend) = match result {
+        Ok(ok) => {
+            if let Some(secret) = last_secret.borrow().as_ref() {
+                pinentry::cache_passphrase(&key_info.fingerprint, secret);
+            }
+            ok
+        }
+        Err(e) => {
+            pinentry::clear_cached_passphrase(&key_info.fingerprint);
+            return Err(anyhow!("{e}"));
+        }
+    };
 
     match backend {
         SignBackend::Card => {

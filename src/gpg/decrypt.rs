@@ -116,10 +116,16 @@ fn try_decrypt_on_card(
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
-    ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj)
-        .map(|z| Zeroizing::new(z.to_vec()))
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("Card decryption failed")
+    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj) {
+        Ok(z) => {
+            pinentry::cache_passphrase(&card.key_info.fingerprint, &pin);
+            Ok(Zeroizing::new(z.to_vec()))
+        }
+        Err(e) => {
+            pinentry::clear_cached_passphrase(&card.key_info.fingerprint);
+            Err(anyhow::anyhow!("{e}")).context("Card decryption failed")
+        }
+    }
 }
 
 /// Software fallback: find a secret key in the keystore for one of the
@@ -152,10 +158,16 @@ fn decrypt_with_software(
         pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
     let pass = Passphrase::new(passphrase.to_string());
 
-    ltd::decrypt_with_key(&key_data, ciphertext, &pass)
-        .map(|z| Zeroizing::new(z.to_vec()))
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("Decryption failed")
+    match ltd::decrypt_with_key(&key_data, ciphertext, &pass) {
+        Ok(z) => {
+            pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+            Ok(Zeroizing::new(z.to_vec()))
+        }
+        Err(e) => {
+            pinentry::clear_cached_passphrase(&key_info.fingerprint);
+            Err(anyhow::anyhow!("{e}")).context("Decryption failed")
+        }
+    }
 }
 
 /// Inspect an encrypted file and print which key IDs it is encrypted for.

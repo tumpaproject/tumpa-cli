@@ -11,16 +11,17 @@ use crate::agent;
 /// Get a passphrase or PIN via the pinentry program.
 ///
 /// Acquisition order:
-/// 1. Agent cache (if tcli agent is running)
+/// 1. Agent cache (if tcli agent is running and `cache_key` is `Some`)
 /// 2. TUMPA_PASSPHRASE env var
 /// 3. pinentry program
 /// 4. Terminal prompt
 ///
-/// If a passphrase is obtained from steps 2-4 and the agent is running,
-/// it is stored in the agent cache for future use.
-///
-/// `cache_key` is the key fingerprint used for agent cache lookups.
-/// If None, agent caching is skipped.
+/// `cache_key` is the key fingerprint used for **reading** the agent
+/// cache. A returned value is **never written** to the cache by this
+/// function — the caller must call [`cache_passphrase`] after a
+/// successful sign/decrypt and [`clear_cached_passphrase`] after a
+/// failed one. Caching unverified values would burn card PIN attempts
+/// when the user typed the wrong PIN once.
 pub fn get_passphrase(
     description: &str,
     prompt: &str,
@@ -48,32 +49,36 @@ pub fn get_passphrase(
     // passphrases and user PINs.
     if let Ok(pass) = std::env::var("TUMPA_PASSPHRASE") {
         log::debug!("Using passphrase from TUMPA_PASSPHRASE env var");
-        let pass = Zeroizing::new(pass);
-        if let Some(key) = cache_key {
-            try_agent_put(key, &pass);
-        }
-        return Ok(pass);
+        return Ok(Zeroizing::new(pass));
     }
 
     // 3. Try pinentry
     match try_pinentry(description, prompt) {
-        Ok(pass) => {
-            if let Some(key) = cache_key {
-                try_agent_put(key, &pass);
-            }
-            return Ok(pass);
-        }
+        Ok(pass) => return Ok(pass),
         Err(e) => {
             log::debug!("pinentry failed: {}, falling back to terminal", e);
         }
     }
 
     // 4. Fall back to terminal prompt
-    let pass = rpassword_prompt(prompt)?;
-    if let Some(key) = cache_key {
-        try_agent_put(key, &pass);
-    }
-    Ok(pass)
+    rpassword_prompt(prompt)
+}
+
+/// Store a passphrase / PIN in the running tumpa agent's cache.
+///
+/// Call this only **after** the value has been confirmed correct by a
+/// successful sign or decrypt. Silent no-op if no agent is running.
+pub fn cache_passphrase(fingerprint: &str, passphrase: &Zeroizing<String>) {
+    try_agent_put(fingerprint, passphrase);
+}
+
+/// Drop a cached passphrase / PIN from the running tumpa agent.
+///
+/// Call this whenever a sign or decrypt operation fails, to ensure a
+/// stale (or freshly-typed-but-wrong) value is never reused on the
+/// next request. Silent no-op if no agent is running.
+pub fn clear_cached_passphrase(fingerprint: &str) {
+    try_agent_clear(fingerprint);
 }
 
 /// Try to get a cached passphrase from the agent.
@@ -122,6 +127,32 @@ fn try_agent_put(fingerprint: &str, passphrase: &Zeroizing<String>) {
         base64::engine::general_purpose::STANDARD.encode(passphrase.as_bytes())
     };
     let request = format!("PUT_PASSPHRASE {} {}\n", fingerprint, b64);
+    let _ = stream.write_all(request.as_bytes());
+
+    // Read the OK response
+    let mut response = String::new();
+    let mut reader = std::io::BufReader::new(&stream);
+    let _ = reader.read_line(&mut response);
+}
+
+/// Try to drop a cached passphrase from the agent.
+/// Silently does nothing if agent is not running.
+fn try_agent_clear(fingerprint: &str) {
+    let socket_path = match agent::default_socket_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok();
+
+    let request = format!("CLEAR_PASSPHRASE {}\n", fingerprint);
     let _ = stream.write_all(request.as_bytes());
 
     // Read the OK response
@@ -400,5 +431,45 @@ mod cardholder_tests {
     #[test]
     fn single_given_name_no_surname_with_spaces() {
         assert_eq!(format_cardholder_name("<<Kushal<Das"), "Kushal Das");
+    }
+}
+
+#[cfg(test)]
+mod cache_helper_tests {
+    //! Coverage for the agent cache helpers in their no-agent branch.
+    //!
+    //! When no agent is listening on `~/.tumpa/agent.sock`, the helpers
+    //! must silently no-op rather than panic or block. This is the
+    //! contract callers in gpg/sign and gpg/decrypt rely on.
+    use super::{cache_passphrase, clear_cached_passphrase};
+    use zeroize::Zeroizing;
+
+    /// Point HOME at a guaranteed non-existent path so
+    /// `default_socket_path()` resolves to a socket that can't be
+    /// reached. Both helpers must return without error.
+    ///
+    /// This `set_var` is process-wide; gating the assertions to only
+    /// these two tests in this module keeps the blast radius small,
+    /// and the tests don't depend on the original HOME value.
+    fn point_home_at_nothing() {
+        unsafe {
+            std::env::set_var(
+                "HOME",
+                "/tmp/tumpa-cli-pinentry-test-no-such-dir-xyz",
+            );
+        }
+    }
+
+    #[test]
+    fn cache_passphrase_no_agent_is_silent() {
+        point_home_at_nothing();
+        let pass = Zeroizing::new("ignored".to_string());
+        cache_passphrase("AAAAAAAAAAAAAAAA", &pass);
+    }
+
+    #[test]
+    fn clear_cached_passphrase_no_agent_is_silent() {
+        point_home_at_nothing();
+        clear_cached_passphrase("AAAAAAAAAAAAAAAA");
     }
 }
