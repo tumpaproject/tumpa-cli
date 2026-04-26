@@ -35,9 +35,10 @@ pub fn encrypt(
     };
 
     let recip_refs: Vec<&str> = recipients.iter().map(|s| s.as_str()).collect();
-    let ciphertext = libtumpa::encrypt::encrypt_to_recipients(&keystore, &recip_refs, &plaintext, armor)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("Encryption failed")?;
+    let ciphertext =
+        libtumpa::encrypt::encrypt_to_recipients(&keystore, &recip_refs, &plaintext, armor)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("Encryption failed")?;
 
     std::fs::write(output, &ciphertext)
         .context(format!("Failed to write output file {:?}", output))?;

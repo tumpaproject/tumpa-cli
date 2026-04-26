@@ -30,12 +30,12 @@ pub fn verify(
     data.read_to_end(&mut buffer)
         .context("Failed to read data from stdin")?;
 
-    let sig_bytes = std::fs::read(sig_path)
-        .context(format!("Failed to read signature file {:?}", sig_path))?;
+    let sig_bytes =
+        std::fs::read(sig_path).context(format!("Failed to read signature file {:?}", sig_path))?;
 
     let keystore = store::open_keystore(keystore_path)?;
-    let outcome = verify_detached(&keystore, &buffer, &sig_bytes)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let outcome =
+        verify_detached(&keystore, &buffer, &sig_bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     match outcome {
         VerifyOutcome::UnknownKey { key_id } => {
@@ -90,7 +90,11 @@ pub fn verify(
             } else {
                 writeln!(out, "\n[GNUPG:] GOODSIG {}", verifier_key_id)?;
             }
-            writeln!(out, "[GNUPG:] VALIDSIG {}", verifier_fingerprint.to_uppercase())?;
+            writeln!(
+                out,
+                "[GNUPG:] VALIDSIG {}",
+                verifier_fingerprint.to_uppercase()
+            )?;
             // %G? = "G" requires TRUST_FULLY or TRUST_ULTIMATE; without it
             // git's %G? would be "U" (untrusted) and bump-tag rejects that.
             write!(out, "[GNUPG:] TRUST_FULLY 0 pgp")?;

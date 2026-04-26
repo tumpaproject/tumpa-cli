@@ -3,30 +3,52 @@
 //! Simple line-based protocol over Unix socket:
 //!
 //! ```text
-//! Client → Agent:  GET_PASSPHRASE <fingerprint>\n
+//! Client → Agent:  GET_PASSPHRASE <cache-key>\n
 //! Agent → Client:  PASSPHRASE <base64>\n  or  NOT_FOUND\n
 //!
-//! Client → Agent:  PUT_PASSPHRASE <fingerprint> <base64>\n
+//! Client → Agent:  PUT_PASSPHRASE <cache-key> <base64>\n
 //! Agent → Client:  OK\n
 //!
-//! Client → Agent:  CLEAR_PASSPHRASE <fingerprint>\n
+//! Client → Agent:  CLEAR_PASSPHRASE <cache-key>\n
 //! Agent → Client:  OK\n
 //! ```
 
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
-/// Validate that a fingerprint is a hex string of 16 or 40 characters.
-fn is_valid_fingerprint(s: &str) -> bool {
-    let len = s.len();
-    (len == 16 || len == 40) && s.chars().all(|c| c.is_ascii_hexdigit())
+/// Validate an agent cache key.
+///
+/// Raw fingerprint keys are 16 or 40 hex chars. Namespaced cache keys use
+/// `<slot>:<fingerprint>`, where slot is `pin` or `passphrase`.
+fn is_valid_cache_key(s: &str) -> bool {
+    fn is_valid_fingerprint(s: &str) -> bool {
+        let len = s.len();
+        (len == 16 || len == 40) && s.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    if is_valid_fingerprint(s) {
+        return true;
+    }
+
+    let Some((slot, fingerprint)) = s.split_once(':') else {
+        return false;
+    };
+
+    matches!(slot, "pin" | "passphrase") && is_valid_fingerprint(fingerprint)
 }
 
 /// A request from a client to the agent.
 pub enum Request {
-    Get { fingerprint: String },
-    Put { fingerprint: String, passphrase: Zeroizing<String> },
-    Clear { fingerprint: String },
+    Get {
+        cache_key: String,
+    },
+    Put {
+        cache_key: String,
+        passphrase: Zeroizing<String>,
+    },
+    Clear {
+        cache_key: String,
+    },
 }
 
 /// A response from the agent to a client.
@@ -40,24 +62,24 @@ pub enum Response {
 pub fn parse_request(line: &str) -> Option<Request> {
     let line = line.trim();
 
-    if let Some(fp) = line.strip_prefix("GET_PASSPHRASE ") {
-        let fp = fp.trim();
-        if is_valid_fingerprint(fp) {
+    if let Some(cache_key) = line.strip_prefix("GET_PASSPHRASE ") {
+        let cache_key = cache_key.trim();
+        if is_valid_cache_key(cache_key) {
             return Some(Request::Get {
-                fingerprint: fp.to_string(),
+                cache_key: cache_key.to_string(),
             });
         }
     }
 
     if let Some(rest) = line.strip_prefix("PUT_PASSPHRASE ") {
         let mut parts = rest.splitn(2, ' ');
-        if let (Some(fp), Some(b64)) = (parts.next(), parts.next()) {
-            let fp = fp.trim();
+        if let (Some(cache_key), Some(b64)) = (parts.next(), parts.next()) {
+            let cache_key = cache_key.trim();
             let b64 = b64.trim();
-            if is_valid_fingerprint(fp) && !b64.is_empty() {
+            if is_valid_cache_key(cache_key) && !b64.is_empty() {
                 if let Ok(decoded) = base64_decode(b64) {
                     return Some(Request::Put {
-                        fingerprint: fp.to_string(),
+                        cache_key: cache_key.to_string(),
                         passphrase: decoded,
                     });
                 }
@@ -65,11 +87,11 @@ pub fn parse_request(line: &str) -> Option<Request> {
         }
     }
 
-    if let Some(fp) = line.strip_prefix("CLEAR_PASSPHRASE ") {
-        let fp = fp.trim();
-        if is_valid_fingerprint(fp) {
+    if let Some(cache_key) = line.strip_prefix("CLEAR_PASSPHRASE ") {
+        let cache_key = cache_key.trim();
+        if is_valid_cache_key(cache_key) {
             return Some(Request::Clear {
-                fingerprint: fp.to_string(),
+                cache_key: cache_key.to_string(),
             });
         }
     }
@@ -119,4 +141,38 @@ fn base64_decode(s: &str) -> Result<Zeroizing<String>> {
         .context("Invalid base64")?;
     let s = String::from_utf8(bytes).context("Invalid UTF-8")?;
     Ok(Zeroizing::new(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_request, Request};
+
+    #[test]
+    fn parse_request_accepts_namespaced_cache_keys() {
+        let get = parse_request("GET_PASSPHRASE pin:0123456789ABCDEF\n");
+        assert!(matches!(
+            get,
+            Some(Request::Get { cache_key }) if cache_key == "pin:0123456789ABCDEF"
+        ));
+
+        let put = parse_request("PUT_PASSPHRASE passphrase:0123456789ABCDEF c2VjcmV0\n");
+        assert!(matches!(
+            put,
+            Some(Request::Put { cache_key, .. }) if cache_key == "passphrase:0123456789ABCDEF"
+        ));
+
+        let clear =
+            parse_request("CLEAR_PASSPHRASE passphrase:0123456789ABCDEF0123456789ABCDEF01234567\n");
+        assert!(matches!(
+            clear,
+            Some(Request::Clear { cache_key })
+                if cache_key == "passphrase:0123456789ABCDEF0123456789ABCDEF01234567"
+        ));
+    }
+
+    #[test]
+    fn parse_request_rejects_invalid_namespaced_cache_keys() {
+        assert!(parse_request("GET_PASSPHRASE other:0123456789ABCDEF\n").is_none());
+        assert!(parse_request("GET_PASSPHRASE pin:not-hex\n").is_none());
+    }
 }

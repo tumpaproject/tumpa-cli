@@ -13,13 +13,11 @@ use clap_complete::Shell;
 #[clap(name = "tcli", version)]
 pub struct Args {
     // --- Key listing ---
-
     /// List keys in the tumpa keystore (human-readable).
     #[clap(long)]
     pub list_keys: bool,
 
     // --- Key management ---
-
     /// Import keys from files or directories.
     #[clap(long)]
     pub import: bool,
@@ -57,8 +55,39 @@ pub struct Args {
     #[clap(long)]
     pub card_status: bool,
 
-    // --- Output ---
+    // --- Signing and verification ---
+    /// Create a detached signature for FILE (use `-` for stdin).
+    /// Default output is `<FILE>.asc` (ASCII-armored). Combine with
+    /// `--binary` for `<FILE>.sig` (binary). Override the destination
+    /// with `-o`/`--output` (`-` writes to stdout).
+    #[clap(long, value_name = "FILE")]
+    pub sign: Option<PathBuf>,
 
+    /// Create an inline (cleartext, `-----BEGIN PGP SIGNED MESSAGE-----`)
+    /// signature for FILE (use `-` for stdin). Default output is
+    /// `<FILE>.asc`; override with `-o`/`--output`. Software keys only —
+    /// card-only keys are rejected.
+    #[clap(long, value_name = "FILE")]
+    pub sign_inline: Option<PathBuf>,
+
+    /// Verify a signature on FILE (use `-` for stdin). For a detached
+    /// signature, also pass `--signature SIG_FILE`. Without `--signature`
+    /// the file itself must contain a cleartext-signed message.
+    #[clap(long, value_name = "FILE")]
+    pub verify: Option<PathBuf>,
+
+    /// For `--sign` / `--sign-inline`: signer identifier
+    /// (fingerprint, key ID, or exact email).
+    /// For `--verify`: path to a public key file to verify against
+    /// (omit to look the signer up in the keystore by issuer ID).
+    #[clap(long, value_name = "SIGNER|PUBKEY_FILE")]
+    pub with_key: Option<String>,
+
+    /// Detached signature file (only valid with `--verify`).
+    #[clap(long, value_name = "SIG_FILE")]
+    pub signature: Option<PathBuf>,
+
+    // --- Output ---
     /// Output ASCII-armored data (for --export).
     #[clap(long, short = 'a')]
     pub armor: bool,
@@ -89,7 +118,6 @@ pub struct Args {
 
     // --- Experimental (compile-time gated behind the `experimental`
     // Cargo feature; the flags below only exist on feature builds).
-
     /// **Experimental.** Upload a secret key from the keystore to the
     /// signing slot of a connected OpenPGP smart card. If the key has
     /// both a sign-capable primary key and a sign-capable subkey,
@@ -153,24 +181,20 @@ pub struct Args {
     pub include_authentication: bool,
 
     // --- Positional ---
-
     /// Positional arguments (input files for --import).
     pub input_files: Vec<String>,
 
     // --- Keystore ---
-
     /// Path to tumpa keystore database. Defaults to ~/.tumpa/keys.db.
     #[clap(long, env = "TUMPA_KEYSTORE")]
     pub keystore: Option<PathBuf>,
 
     // --- SSH agent ---
-
     /// SSH agent subcommand.
     #[clap(subcommand)]
     pub subcmd: Option<SubCommand>,
 
     // --- Shell completions ---
-
     /// Generate shell completions and print to stdout.
     #[clap(long, value_name = "SHELL", value_enum)]
     pub completions: Option<Shell>,
@@ -217,7 +241,7 @@ pub enum SubCommand {
 }
 
 #[cfg(feature = "experimental")]
-pub use tumpa_cli::upload_card::WhichKey;
+pub use crate::upload_card::WhichKey;
 
 #[derive(Debug)]
 pub enum Mode {
@@ -283,7 +307,28 @@ pub enum Mode {
     Completions {
         shell: Shell,
     },
+    Sign {
+        input: PathBuf,
+        with_key: String,
+        binary: bool,
+        output: Option<PathBuf>,
+    },
+    SignInline {
+        input: PathBuf,
+        with_key: String,
+        output: Option<PathBuf>,
+    },
+    Verify {
+        input: PathBuf,
+        signature: Option<PathBuf>,
+        with_key_file: Option<PathBuf>,
+    },
     None,
+}
+
+/// Returns true if `path` is the literal `-` stdin/stdout sentinel.
+pub fn is_stdio(path: &std::path::Path) -> bool {
+    path.as_os_str() == "-"
 }
 
 impl TryFrom<Args> for Mode {
@@ -295,6 +340,20 @@ impl TryFrom<Args> for Mode {
         // silently consume the invocation and ignore --list-cards.
         if value.list_cards && value.subcmd.is_some() {
             return Err("--list-cards cannot be combined with other flags".to_string());
+        }
+
+        // Sign/verify flags must also beat subcommands; otherwise the
+        // early subcommand dispatch below would silently ignore them.
+        if value.subcmd.is_some()
+            && (value.sign.is_some()
+                || value.sign_inline.is_some()
+                || value.verify.is_some()
+                || value.signature.is_some()
+                || value.with_key.is_some())
+        {
+            return Err(
+                "subcommands cannot be combined with --sign / --sign-inline / --verify".to_string(),
+            );
         }
 
         // Subcommands
@@ -329,6 +388,132 @@ impl TryFrom<Args> for Mode {
             return Ok(Mode::Completions { shell });
         }
 
+        // --- Signing and verification ---
+        //
+        // `--sign`, `--sign-inline`, `--verify` are pairwise exclusive
+        // and exclusive with every other action flag and with positional
+        // input files. They are checked *before* the card-status / list
+        // / experimental / key-management blocks below so that "tcli
+        // --sign foo" never falls through to a different mode silently.
+        let sign_count = [
+            value.sign.is_some(),
+            value.sign_inline.is_some(),
+            value.verify.is_some(),
+        ]
+        .iter()
+        .filter(|v| **v)
+        .count();
+        if sign_count > 1 {
+            return Err("--sign, --sign-inline, and --verify are mutually exclusive".to_string());
+        }
+        if sign_count == 1 {
+            // Reject conflicts with other action / modifier flags.
+            if value.list_keys
+                || value.import
+                || value.export.is_some()
+                || value.info.is_some()
+                || value.desc.is_some()
+                || value.delete.is_some()
+                || value.search.is_some()
+                || value.fetch.is_some()
+                || value.show_socket.is_some()
+                || value.card_status
+                || value.list_cards
+                || !value.input_files.is_empty()
+                || value.armor
+                || value.recursive
+                || value.force
+                || value.dry_run
+                || value.email
+            {
+                return Err(
+                    "--sign / --sign-inline / --verify cannot be combined with other action flags"
+                        .to_string(),
+                );
+            }
+
+            // --signature only valid with --verify.
+            if value.signature.is_some() && value.verify.is_none() {
+                return Err("--signature is only valid with --verify".to_string());
+            }
+
+            // --binary only valid with --sign (cleartext is text-only;
+            // verify never produces output).
+            if value.binary && value.sign.is_none() {
+                return Err(
+                    "--binary is only valid with --sign (cleartext signatures are text-only)"
+                        .to_string(),
+                );
+            }
+
+            // --output only valid with --sign / --sign-inline.
+            if value.output.is_some() && value.verify.is_some() {
+                return Err("--output is not valid with --verify".to_string());
+            }
+
+            if let Some(input) = value.sign.clone() {
+                let with_key = value
+                    .with_key
+                    .clone()
+                    .ok_or("--sign requires --with-key FP|KEYID|EMAIL")?;
+                if is_stdio(&input) && value.output.is_none() {
+                    return Err(
+                        "--sign reading from stdin requires -o/--output (no input file to derive a default path from)"
+                            .to_string(),
+                    );
+                }
+                return Ok(Mode::Sign {
+                    input,
+                    with_key,
+                    binary: value.binary,
+                    output: value.output.clone(),
+                });
+            }
+
+            if let Some(input) = value.sign_inline.clone() {
+                let with_key = value
+                    .with_key
+                    .clone()
+                    .ok_or("--sign-inline requires --with-key FP|KEYID|EMAIL")?;
+                if is_stdio(&input) && value.output.is_none() {
+                    return Err(
+                        "--sign-inline reading from stdin requires -o/--output (no input file to derive a default path from)"
+                            .to_string(),
+                    );
+                }
+                return Ok(Mode::SignInline {
+                    input,
+                    with_key,
+                    output: value.output.clone(),
+                });
+            }
+
+            if let Some(input) = value.verify.clone() {
+                if value.signature.is_none() && is_stdio(&input) {
+                    return Err(
+                        "--verify reading from stdin requires --signature SIG_FILE (cannot read both data and inline signature from stdin)"
+                            .to_string(),
+                    );
+                }
+                let with_key_file = value.with_key.clone().map(PathBuf::from);
+                return Ok(Mode::Verify {
+                    input,
+                    signature: value.signature.clone(),
+                    with_key_file,
+                });
+            }
+        } else {
+            // No sign/verify in play — these companion flags are stray.
+            if value.signature.is_some() {
+                return Err("--signature is only valid with --verify".to_string());
+            }
+            if value.with_key.is_some() {
+                return Err(
+                    "--with-key is only valid with --sign / --sign-inline / --verify".to_string(),
+                );
+            }
+        }
+
         // --- Card and socket info ---
 
         if value.card_status {
@@ -354,6 +539,11 @@ impl TryFrom<Args> for Mode {
                 || value.show_socket.is_some()
                 || value.card_status
                 || value.completions.is_some()
+                || value.sign.is_some()
+                || value.sign_inline.is_some()
+                || value.verify.is_some()
+                || value.signature.is_some()
+                || value.with_key.is_some()
                 || !value.input_files.is_empty()
                 || value.armor
                 || value.binary
@@ -375,9 +565,7 @@ impl TryFrom<Args> for Mode {
                     || value.include_encryption
                     || value.include_authentication
                 {
-                    return Err(
-                        "--list-cards cannot be combined with other flags".to_string(),
-                    );
+                    return Err("--list-cards cannot be combined with other flags".to_string());
                 }
             }
             return Ok(Mode::ListCards);
@@ -400,12 +588,10 @@ impl TryFrom<Args> for Mode {
                     }
                 };
                 if value.include_signing && which == Some(WhichKey::Primary) {
-                    return Err(
-                        "--include-signing contradicts --which primary; \
+                    return Err("--include-signing contradicts --which primary; \
                          --include-signing means \"signing subkey into the \
                          signing slot\""
-                            .to_string(),
-                    );
+                        .to_string());
                 }
                 return Ok(Mode::UploadToCard {
                     key_id,
@@ -421,15 +607,10 @@ impl TryFrom<Args> for Mode {
                 return Err("--which only applies to --upload-to-card".to_string());
             }
 
-            if value.include_signing
-                || value.include_encryption
-                || value.include_authentication
-            {
-                return Err(
-                    "--include-signing / --include-encryption / \
+            if value.include_signing || value.include_encryption || value.include_authentication {
+                return Err("--include-signing / --include-encryption / \
                      --include-authentication only apply to --upload-to-card"
-                        .to_string(),
-                );
+                    .to_string());
             }
 
             if value.reset_card {
@@ -515,10 +696,8 @@ mod tests {
     use clap::Parser;
 
     fn parse(argv: &[&str]) -> Result<Mode, String> {
-        let args = Args::try_parse_from(
-            std::iter::once("tcli").chain(argv.iter().copied()),
-        )
-        .map_err(|e| e.to_string())?;
+        let args = Args::try_parse_from(std::iter::once("tcli").chain(argv.iter().copied()))
+            .map_err(|e| e.to_string())?;
         Mode::try_from(args)
     }
 
@@ -548,7 +727,11 @@ mod tests {
     #[test]
     fn list_cards_rejects_modifier_flags() {
         // Spot-check one modifier from each family (bool and Option).
-        for extra in [&["--armor"][..], &["--output", "/tmp/x"][..], &["--email"][..]] {
+        for extra in [
+            &["--armor"][..],
+            &["--output", "/tmp/x"][..],
+            &["--email"][..],
+        ] {
             let mut argv = vec!["--list-cards"];
             argv.extend_from_slice(extra);
             let err = parse(&argv).unwrap_err();
@@ -561,8 +744,7 @@ mod tests {
 
     #[test]
     fn list_cards_rejects_subcommand() {
-        let err = parse(&["--list-cards", "ssh-agent", "-H", "unix:///tmp/s"])
-            .unwrap_err();
+        let err = parse(&["--list-cards", "ssh-agent", "-H", "unix:///tmp/s"]).unwrap_err();
         assert!(
             err.contains("--list-cards cannot be combined"),
             "got: {err}"
@@ -572,8 +754,7 @@ mod tests {
     #[cfg(feature = "experimental")]
     #[test]
     fn list_cards_rejects_card_ident() {
-        let err =
-            parse(&["--list-cards", "--card-ident", "000F:ABCD"]).unwrap_err();
+        let err = parse(&["--list-cards", "--card-ident", "000F:ABCD"]).unwrap_err();
         assert!(
             err.contains("--list-cards cannot be combined"),
             "got: {err}"
@@ -584,18 +765,13 @@ mod tests {
     #[test]
     fn card_ident_without_upload_or_reset_errors() {
         let err = parse(&["--card-ident", "000F:ABCD"]).unwrap_err();
-        assert!(
-            err.contains("--card-ident only applies to"),
-            "got: {err}"
-        );
+        assert!(err.contains("--card-ident only applies to"), "got: {err}");
     }
 
     #[cfg(feature = "experimental")]
     #[test]
     fn upload_to_card_threads_card_ident() {
-        let mode =
-            parse(&["--upload-to-card", "ABCDEF", "--card-ident", "000F:ABCD"])
-                .unwrap();
+        let mode = parse(&["--upload-to-card", "ABCDEF", "--card-ident", "000F:ABCD"]).unwrap();
         match mode {
             Mode::UploadToCard {
                 key_id,
@@ -612,7 +788,10 @@ mod tests {
                 assert!(!include_encryption);
                 assert!(!include_authentication);
             }
-            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected UploadToCard, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -639,7 +818,10 @@ mod tests {
                 assert!(include_encryption);
                 assert!(include_authentication);
             }
-            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected UploadToCard, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -647,36 +829,25 @@ mod tests {
     #[test]
     fn include_subkey_flags_require_upload_to_card() {
         let err = parse(&["--include-signing"]).unwrap_err();
-        assert!(
-            err.contains("only apply to --upload-to-card"),
-            "got: {err}"
-        );
+        assert!(err.contains("only apply to --upload-to-card"), "got: {err}");
         let err = parse(&["--include-encryption"]).unwrap_err();
-        assert!(
-            err.contains("only apply to --upload-to-card"),
-            "got: {err}"
-        );
+        assert!(err.contains("only apply to --upload-to-card"), "got: {err}");
         let err = parse(&["--include-authentication"]).unwrap_err();
-        assert!(
-            err.contains("only apply to --upload-to-card"),
-            "got: {err}"
-        );
+        assert!(err.contains("only apply to --upload-to-card"), "got: {err}");
     }
 
     #[cfg(feature = "experimental")]
     #[test]
     fn include_signing_threads_through_mode() {
-        let mode = parse(&[
-            "--upload-to-card",
-            "ABCDEF",
-            "--include-signing",
-        ])
-        .unwrap();
+        let mode = parse(&["--upload-to-card", "ABCDEF", "--include-signing"]).unwrap();
         match mode {
             Mode::UploadToCard {
                 include_signing, ..
             } => assert!(include_signing),
-            other => panic!("expected UploadToCard, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected UploadToCard, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -691,10 +862,7 @@ mod tests {
             "--include-signing",
         ])
         .unwrap_err();
-        assert!(
-            err.contains("contradicts --which primary"),
-            "got: {err}"
-        );
+        assert!(err.contains("contradicts --which primary"), "got: {err}");
     }
 
     #[cfg(feature = "experimental")]
@@ -705,7 +873,286 @@ mod tests {
             Mode::ResetCard { card_ident } => {
                 assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
             }
-            other => panic!("expected ResetCard, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected ResetCard, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
+    }
+
+    // ----- sign / sign-inline / verify -----
+
+    #[test]
+    fn sign_with_fp_parses_to_armored_default() {
+        let mode = parse(&[
+            "--sign",
+            "msg.txt",
+            "--with-key",
+            "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD",
+        ])
+        .unwrap();
+        match mode {
+            Mode::Sign {
+                input,
+                with_key,
+                binary,
+                output,
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt"));
+                assert_eq!(with_key, "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD");
+                assert!(!binary, "default must be armored");
+                assert!(output.is_none(), "default output is sibling .asc");
+            }
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn sign_with_email_parses() {
+        let mode = parse(&["--sign", "msg.txt", "--with-key", "alice@example.com"]).unwrap();
+        match mode {
+            Mode::Sign { with_key, .. } => assert_eq!(with_key, "alice@example.com"),
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn sign_binary_threads_through() {
+        let mode = parse(&[
+            "--sign",
+            "msg.txt",
+            "--with-key",
+            "alice@example.com",
+            "--binary",
+        ])
+        .unwrap();
+        match mode {
+            Mode::Sign { binary, .. } => assert!(binary),
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn sign_output_threads_through() {
+        let mode = parse(&[
+            "--sign",
+            "msg.txt",
+            "--with-key",
+            "alice@example.com",
+            "-o",
+            "/tmp/x.asc",
+        ])
+        .unwrap();
+        match mode {
+            Mode::Sign { output, .. } => {
+                assert_eq!(output.as_deref(), Some(std::path::Path::new("/tmp/x.asc")))
+            }
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn sign_requires_with_key() {
+        let err = parse(&["--sign", "msg.txt"]).unwrap_err();
+        assert!(err.contains("--with-key"), "got: {err}");
+    }
+
+    #[test]
+    fn sign_inline_parses() {
+        let mode = parse(&[
+            "--sign-inline",
+            "msg.txt",
+            "--with-key",
+            "alice@example.com",
+        ])
+        .unwrap();
+        match mode {
+            Mode::SignInline {
+                input,
+                with_key,
+                output,
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt"));
+                assert_eq!(with_key, "alice@example.com");
+                assert!(output.is_none());
+            }
+            other => panic!(
+                "expected SignInline, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn sign_inline_rejects_binary() {
+        let err = parse(&[
+            "--sign-inline",
+            "msg.txt",
+            "--with-key",
+            "alice@example.com",
+            "--binary",
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("--binary is only valid with --sign"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn sign_inline_requires_with_key() {
+        let err = parse(&["--sign-inline", "msg.txt"]).unwrap_err();
+        assert!(err.contains("--with-key"), "got: {err}");
+    }
+
+    #[test]
+    fn verify_inline_parses() {
+        let mode = parse(&["--verify", "msg.txt.asc"]).unwrap();
+        match mode {
+            Mode::Verify {
+                input,
+                signature,
+                with_key_file,
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt.asc"));
+                assert!(signature.is_none());
+                assert!(with_key_file.is_none());
+            }
+            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn verify_detached_parses() {
+        let mode = parse(&["--verify", "msg.txt", "--signature", "msg.txt.sig"]).unwrap();
+        match mode {
+            Mode::Verify {
+                input, signature, ..
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt"));
+                assert_eq!(
+                    signature.as_deref(),
+                    Some(std::path::Path::new("msg.txt.sig"))
+                );
+            }
+            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn verify_with_external_pubkey_parses() {
+        let mode = parse(&["--verify", "msg.txt.asc", "--with-key", "alice.pub"]).unwrap();
+        match mode {
+            Mode::Verify { with_key_file, .. } => {
+                assert_eq!(
+                    with_key_file.as_deref(),
+                    Some(std::path::Path::new("alice.pub"))
+                );
+            }
+            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn signature_without_verify_errors() {
+        let err = parse(&["--list-keys", "--signature", "x.sig"]).unwrap_err();
+        assert!(err.contains("--signature"), "got: {err}");
+    }
+
+    #[test]
+    fn with_key_without_sign_or_verify_errors() {
+        let err = parse(&["--list-keys", "--with-key", "alice@example.com"]).unwrap_err();
+        assert!(err.contains("--with-key"), "got: {err}");
+    }
+
+    #[test]
+    fn sign_and_verify_are_mutually_exclusive() {
+        let err = parse(&[
+            "--sign",
+            "a.txt",
+            "--verify",
+            "b.txt",
+            "--with-key",
+            "alice@example.com",
+        ])
+        .unwrap_err();
+        assert!(err.contains("mutually exclusive"), "got: {err}");
+    }
+
+    #[test]
+    fn sign_and_sign_inline_are_mutually_exclusive() {
+        let err = parse(&[
+            "--sign",
+            "a.txt",
+            "--sign-inline",
+            "a.txt",
+            "--with-key",
+            "alice@example.com",
+        ])
+        .unwrap_err();
+        assert!(err.contains("mutually exclusive"), "got: {err}");
+    }
+
+    #[test]
+    fn sign_conflicts_with_other_actions() {
+        let err = parse(&[
+            "--sign",
+            "a.txt",
+            "--with-key",
+            "alice@example.com",
+            "--list-keys",
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("cannot be combined with other action flags"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn sign_stdin_requires_output() {
+        let err = parse(&["--sign", "-", "--with-key", "alice@example.com"]).unwrap_err();
+        assert!(err.contains("requires -o/--output"), "got: {err}");
+    }
+
+    #[test]
+    fn sign_stdin_with_output_ok() {
+        let mode = parse(&["--sign", "-", "--with-key", "alice@example.com", "-o", "-"]).unwrap();
+        match mode {
+            Mode::Sign { input, output, .. } => {
+                assert!(is_stdio(&input));
+                assert_eq!(output.as_deref().map(is_stdio), Some(true));
+            }
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn verify_stdin_inline_errors_without_signature() {
+        let err = parse(&["--verify", "-"]).unwrap_err();
+        assert!(err.contains("--signature"), "got: {err}");
+    }
+
+    #[test]
+    fn list_cards_rejects_sign_flag() {
+        // The order in which the two mutual-exclusion checks fire isn't
+        // load-bearing; what matters is that the combination is rejected.
+        let err = parse(&["--list-cards", "--sign", "x"]).unwrap_err();
+        assert!(err.contains("cannot be combined"), "got: {err}");
+    }
+
+    #[test]
+    fn subcommand_rejects_sign_flag() {
+        let err = parse(&[
+            "--sign",
+            "msg.txt",
+            "--with-key",
+            "abc",
+            "ssh-agent",
+            "--host",
+            "sock",
+        ])
+        .unwrap_err();
+        assert!(err.contains("subcommands cannot be combined"), "got: {err}");
     }
 }

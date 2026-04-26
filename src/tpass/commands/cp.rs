@@ -23,10 +23,10 @@ pub fn cmd_cp(old_path: &str, new_path: &str, force: bool) -> Result<()> {
     }
 
     // Check for overwrite
-    if !force && new_full.exists()
-        && !yesno(&format!("{} already exists. Overwrite it?", new_path)) {
-            std::process::exit(1);
-        }
+    if !force && new_full.exists() && !yesno(&format!("{} already exists. Overwrite it?", new_path))
+    {
+        std::process::exit(1);
+    }
 
     // Copy
     if old_full.is_dir() {
@@ -87,7 +87,10 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
         let dst_path = dst.join(entry.file_name());
         let metadata = std::fs::symlink_metadata(&src_path)?;
         if metadata.file_type().is_symlink() {
-            anyhow::bail!("Error: Refusing to copy symlinked path {}.", src_path.display());
+            anyhow::bail!(
+                "Error: Refusing to copy symlinked path {}.",
+                src_path.display()
+            );
         }
         if metadata.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;

@@ -14,6 +14,7 @@ and direct encryption/decryption.
 - [Password store (pass)](#password-store-pass)
 - [tpass — native password store](#tpass--native-password-store)
 - [Encryption and decryption](#encryption-and-decryption)
+- [Signing and verifying with `tcli`](#signing-and-verifying-with-tcli)
 - [Agent (passphrase cache + SSH)](#agent-passphrase-cache--ssh)
 - [Hardware OpenPGP cards](#hardware-openpgp-cards)
 - [Passphrase handling](#passphrase-handling)
@@ -819,6 +820,164 @@ Output:
 ```
 gpg: public key is CCD470033AD77830
 ```
+
+---
+
+## Signing and verifying with `tcli`
+
+`tcli` exposes three human-facing commands for OpenPGP signing and
+verification of arbitrary files. They are the user-friendly counterpart
+to the GPG-shape `tclig` flags that git and `pass` invoke under the
+hood: `tcli` picks signers by fingerprint, key ID, or **email**;
+defaults to ASCII armor; supports stdin/stdout via `-`; and returns
+script-friendly exit codes.
+
+| Command            | What it produces                                            |
+|--------------------|-------------------------------------------------------------|
+| `tcli --sign`      | Detached signature (`<file>.asc` armored, `<file>.sig` binary). |
+| `tcli --sign-inline` | Cleartext-signed message (`-----BEGIN PGP SIGNED MESSAGE-----`, software keys only). |
+| `tcli --verify`    | Verifies a detached or cleartext signature; exits 0/1/2.    |
+
+### Detached signatures
+
+Sign a file using its primary key (default = ASCII-armored,
+sibling `.asc`):
+
+```
+tcli --sign report.pdf --with-key 62162BC9FA951F481F8457D566B7F2009745BD06
+# writes report.pdf.asc
+```
+
+Use email instead of fingerprint:
+
+```
+tcli --sign report.pdf --with-key alice@example.com
+```
+
+Email matching is case-insensitive and exact. If multiple keys in the
+keystore share the same email, `tcli` lists them and refuses to pick;
+re-run with `--with-key <FINGERPRINT>` to disambiguate.
+
+Produce a binary `.sig` instead of `.asc`:
+
+```
+tcli --sign report.pdf --with-key alice@example.com --binary
+# writes report.pdf.sig
+```
+
+Override the destination with `-o`/`--output` (use `-` for stdout):
+
+```
+tcli --sign report.pdf --with-key alice@example.com -o /tmp/report.sig --binary
+cat report.pdf | tcli --sign - --with-key alice@example.com -o - > report.sig
+```
+
+Reading from stdin (`--sign -`) requires `-o`/`--output` because there
+is no input filename to derive a default destination from.
+
+### Inline (cleartext) signatures
+
+Cleartext signatures embed the original text inline between
+`-----BEGIN PGP SIGNED MESSAGE-----` and `-----BEGIN PGP SIGNATURE-----`.
+The signed message stays human-readable. Use `--sign-inline`:
+
+```
+tcli --sign-inline notice.txt --with-key alice@example.com
+# writes notice.txt.asc
+```
+
+Inline signing is **software-only** in this release — there is no
+card-based cleartext-signing primitive. If the chosen key has no
+software secret key in the keystore (card-only), `tcli` errors out
+with a clear message; use `--sign` (detached) for card-only keys.
+
+`--binary` is rejected on `--sign-inline` (cleartext is text by
+definition).
+
+### Verifying
+
+Verify a detached signature using a key from the keystore:
+
+```
+tcli --verify report.pdf --signature report.pdf.asc
+```
+
+Verify a cleartext-signed message in place (no separate signature
+file):
+
+```
+tcli --verify notice.txt.asc
+```
+
+Verify against an external public key file (skips the keystore
+entirely):
+
+```
+tcli --verify report.pdf --signature report.pdf.asc --with-key alice.pub
+tcli --verify notice.txt.asc --with-key alice.pub
+```
+
+`--with-key` on the verify side is always a path to a public-key file
+(armored or binary). To use a key already in the keystore, omit
+`--with-key`; `tcli` will look the signer up by issuer fingerprint /
+key ID embedded in the signature.
+
+Verify reads the data from stdin too:
+
+```
+cat report.pdf | tcli --verify - --signature report.pdf.asc
+```
+
+(Stdin verify always needs `--signature`; reading both data and an
+inline signature from stdin is not supported.)
+
+### Output and exit codes
+
+`tcli --verify` prints a human-readable report on stderr, listing
+every non-revoked UID (primary first, then `aka …`) plus the verifier
+fingerprint. Exit codes:
+
+| Code | Meaning                                                    |
+|------|------------------------------------------------------------|
+| `0`  | Good signature.                                            |
+| `1`  | BAD signature (signer is known, signature does not match). |
+| `2`  | Unknown signer (issuer key not in keystore, no `--with-key`). |
+
+Example success output:
+
+```
+tcli: Good signature from "Alice <alice@example.com>"
+tcli:                 aka "Alice <alice@work.example.com>"
+tcli: Primary key fingerprint: 62162BC9FA951F481F8457D566B7F2009745BD06
+```
+
+`tcli --sign` and `--sign-inline` print a one-line confirmation on
+stderr (`tcli: Wrote signature to <path>`) and the signing backend
+(`Signed with card …` or `Signed with software key …`). All real
+output goes to the file or stdout depending on `-o`.
+
+### Difference from `tclig`
+
+`tclig` is the GPG-shape drop-in invoked by git, `pass`, and similar
+tools. It uses `gpg`-style flags (`-bsau`, `--detach-sign`, `--verify`
+with `[GNUPG:]` status lines) and is unchanged by these `tcli`
+commands. You generally won't run `tclig` directly — let git/pass call
+it via the GPG-program hook (see [Git signing](#git-signing) and
+[Password store (pass)](#password-store-pass)).
+
+For ad-hoc signing of arbitrary files at the shell, prefer `tcli
+--sign / --sign-inline / --verify`: shorter flags, email-based key
+selection, sane defaults, sensible exit codes.
+
+### Limitations
+
+- `--verify` against an inline-armored signed message (the `gpg
+  --sign` form, not `gpg --clearsign`) requires `--with-key
+  <PUB_FILE>`. Keystore lookup on that path is not implemented; use
+  cleartext (`--sign-inline`) if you want the keystore-lookup
+  experience.
+- Card-based cleartext signing is not available; use detached
+  (`--sign`) for keys held only on a card.
 
 ---
 

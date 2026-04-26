@@ -113,8 +113,8 @@ pub async fn run_agent(
     // Set restrictive umask for socket creation
     let old_umask = unsafe { libc::umask(0o177) };
 
-    let listener = UnixListener::bind(&socket_path)
-        .context(format!("Failed to bind {:?}", socket_path))?;
+    let listener =
+        UnixListener::bind(&socket_path).context(format!("Failed to bind {:?}", socket_path))?;
 
     // Restore umask
     unsafe {
@@ -149,9 +149,7 @@ pub async fn run_agent(
 
         let ks_path = keystore_path.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                crate::ssh::run_agent_with_cache(&ssh_host, ks_path, ssh_cache).await
-            {
+            if let Err(e) = crate::ssh::run_agent_with_cache(&ssh_host, ks_path, ssh_cache).await {
                 eprintln!("SSH agent error: {}", e);
             }
         });
@@ -189,26 +187,24 @@ async fn handle_client(
     while reader.read_line(&mut line).await? > 0 {
         let response = if let Some(request) = protocol::parse_request(&line) {
             match request {
-                protocol::Request::Get { fingerprint } => {
+                protocol::Request::Get { cache_key } => {
                     let cache = cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-                    match cache.get(&fingerprint) {
+                    match cache.get(&cache_key) {
                         Some(pass) => protocol::Response::Passphrase(pass.clone()),
                         None => protocol::Response::NotFound,
                     }
                 }
                 protocol::Request::Put {
-                    fingerprint,
+                    cache_key,
                     passphrase,
                 } => {
-                    let mut cache =
-                        cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-                    cache.store(&fingerprint, passphrase);
+                    let mut cache = cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+                    cache.store(&cache_key, passphrase);
                     protocol::Response::Ok
                 }
-                protocol::Request::Clear { fingerprint } => {
-                    let mut cache =
-                        cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-                    cache.remove(&fingerprint);
+                protocol::Request::Clear { cache_key } => {
+                    let mut cache = cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+                    cache.remove(&cache_key);
                     protocol::Response::Ok
                 }
             }

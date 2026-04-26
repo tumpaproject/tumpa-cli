@@ -1,12 +1,15 @@
 mod cli;
 
+#[cfg(feature = "experimental")]
+mod upload_card {
+    pub use tumpa_cli::upload_card::*;
+}
+
 use std::io::stdout;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-use tumpa_cli::{keystore, pinentry, ssh, store};
-#[cfg(feature = "experimental")]
-use tumpa_cli::upload_card;
+use tumpa_cli::{keystore, pinentry, sign_cmd, ssh, store, verify_cmd};
 
 use cli::*;
 
@@ -16,6 +19,8 @@ fn main() {
     let args = Args::parse();
     let keystore_path = args.keystore.clone();
 
+    let mut verify_exit_code: Option<i32> = None;
+
     let res = match Mode::try_from(args) {
         Ok(Mode::ListKeys) => list_keys(keystore_path.as_ref()),
         Ok(Mode::Agent {
@@ -24,7 +29,12 @@ fn main() {
             cache_ttl,
         }) => {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-            rt.block_on(tumpa_cli::agent::run_agent(ssh, ssh_host, cache_ttl, keystore_path))
+            rt.block_on(tumpa_cli::agent::run_agent(
+                ssh,
+                ssh_host,
+                cache_ttl,
+                keystore_path,
+            ))
         }
         Ok(Mode::SshAgent { host }) => {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -42,7 +52,13 @@ fn main() {
             armor,
             binary,
             output,
-        }) => keystore::cmd_export(&key_id, armor, binary, output.as_ref(), keystore_path.as_ref()),
+        }) => keystore::cmd_export(
+            &key_id,
+            armor,
+            binary,
+            output.as_ref(),
+            keystore_path.as_ref(),
+        ),
         Ok(Mode::Info { key_id }) => keystore::cmd_info(&key_id, keystore_path.as_ref()),
         Ok(Mode::Desc { path }) => keystore::cmd_desc(&path),
         Ok(Mode::Delete { key_id, force }) => {
@@ -82,16 +98,55 @@ fn main() {
         Ok(Mode::ShowSocket { ssh }) => {
             if ssh {
                 match tumpa_cli::agent::default_ssh_socket_path() {
-                    Ok(path) => { println!("{}", path); Ok(()) }
+                    Ok(path) => {
+                        println!("{}", path);
+                        Ok(())
+                    }
                     Err(e) => Err(e),
                 }
             } else {
                 match tumpa_cli::agent::default_socket_path() {
-                    Ok(path) => { println!("{}", path.display()); Ok(()) }
+                    Ok(path) => {
+                        println!("{}", path.display());
+                        Ok(())
+                    }
                     Err(e) => Err(e),
                 }
             }
         }
+        Ok(Mode::Sign {
+            input,
+            with_key,
+            binary,
+            output,
+        }) => sign_cmd::cmd_sign(
+            &input,
+            &with_key,
+            binary,
+            output.as_ref(),
+            keystore_path.as_ref(),
+        ),
+        Ok(Mode::SignInline {
+            input,
+            with_key,
+            output,
+        }) => sign_cmd::cmd_sign_inline(&input, &with_key, output.as_ref(), keystore_path.as_ref()),
+        Ok(Mode::Verify {
+            input,
+            signature,
+            with_key_file,
+        }) => match verify_cmd::cmd_verify(
+            &input,
+            signature.as_ref(),
+            with_key_file.as_ref(),
+            keystore_path.as_ref(),
+        ) {
+            Ok(exit) => {
+                verify_exit_code = Some(exit.code());
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
         Ok(Mode::None) => {
             print_help();
             Ok(())
@@ -106,6 +161,12 @@ fn main() {
         eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
+
+    if let Some(code) = verify_exit_code {
+        if code != 0 {
+            std::process::exit(code);
+        }
+    }
 }
 
 fn print_help() {
@@ -115,7 +176,7 @@ fn print_help() {
         .unwrap_or_else(|| "tcli".to_string());
 
     eprintln!(
-                "tcli - key management and SSH agent backed by tumpa keystore
+        "tcli - key management and SSH agent backed by tumpa keystore
 
 For git signing and pass integration, use `tclig` as the GPG drop-in:
 
@@ -194,7 +255,10 @@ fn card_status() -> anyhow::Result<()> {
         let info = wecanencrypt::card::get_card_details(Some(&card_summary.ident))
             .map_err(|e| anyhow::anyhow!("Failed to read card {}: {}", card_summary.ident, e))?;
 
-        println!("Manufacturer .....: {}", info.manufacturer_name.as_deref().unwrap_or("Unknown"));
+        println!(
+            "Manufacturer .....: {}",
+            info.manufacturer_name.as_deref().unwrap_or("Unknown")
+        );
         println!("Serial number ....: {}", info.serial_number);
 
         if let Some(ref name) = info.cardholder_name {
@@ -217,9 +281,7 @@ fn card_status() -> anyhow::Result<()> {
         println!("Signature counter : {}", info.signature_counter);
         println!(
             "PIN retry counter : {} {} {}",
-            info.pin_retry_counter,
-            info.reset_code_retry_counter,
-            info.admin_pin_retry_counter
+            info.pin_retry_counter, info.reset_code_retry_counter, info.admin_pin_retry_counter
         );
     }
 
@@ -237,11 +299,7 @@ fn print_card_key(label: &str, fingerprint: &Option<String>) {
                 .map(|i| &fp_upper[i..(i + 4).min(fp_upper.len())])
                 .collect();
             let formatted = if groups.len() >= 10 {
-                format!(
-                    "{}  {}",
-                    groups[..5].join(" "),
-                    groups[5..].join(" ")
-                )
+                format!("{}  {}", groups[..5].join(" "), groups[5..].join(" "))
             } else {
                 groups.join(" ")
             };

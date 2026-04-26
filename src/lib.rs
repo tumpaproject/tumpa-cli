@@ -1,12 +1,15 @@
 pub mod agent;
+pub mod cli;
 pub mod gpg;
 pub mod keystore;
+pub mod list_cards;
 pub mod pinentry;
+pub mod sign_cmd;
 pub mod ssh;
 pub mod store;
-pub mod list_cards;
 #[cfg(feature = "experimental")]
 pub mod upload_card;
+pub mod verify_cmd;
 
 /// In-memory credential cache (passphrases and card PINs).
 ///

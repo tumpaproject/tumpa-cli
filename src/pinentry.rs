@@ -8,6 +8,12 @@ use zeroize::Zeroizing;
 
 use crate::agent;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheSlot {
+    Pin,
+    Passphrase,
+}
+
 /// Get a passphrase or PIN via the pinentry program.
 ///
 /// Acquisition order:
@@ -31,12 +37,14 @@ pub fn get_passphrase(
     cache_key: Option<&str>,
 ) -> Result<Zeroizing<String>> {
     let allow_agent_cache = should_use_agent_cache(prompt);
+    let cache_slot = cache_slot_for_prompt(prompt);
 
     // 1. Check agent cache for user PIN/passphrase prompts only.
     // Admin PIN must not share the generic fingerprint cache key.
     if allow_agent_cache {
-        if let Some(key) = cache_key {
-            if let Some(pass) = try_agent_get(key) {
+        if let (Some(key), Some(slot)) = (cache_key, cache_slot) {
+            let namespaced_key = cache_key_for_slot(key, slot);
+            if let Some(pass) = try_agent_get(&namespaced_key) {
                 log::debug!("Using passphrase from agent cache");
                 return Ok(pass);
             }
@@ -76,21 +84,54 @@ fn should_use_agent_cache(prompt: &str) -> bool {
     !prompt.eq_ignore_ascii_case("Admin PIN")
 }
 
-/// Store a passphrase / PIN in the running tumpa agent's cache.
+fn cache_slot_for_prompt(prompt: &str) -> Option<CacheSlot> {
+    if prompt.eq_ignore_ascii_case("Admin PIN") {
+        None
+    } else if prompt.eq_ignore_ascii_case("PIN") {
+        Some(CacheSlot::Pin)
+    } else {
+        Some(CacheSlot::Passphrase)
+    }
+}
+
+fn cache_key_for_slot(fingerprint: &str, slot: CacheSlot) -> String {
+    match slot {
+        CacheSlot::Pin => format!("pin:{fingerprint}"),
+        CacheSlot::Passphrase => format!("passphrase:{fingerprint}"),
+    }
+}
+
+pub fn cache_pin(fingerprint: &str, pin: &Zeroizing<String>) {
+    try_agent_put(&cache_key_for_slot(fingerprint, CacheSlot::Pin), pin);
+}
+
+/// Store a passphrase in the running tumpa agent's cache.
 ///
 /// Call this only **after** the value has been confirmed correct by a
 /// successful sign or decrypt. Silent no-op if no agent is running.
 pub fn cache_passphrase(fingerprint: &str, passphrase: &Zeroizing<String>) {
-    try_agent_put(fingerprint, passphrase);
+    try_agent_put(
+        &cache_key_for_slot(fingerprint, CacheSlot::Passphrase),
+        passphrase,
+    );
 }
 
-/// Drop a cached passphrase / PIN from the running tumpa agent.
+pub fn clear_cached_pin(fingerprint: &str) {
+    try_agent_clear(&cache_key_for_slot(fingerprint, CacheSlot::Pin));
+}
+
+/// Drop a cached passphrase from the running tumpa agent.
 ///
 /// Call this whenever a sign or decrypt operation fails, to ensure a
 /// stale (or freshly-typed-but-wrong) value is never reused on the
 /// next request. Silent no-op if no agent is running.
 pub fn clear_cached_passphrase(fingerprint: &str) {
-    try_agent_clear(fingerprint);
+    try_agent_clear(&cache_key_for_slot(fingerprint, CacheSlot::Passphrase));
+}
+
+pub fn clear_all_cached_secrets(fingerprint: &str) {
+    clear_cached_pin(fingerprint);
+    clear_cached_passphrase(fingerprint);
 }
 
 /// Try to get a cached passphrase from the agent.
@@ -129,7 +170,6 @@ fn try_agent_put(fingerprint: &str, passphrase: &Zeroizing<String>) {
 }
 
 fn try_agent_put_at_path(socket_path: &Path, fingerprint: &str, passphrase: &Zeroizing<String>) {
-
     let mut stream = match UnixStream::connect(socket_path) {
         Ok(s) => s,
         Err(_) => return,
@@ -164,7 +204,6 @@ fn try_agent_clear(fingerprint: &str) {
 }
 
 fn try_agent_clear_at_path(socket_path: &Path, fingerprint: &str) {
-
     let mut stream = match UnixStream::connect(socket_path) {
         Ok(s) => s,
         Err(_) => return,
@@ -225,7 +264,11 @@ pub fn resolve_pinentry() -> Option<(String, PathBuf)> {
 fn which_on_path(name: &str) -> Option<PathBuf> {
     let p = Path::new(name);
     if p.is_absolute() {
-        return if p.is_file() { Some(p.to_path_buf()) } else { None };
+        return if p.is_file() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        };
     }
     let path_env = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_env) {
@@ -302,8 +345,14 @@ fn try_pinentry_with(
         Err(_) => return Ok(None),
     };
 
-    let mut stdin = child.stdin.take().context("Failed to open pinentry stdin")?;
-    let stdout = child.stdout.take().context("Failed to open pinentry stdout")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("Failed to open pinentry stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Failed to open pinentry stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Read the greeting
@@ -485,7 +534,7 @@ mod cache_helper_tests {
 
 #[cfg(test)]
 mod get_passphrase_policy_tests {
-    use super::should_use_agent_cache;
+    use super::{cache_key_for_slot, cache_slot_for_prompt, should_use_agent_cache, CacheSlot};
 
     #[test]
     fn admin_pin_skips_agent_cache() {
@@ -497,5 +546,19 @@ mod get_passphrase_policy_tests {
     fn user_pin_and_passphrase_still_use_agent_cache() {
         assert!(should_use_agent_cache("PIN"));
         assert!(should_use_agent_cache("Passphrase"));
+    }
+
+    #[test]
+    fn pin_and_passphrase_use_distinct_cache_slots() {
+        assert_eq!(cache_slot_for_prompt("PIN"), Some(CacheSlot::Pin));
+        assert_eq!(
+            cache_slot_for_prompt("Passphrase"),
+            Some(CacheSlot::Passphrase)
+        );
+        assert_eq!(cache_key_for_slot("ABCDEF", CacheSlot::Pin), "pin:ABCDEF");
+        assert_eq!(
+            cache_key_for_slot("ABCDEF", CacheSlot::Passphrase),
+            "passphrase:ABCDEF"
+        );
     }
 }

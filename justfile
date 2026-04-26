@@ -17,6 +17,7 @@ lint:
 # Run all tests (requires TUMPA_PASSPHRASE and a secret key in ~/.tumpa/keys.db)
 test: build
     TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_tpass.sh
+    TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_sign_verify.sh
 
 # Run cross-compatibility tests between tpass and pass
 test-compat: build
@@ -25,6 +26,10 @@ test-compat: build
 # Run tcli + pass integration tests
 test-pass: build
     TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_pass.sh
+
+# Run tcli sign/verify integration tests
+test-sign-verify: build
+    TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_sign_verify.sh
 
 # Run tcli key management tests (--import, --export, --info, --delete, --search)
 test-keystore: build
@@ -35,7 +40,7 @@ test-agent-cache: build
     TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_agent_no_bad_cache.sh
 
 # Run all test suites
-test-all: test test-compat test-pass test-keystore test-agent-cache
+test-all: test test-compat test-pass test-sign-verify test-keystore test-agent-cache
 
 # Build, lint, and test
 check: build lint test

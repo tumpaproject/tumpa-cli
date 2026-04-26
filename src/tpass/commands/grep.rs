@@ -26,9 +26,7 @@ fn walk_and_grep(
     grep_args: &[String],
     found_any: &mut bool,
 ) -> Result<()> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
     for entry in entries {
@@ -82,10 +80,7 @@ fn walk_and_grep(
                             ("", rel.as_str())
                         };
 
-                        println!(
-                            "\x1b[94m{}\x1b[1m{}\x1b[0m:",
-                            dir_part, file_part
-                        );
+                        println!("\x1b[94m{}\x1b[1m{}\x1b[0m:", dir_part, file_part);
                         std::io::stdout().write_all(&output.stdout)?;
                     }
                 }

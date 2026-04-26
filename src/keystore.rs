@@ -16,7 +16,11 @@ use crate::store;
 /// substitution. Each stream may contain multiple keys concatenated
 /// (the default `gpg --export` shape) and every key in the stream is
 /// imported or merged.
-pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&PathBuf>) -> Result<()> {
+pub fn cmd_import(
+    paths: &[PathBuf],
+    recursive: bool,
+    keystore_path: Option<&PathBuf>,
+) -> Result<()> {
     log::debug!(
         "cmd_import: paths={} recursive={} keystore_path={:?}",
         paths.len(),
@@ -43,7 +47,14 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
                 path.is_dir()
             );
             if path.is_dir() {
-                import_dir(&keystore, path, recursive, &mut imported, &mut updated, &mut failed)?;
+                import_dir(
+                    &keystore,
+                    path,
+                    recursive,
+                    &mut imported,
+                    &mut updated,
+                    &mut failed,
+                )?;
             } else {
                 import_file(&keystore, path, &mut imported, &mut updated, &mut failed);
             }
@@ -52,9 +63,14 @@ pub fn cmd_import(paths: &[PathBuf], recursive: bool, keystore_path: Option<&Pat
 
     log::debug!(
         "cmd_import: done imported={} updated={} failed={}",
-        imported, updated, failed,
+        imported,
+        updated,
+        failed,
     );
-    println!("Imported {} new, {} updated, {} failed.", imported, updated, failed);
+    println!(
+        "Imported {} new, {} updated, {} failed.",
+        imported, updated, failed
+    );
     Ok(())
 }
 
@@ -89,8 +105,7 @@ fn import_dir(
     failed: &mut u32,
 ) -> Result<()> {
     log::debug!("import_dir: scanning {:?} recursive={}", dir, recursive);
-    let entries = std::fs::read_dir(dir)
-        .context(format!("Failed to read directory {:?}", dir))?;
+    let entries = std::fs::read_dir(dir).context(format!("Failed to read directory {:?}", dir))?;
 
     for entry in entries {
         let entry = entry?;
@@ -156,7 +171,11 @@ fn import_blob(
     let iter = match PublicOrSecret::from_reader_many(cursor) {
         Ok((iter, _headers)) => iter,
         Err(e) => {
-            log::error!("import_blob: parse_many failed for {}: {:#}", source_label, e);
+            log::error!(
+                "import_blob: parse_many failed for {}: {:#}",
+                source_label,
+                e
+            );
             eprintln!("Failed to parse keys from {}: {:#}", source_label, e);
             *failed += 1;
             return;
@@ -184,7 +203,14 @@ fn import_blob(
             continue;
         }
 
-        import_one_key(keystore, &key_bytes, source_label, imported, updated, failed);
+        import_one_key(
+            keystore,
+            &key_bytes,
+            source_label,
+            imported,
+            updated,
+            failed,
+        );
     }
 
     if !any_key {
@@ -235,12 +261,21 @@ fn import_one_key(
                     .unwrap_or("");
                 match merge_and_reimport(keystore, &key_info.fingerprint, data) {
                     Ok(true) => {
-                        log::info!("import_one_key: merged fp={} (changed)", key_info.fingerprint);
-                        println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid);
+                        log::info!(
+                            "import_one_key: merged fp={} (changed)",
+                            key_info.fingerprint
+                        );
+                        println!(
+                            "Updated {} ({}) — merged new signatures",
+                            key_info.fingerprint, uid
+                        );
                         *updated += 1;
                     }
                     Ok(false) => {
-                        log::info!("import_one_key: merged fp={} (no change)", key_info.fingerprint);
+                        log::info!(
+                            "import_one_key: merged fp={} (no change)",
+                            key_info.fingerprint
+                        );
                         println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid);
                         *updated += 1;
                     }
@@ -273,7 +308,11 @@ fn import_one_key(
             *imported += 1;
         }
         Err(e) => {
-            log::error!("import_one_key: import_key failed for {}: {:#}", source_label, e);
+            log::error!(
+                "import_one_key: import_key failed for {}: {:#}",
+                source_label,
+                e
+            );
             eprintln!("Failed to import key from {}: {:#}", source_label, e);
             *failed += 1;
         }
@@ -288,8 +327,7 @@ fn merge_and_reimport(
     new_data: &[u8],
 ) -> Result<bool> {
     let existing = keystore.export_key(fingerprint)?;
-    let merged = wecanencrypt::merge_keys(&existing, new_data)
-        .context("Key merge failed")?;
+    let merged = wecanencrypt::merge_keys(&existing, new_data).context("Key merge failed")?;
 
     // Re-import the merged key (INSERT OR REPLACE updates the row)
     keystore.import_key(&merged)?;
@@ -315,7 +353,8 @@ pub fn cmd_export(
         let cursor = std::io::Cursor::new(&raw);
         let data = if let Ok((pk, _)) = pgp::composed::SignedPublicKey::from_armor_single(cursor) {
             let mut buf = Vec::new();
-            pk.to_writer(&mut buf).context("Failed to serialize as binary")?;
+            pk.to_writer(&mut buf)
+                .context("Failed to serialize as binary")?;
             buf
         } else {
             raw // Already binary
@@ -360,8 +399,7 @@ pub fn cmd_info(key_id: &str, keystore_path: Option<&PathBuf>) -> Result<()> {
 /// `--info`. Accepts both armored and binary, and both public and
 /// secret key files. Never touches the keystore.
 pub fn cmd_desc(path: &Path) -> Result<()> {
-    let key_data =
-        std::fs::read(path).with_context(|| format!("Failed to read {:?}", path))?;
+    let key_data = std::fs::read(path).with_context(|| format!("Failed to read {:?}", path))?;
     let key_info = wecanencrypt::parse_key_bytes(&key_data, false)
         .with_context(|| format!("Failed to parse key from {:?}", path))?;
     print_key_info(&key_data, &key_info);
@@ -394,10 +432,7 @@ fn print_key_info(key_data: &[u8], key_info: &wecanencrypt::KeyInfo) {
         primary_algo,
         primary_caps.join(", ")
     );
-    println!(
-        "     Created:  {}",
-        key_info.creation_time.format(time_fmt)
-    );
+    println!("     Created:  {}", key_info.creation_time.format(time_fmt));
     if let Some(ref exp) = key_info.expiration_time {
         println!("     Expires:  {}", exp.format(time_fmt));
     } else {
@@ -440,10 +475,7 @@ fn print_key_info(key_data: &[u8], key_info: &wecanencrypt::KeyInfo) {
                 .unwrap_or_default();
             println!(
                 "       {}  {}  [{}]{}",
-                sk.fingerprint,
-                algo,
-                sk.key_type,
-                revoked
+                sk.fingerprint, algo, sk.key_type, revoked
             );
             println!(
                 "                 Created:  {}{}",
@@ -476,7 +508,11 @@ pub fn cmd_delete(key_id: &str, force: bool, keystore_path: Option<&PathBuf>) ->
     if !force {
         eprint!(
             "Delete {} {} ({})? [y/N] ",
-            if key_info.is_secret { "SECRET key" } else { "public key" },
+            if key_info.is_secret {
+                "SECRET key"
+            } else {
+                "public key"
+            },
             key_info.fingerprint,
             uid
         );
@@ -568,7 +604,10 @@ pub fn cmd_fetch(email: &str, dry_run: bool, keystore_path: Option<&PathBuf>) ->
 
     if already_exists {
         match merge_and_reimport(&keystore, &key_info.fingerprint, &key_data) {
-            Ok(true) => println!("Updated {} ({}) — merged new signatures", key_info.fingerprint, uid),
+            Ok(true) => println!(
+                "Updated {} ({}) — merged new signatures",
+                key_info.fingerprint, uid
+            ),
             Ok(false) => println!("Unchanged {} ({}) — no new data", key_info.fingerprint, uid),
             Err(e) => anyhow::bail!("Merge failed: {}", e),
         }

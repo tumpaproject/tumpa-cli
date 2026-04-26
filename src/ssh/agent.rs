@@ -55,10 +55,7 @@ impl TumpaBackend {
 
     /// Create a backend with a shared credential cache.
     /// Used when the SSH agent runs alongside the GPG cache agent.
-    pub fn with_cache(
-        keystore_path: Option<PathBuf>,
-        cache: Arc<Mutex<CredentialCache>>,
-    ) -> Self {
+    pub fn with_cache(keystore_path: Option<PathBuf>, cache: Arc<Mutex<CredentialCache>>) -> Self {
         let backend = Self {
             keystore_path,
             cache,
@@ -232,7 +229,10 @@ impl Session for TumpaBackend {
 
         // Look up card_ident from cache (zero card I/O)
         let card_match = {
-            let card_ids = self.card_identities.lock().map_err(|_| AgentError::Failure)?;
+            let card_ids = self
+                .card_identities
+                .lock()
+                .map_err(|_| AgentError::Failure)?;
             card_ids
                 .iter()
                 .find(|id| id.ssh_key_data == request.pubkey)
@@ -253,7 +253,10 @@ impl Session for TumpaBackend {
         // Re-enumerate and try again.
         self.refresh_card_identities();
         let card_match = {
-            let card_ids = self.card_identities.lock().map_err(|_| AgentError::Failure)?;
+            let card_ids = self
+                .card_identities
+                .lock()
+                .map_err(|_| AgentError::Failure)?;
             card_ids
                 .iter()
                 .find(|id| id.ssh_key_data == request.pubkey)
@@ -525,19 +528,15 @@ impl TumpaBackend {
 
         let sign_data = prepare_sign_data(request).ok_or(AgentError::Failure)?;
 
-        let result = wecanencrypt::ssh_sign_raw(
-            key_data,
-            &sign_data.data,
-            &passphrase,
-            sign_data.hash_alg,
-        )
-        .map_err(|e| {
-            log::error!("SSH signing failed: {}", e);
-            if let Ok(mut cache) = self.cache.lock() {
-                cache.remove(fingerprint);
-            }
-            AgentError::Failure
-        })?;
+        let result =
+            wecanencrypt::ssh_sign_raw(key_data, &sign_data.data, &passphrase, sign_data.hash_alg)
+                .map_err(|e| {
+                    log::error!("SSH signing failed: {}", e);
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.remove(fingerprint);
+                    }
+                    AgentError::Failure
+                })?;
 
         match result {
             wecanencrypt::SshSignResult::Ed25519(sig_bytes) => {
@@ -683,11 +682,9 @@ fn parse_ssh_pubkey_line(line: &str) -> Result<KeyData, String> {
 /// in the logs instead of requiring a post-mortem.
 fn log_pinentry_at_startup() {
     match pinentry::resolve_pinentry() {
-        Some((name, path)) => log::info!(
-            "pinentry: using {} (resolved to {})",
-            name,
-            path.display()
-        ),
+        Some((name, path)) => {
+            log::info!("pinentry: using {} (resolved to {})", name, path.display())
+        }
         None => log::warn!(
             "pinentry: no candidate resolved on PATH ({:?}) — \
              passphrase prompts will fall back to STDIN. \

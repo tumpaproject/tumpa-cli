@@ -14,7 +14,6 @@ use clap_complete::Shell;
 #[clap(name = "tclig", version)]
 pub struct Args {
     // --- Signing ---
-
     /// Create a detached signature.
     #[clap(long, short = 'b')]
     pub detach_sign: bool,
@@ -28,13 +27,11 @@ pub struct Args {
     pub local_user: Option<String>,
 
     // --- Verification ---
-
     /// Verify a detached signature.
     #[clap(long, value_names = ["SIGNATURE_FILE"])]
     pub verify: Option<PathBuf>,
 
     // --- Encryption ---
-
     /// Encrypt mode.
     #[clap(short = 'e', long)]
     pub encrypt: bool,
@@ -44,13 +41,11 @@ pub struct Args {
     pub recipients: Vec<String>,
 
     // --- Decryption ---
-
     /// Decrypt mode.
     #[clap(short = 'd', long)]
     pub decrypt: bool,
 
     // --- Output ---
-
     /// Output ASCII-armored data.
     #[clap(long, short = 'a')]
     pub armor: bool,
@@ -60,7 +55,6 @@ pub struct Args {
     pub output: Option<PathBuf>,
 
     // --- Key listing ---
-
     /// List keys in the tumpa keystore (GPG colon format).
     #[clap(long)]
     pub list_keys: bool,
@@ -78,24 +72,20 @@ pub struct Args {
     pub list_only: bool,
 
     // --- Positional ---
-
     /// Positional arguments: input files, or "-" for stdin in verify mode.
     pub input_files: Vec<String>,
 
     // --- Keystore ---
-
     /// Path to tumpa keystore database. Defaults to ~/.tumpa/keys.db.
     #[clap(long, env = "TUMPA_KEYSTORE")]
     pub keystore: Option<PathBuf>,
 
     // --- Shell completions ---
-
     /// Generate shell completions and print to stdout.
     #[clap(long, value_name = "SHELL", value_enum)]
     pub completions: Option<Shell>,
 
     // --- GPG compatibility flags (accepted, ignored) ---
-
     #[clap(long, hide = true)]
     pub keyid_format: Option<String>,
 
