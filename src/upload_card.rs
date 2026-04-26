@@ -77,11 +77,16 @@ pub fn cmd_upload_to_card(
         );
     }
 
+    if include_signing && matches!(which, Some(WhichKey::Primary)) {
+        bail!(
+            "`--include-signing` cannot be combined with `--which primary`"
+        );
+    }
+
     // `--include-signing` is the discoverable spelling of "use the
     // signing subkey, not the primary"; folding it into `which` here
     // lets `select_sign_target` reuse the same decision matrix it has
-    // for the older `--which sub` form. Contradiction with
-    // `--which primary` is rejected at parse time.
+    // for the older `--which sub` form.
     //
     // Pre-check the "no signing subkey" case here before the synthesis
     // so the user gets an error that names `--include-signing`. If we
@@ -97,7 +102,7 @@ pub fn cmd_upload_to_card(
         if !has_signing_subkey {
             bail!(
                 "certificate {} has no signing subkey — drop `--include-signing` \
-                 (the primary will be used as the signing-slot occupant) or \
+                 to use the default signing-key selection, or \
                  generate a signing subkey first",
                 key_info.fingerprint
             );

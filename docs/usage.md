@@ -1123,8 +1123,9 @@ entry (e.g., in CI).
 tcli --list-cards
 ```
 
-`--list-cards` is always available (no Cargo feature needed) and
-cannot be combined with any other flag.
+`--list-cards` is always available (no Cargo feature needed). It
+should be used on its own; the only exception is `--keystore`, which
+is accepted but ignored for this operation.
 
 Sample output:
 
