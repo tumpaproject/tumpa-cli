@@ -1,19 +1,41 @@
-//! **Experimental.** Upload a secret key from the keystore to an
-//! OpenPGP smart card's signing slot.
+//! Upload a secret key from the keystore to an OpenPGP smart card.
 //!
-//! Gated behind `tcli --experimental --upload-to-card`.  If the
-//! certificate carries both a sign-capable primary key and a
-//! sign-capable signing subkey, the caller must pass `--which
-//! primary|sub` to disambiguate.
+//! Available when `tcli` is built with the `experimental` Cargo
+//! feature (`cargo build --features experimental`). Invoked as
+//! `tcli --upload-to-card <FP> [--card-ident <IDENT>]
+//!  [--which primary|sub] [--include-signing]
+//!  [--include-encryption] [--include-authentication]`.
 //!
-//! This module resolves the key from the tumpa keystore, prompts for
-//! the key passphrase and card admin PIN via `pinentry`, and then
-//! delegates the actual APDU-level upload to `wecanencrypt::card::upload`.
+//! By default the certificate's primary key (or its signing subkey,
+//! when the primary is not sign-capable) is written to the card's
+//! signing slot. Pass `--which primary|sub` to disambiguate when the
+//! cert has both a sign-capable primary and a signing subkey;
+//! `--include-signing` is the discoverable alias for "use the signing
+//! subkey, leave the primary off-card", composing with the
+//! `--include-*` flags below.
+//!
+//! `--include-encryption` and `--include-authentication` extend the
+//! same call to fill the card's decryption / authentication slots
+//! from the cert's encryption / authentication subkeys. Slots not
+//! mentioned are left empty after the factory reset.
+//!
+//! With multiple cards attached, `--card-ident` selects the target
+//! (see `--list-cards` for valid idents); with a single card it can
+//! be omitted. libtumpa's multi-card guard rejects an implicit
+//! target when more than one card is connected.
+//!
+//! Upload goes through `libtumpa::card::upload::upload`, which runs a
+//! preflight algorithm check (e.g. rejects legacy `Cv25519` on Nitrokey
+//! before any destructive I/O) and then **factory-resets** the card
+//! before writing the selected slots. Cardholder name, URL, user PIN,
+//! and admin PIN are cleared back to factory defaults. Only the key
+//! passphrase is prompted — the admin PIN is managed internally by
+//! libtumpa (it uses the factory default after reset).
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use wecanencrypt::card::upload::CardKeySlot;
+use libtumpa::card::upload::{flags, upload};
 use wecanencrypt::KeyType;
 
 use crate::{pinentry, store};
@@ -40,6 +62,10 @@ pub fn cmd_upload_to_card(
     key_id: &str,
     which: Option<WhichKey>,
     keystore_path: Option<&PathBuf>,
+    card_ident: Option<&str>,
+    include_signing: bool,
+    include_encryption: bool,
+    include_authentication: bool,
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
     let (_raw, key_info) = store::resolve_signer(&keystore, key_id)?;
@@ -51,14 +77,43 @@ pub fn cmd_upload_to_card(
         );
     }
 
-    // Decide which component of the cert we should upload.
-    let target = select_sign_target(&key_info, which)?;
+    if include_signing && matches!(which, Some(WhichKey::Primary)) {
+        bail!(
+            "`--include-signing` cannot be combined with `--which primary`"
+        );
+    }
 
-    // We always re-export the stored copy (authoritative) so we feed the
-    // wecanencrypt upload API the same bytes the keystore holds.
-    let secret_data = keystore
-        .export_key(&key_info.fingerprint)
-        .with_context(|| format!("failed to read key {}", key_info.fingerprint))?;
+    // `--include-signing` is the discoverable spelling of "use the
+    // signing subkey, not the primary"; folding it into `which` here
+    // lets `select_sign_target` reuse the same decision matrix it has
+    // for the older `--which sub` form.
+    //
+    // Pre-check the "no signing subkey" case here before the synthesis
+    // so the user gets an error that names `--include-signing`. If we
+    // let the synthesized `Some(Sub)` flow into `select_sign_target`,
+    // its generic message would say "drop `--which`" -- but the user
+    // never passed `--which`.
+    let effective_which = if include_signing && which.is_none() {
+        let has_signing_subkey = key_info.subkeys.iter().any(|sk| {
+            sk.key_type == KeyType::Signing
+                && !sk.is_revoked
+                && !store::subkey_is_expired(sk)
+        });
+        if !has_signing_subkey {
+            bail!(
+                "certificate {} has no signing subkey — drop `--include-signing` \
+                 to use the default signing-key selection, or \
+                 generate a signing subkey first",
+                key_info.fingerprint
+            );
+        }
+        Some(WhichKey::Sub)
+    } else {
+        which
+    };
+
+    // Decide which component of the cert we should upload.
+    let target = select_sign_target(&key_info, effective_which)?;
 
     let uid = key_info
         .user_ids
@@ -77,64 +132,69 @@ pub fn cmd_upload_to_card(
     let key_pass = pinentry::get_passphrase(&key_desc, "Passphrase", None)
         .context("failed to read key passphrase")?;
 
-    // --- Prompt for admin PIN ---
+    // --- Build the slot bitmask ---
 
-    let admin_desc = format!(
-        "Enter Admin PIN for the OpenPGP card\nuploading signing key {}\nfor {}",
-        key_info.fingerprint, uid
+    let mut which_flags = match target {
+        SignTarget::Primary => flags::PRIMARY_TO_SIGNING,
+        SignTarget::Sub => flags::SIGNING_SUBKEY,
+    };
+    if include_encryption {
+        which_flags |= flags::ENCRYPTION;
+    }
+    if include_authentication {
+        which_flags |= flags::AUTHENTICATION;
+    }
+
+    let target_label = match target {
+        SignTarget::Primary => "primary key",
+        SignTarget::Sub => "signing subkey",
+    };
+
+    // Human-readable list of slots about to be filled, for the warning
+    // and the success message.
+    let mut slots_label = vec![format!("signing slot ({})", target_label)];
+    if include_encryption {
+        slots_label.push("decryption slot (encryption subkey)".into());
+    }
+    if include_authentication {
+        slots_label.push("authentication slot (authentication subkey)".into());
+    }
+    let slots_human = slots_label.join(", ");
+
+    // --- Warn about destructive reset ---
+    //
+    // Worded conditionally: libtumpa's preflight guard may still
+    // reject this upload (e.g. unsupported algorithm on the target
+    // card, or a missing encryption/authentication subkey when those
+    // were requested), in which case no reset actually runs.
+    eprintln!(
+        "Warning: if this upload proceeds, the card will be \
+         factory-reset (cardholder name, URL, user PIN, and admin PIN \
+         cleared to defaults) before writing {} of {}.\n\
+         Press Ctrl-C within 3 seconds to abort.",
+        slots_human, key_info.fingerprint
     );
-    let admin_pin = pinentry::get_passphrase(&admin_desc, "Admin PIN", None)
-        .context("failed to read admin PIN")?;
+    std::thread::sleep(std::time::Duration::from_secs(3));
 
     // --- Upload ---
 
-    eprintln!(
-        "Uploading {} key of {} to the signing slot of the connected card...",
-        match target {
-            SignTarget::Primary => "primary",
-            SignTarget::Sub => "signing subkey",
-        },
-        key_info.fingerprint
-    );
-
-    match target {
-        SignTarget::Primary => {
-            wecanencrypt::card::upload::upload_primary_key_to_card(
-                &secret_data,
-                key_pass.as_bytes(),
-                CardKeySlot::Signing,
-                admin_pin.as_bytes(),
-            )
-            .with_context(|| {
-                format!(
-                    "failed to upload primary key of {} to card",
-                    key_info.fingerprint
-                )
-            })?;
-        }
-        SignTarget::Sub => {
-            let subkey_fp = pick_signing_subkey_fingerprint(&key_info)
-                .context("no sign-capable subkey found on certificate")?;
-            wecanencrypt::card::upload::upload_subkey_by_fingerprint(
-                &secret_data,
-                key_pass.as_bytes(),
-                &subkey_fp,
-                CardKeySlot::Signing,
-                admin_pin.as_bytes(),
-            )
-            .with_context(|| {
-                format!("failed to upload signing subkey {} to card", subkey_fp)
-            })?;
-        }
-    }
+    upload(
+        &keystore,
+        &key_info.fingerprint,
+        &key_pass,
+        which_flags,
+        card_ident,
+    )
+    .with_context(|| {
+        format!(
+            "failed to upload {} of {} to card",
+            slots_human, key_info.fingerprint
+        )
+    })?;
 
     eprintln!(
-        "OK. Signing slot now holds the {} of {}.",
-        match target {
-            SignTarget::Primary => "primary key",
-            SignTarget::Sub => "signing subkey",
-        },
-        key_info.fingerprint
+        "OK. Card now holds {} of {}.",
+        slots_human, key_info.fingerprint
     );
 
     Ok(())
@@ -197,41 +257,25 @@ fn select_sign_target(
     }
 }
 
-fn pick_signing_subkey_fingerprint(key_info: &wecanencrypt::KeyInfo) -> Option<String> {
-    key_info
-        .subkeys
-        .iter()
-        .find(|sk| {
-            sk.key_type == KeyType::Signing && !sk.is_revoked && !store::subkey_is_expired(sk)
-        })
-        .map(|sk| sk.fingerprint.clone())
-}
-
 /// **Experimental.** Factory-reset the connected OpenPGP card.
 ///
-/// `TERMINATE DF` on an OpenPGP card requires the admin PIN to be in
-/// the blocked state (retry counter == 0). To make `--reset-card`
-/// idempotent regardless of the current PIN, we first exhaust the
-/// admin-PIN retry counter with three known-wrong verifies, then issue
-/// the factory reset. Same recipe wecanencrypt's own `card_tests.rs`
-/// uses between test cases.
+/// Delegates to `libtumpa::card::admin::factory_reset_card`, which
+/// drives the admin-PIN retry counter to zero (with rotating
+/// known-wrong candidates so a coincidental real-PIN match doesn't
+/// stall the loop) and then issues `TERMINATE DF` + factory reset.
+/// Multi-card targeting is enforced by libtumpa: passing
+/// `card_ident = None` while multiple cards are connected is
+/// rejected so the destructive reset can't silently land on the
+/// wrong card.
 ///
 /// After the reset the card is back to defaults: user PIN `123456`,
 /// admin PIN `12345678`, all key slots empty.
-pub fn cmd_reset_card() -> Result<()> {
-    eprintln!("Blocking admin PIN (3 wrong verifies) and resetting card...");
+pub fn cmd_reset_card(card_ident: Option<&str>) -> Result<()> {
+    eprintln!("Resetting card to factory defaults...");
 
-    // Force the admin PIN into the blocked state. We don't care about the
-    // outcome of each verify — each one consumes a retry regardless of
-    // whether the real admin PIN matches. Using `None` for `ident` lets
-    // wecanencrypt pick the first connected card, matching the rest of
-    // the tcli card surface.
-    for _ in 0..3 {
-        let _ = wecanencrypt::card::verify_admin_pin(b"00000000", None);
-    }
-
-    wecanencrypt::card::reset_card(None)
-        .with_context(|| "factory reset failed after blocking admin PIN")?;
+    libtumpa::card::admin::factory_reset_card(card_ident)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("factory reset failed")?;
 
     eprintln!("Card reset. User PIN=123456, admin PIN=12345678, all slots cleared.");
     Ok(())

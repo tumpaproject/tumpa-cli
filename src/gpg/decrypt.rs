@@ -25,8 +25,7 @@ fn read_ciphertext(input: &Path) -> Result<Vec<u8>> {
             .context("Failed to read encrypted data from stdin")?;
         Ok(buf)
     } else {
-        std::fs::read(input)
-            .with_context(|| format!("Failed to read encrypted file {:?}", input))
+        std::fs::read(input).with_context(|| format!("Failed to read encrypted file {:?}", input))
     }
 }
 
@@ -56,7 +55,10 @@ pub fn decrypt(
     let plaintext = match try_decrypt_on_card(&ciphertext, &keystore) {
         Ok(pt) => pt,
         Err(card_err) => {
-            log::info!("Card decryption not available ({}), trying software key", card_err);
+            log::info!(
+                "Card decryption not available ({}), trying software key",
+                card_err
+            );
             decrypt_with_software(&ciphertext, &keystore, &key_ids, &card_err)?
         }
     };
@@ -116,7 +118,7 @@ fn try_decrypt_on_card(
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
-    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj) {
+    match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj, Some(&card.card.ident)) {
         Ok(z) => {
             pinentry::cache_passphrase(&card.key_info.fingerprint, &pin);
             Ok(Zeroizing::new(z.to_vec()))
