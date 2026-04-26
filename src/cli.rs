@@ -76,11 +76,11 @@ pub struct Args {
     #[clap(long, value_name = "FILE")]
     pub verify: Option<PathBuf>,
 
-    /// Signing key for `--sign` / `--sign-inline`: fingerprint, key ID,
-    /// or exact email.
+    /// For `--sign` / `--sign-inline`: signer identifier
+    /// (fingerprint, key ID, or exact email).
     /// For `--verify`: path to a public key file to verify against
     /// (omit to look the signer up in the keystore by issuer ID).
-    #[clap(long, value_name = "FP|KEYID|EMAIL or FILE")]
+    #[clap(long, value_name = "SIGNER|PUBKEY_FILE")]
     pub with_key: Option<String>,
 
     /// Detached signature file (only valid with `--verify`).
@@ -340,6 +340,20 @@ impl TryFrom<Args> for Mode {
         // silently consume the invocation and ignore --list-cards.
         if value.list_cards && value.subcmd.is_some() {
             return Err("--list-cards cannot be combined with other flags".to_string());
+        }
+
+        // Sign/verify flags must also beat subcommands; otherwise the
+        // early subcommand dispatch below would silently ignore them.
+        if value.subcmd.is_some()
+            && (value.sign.is_some()
+                || value.sign_inline.is_some()
+                || value.verify.is_some()
+                || value.signature.is_some()
+                || value.with_key.is_some())
+        {
+            return Err(
+                "subcommands cannot be combined with --sign / --sign-inline / --verify".to_string(),
+            );
         }
 
         // Subcommands
@@ -1125,5 +1139,20 @@ mod tests {
         // load-bearing; what matters is that the combination is rejected.
         let err = parse(&["--list-cards", "--sign", "x"]).unwrap_err();
         assert!(err.contains("cannot be combined"), "got: {err}");
+    }
+
+    #[test]
+    fn subcommand_rejects_sign_flag() {
+        let err = parse(&[
+            "--sign",
+            "msg.txt",
+            "--with-key",
+            "abc",
+            "ssh-agent",
+            "--host",
+            "sock",
+        ])
+        .unwrap_err();
+        assert!(err.contains("subcommands cannot be combined"), "got: {err}");
     }
 }
