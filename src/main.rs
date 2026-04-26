@@ -49,16 +49,9 @@ fn main() {
         }
         Ok(Mode::Export {
             key_id,
-            armor,
             binary,
             output,
-        }) => keystore::cmd_export(
-            &key_id,
-            armor,
-            binary,
-            output.as_ref(),
-            keystore_path.as_ref(),
-        ),
+        }) => keystore::cmd_export(&key_id, binary, output.as_ref(), keystore_path.as_ref()),
         Ok(Mode::Info { key_id }) => keystore::cmd_info(&key_id, keystore_path.as_ref()),
         Ok(Mode::Desc { path }) => keystore::cmd_desc(&path),
         Ok(Mode::Delete { key_id, force }) => {
@@ -185,10 +178,12 @@ For git signing and pass integration, use `tclig` as the GPG drop-in:
 
 To list keys in the keystore:
 
-    $ {exe} --list-keys
+    $ {exe} list
 
 Keys are stored in ~/.tumpa/keys.db (managed by the tumpa desktop app).
-Hardware OpenPGP cards are tried first, then software keys from the keystore."
+Hardware OpenPGP cards are tried first, then software keys from the keystore.
+
+Run `{exe} --help` for the full subcommand list."
     );
 }
 

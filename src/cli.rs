@@ -1,210 +1,164 @@
 use std::convert::TryFrom;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 /// tcli — key management and SSH agent for the tumpa keystore.
 ///
-/// Human-facing commands: import, export, describe, search, fetch,
-/// list, delete, card status, agent daemons, SSH pubkey export.
+/// Human-facing commands: list, import, export, describe, search,
+/// fetch, delete, sign, verify, card, agent, ssh-agent, ssh-export.
 /// For the GPG drop-in that git and pass invoke, see `tclig`.
 #[derive(Parser, Debug)]
 #[clap(name = "tcli", version)]
 pub struct Args {
-    // --- Key listing ---
-    /// List keys in the tumpa keystore (human-readable).
-    #[clap(long)]
-    pub list_keys: bool,
-
-    // --- Key management ---
-    /// Import keys from files or directories.
-    #[clap(long)]
-    pub import: bool,
-
-    /// Export a key from the keystore.
-    #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
-    pub export: Option<String>,
-
-    /// Show detailed information about a key.
-    #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
-    pub info: Option<String>,
-
-    /// Show detailed information about a key file without importing it.
-    #[clap(long, value_name = "FILE")]
-    pub desc: Option<PathBuf>,
-
-    /// Delete a key from the keystore.
-    #[clap(long, value_name = "FINGERPRINT_OR_KEYID")]
-    pub delete: Option<String>,
-
-    /// Search for keys by name or email.
-    #[clap(long, value_name = "QUERY")]
-    pub search: Option<String>,
-
-    /// Fetch and import a key via WKD (Web Key Directory).
-    #[clap(long, value_name = "EMAIL")]
-    pub fetch: Option<String>,
-
-    /// Show agent socket path. Use `--show-socket` for the GPG agent socket,
-    /// `--show-socket ssh` for the SSH agent socket.
-    #[clap(long, value_name = "TYPE", num_args = 0..=1, default_missing_value = "gpg")]
-    pub show_socket: Option<String>,
-
-    /// Show status of connected OpenPGP smart card.
-    #[clap(long)]
-    pub card_status: bool,
-
-    // --- Signing and verification ---
-    /// Create a detached signature for FILE (use `-` for stdin).
-    /// Default output is `<FILE>.asc` (ASCII-armored). Combine with
-    /// `--binary` for `<FILE>.sig` (binary). Override the destination
-    /// with `-o`/`--output` (`-` writes to stdout).
-    #[clap(long, value_name = "FILE")]
-    pub sign: Option<PathBuf>,
-
-    /// Create an inline (cleartext, `-----BEGIN PGP SIGNED MESSAGE-----`)
-    /// signature for FILE (use `-` for stdin). Default output is
-    /// `<FILE>.asc`; override with `-o`/`--output`. Software keys only —
-    /// card-only keys are rejected.
-    #[clap(long, value_name = "FILE")]
-    pub sign_inline: Option<PathBuf>,
-
-    /// Verify a signature on FILE (use `-` for stdin). For a detached
-    /// signature, also pass `--signature SIG_FILE`. Without `--signature`
-    /// the file itself must contain a cleartext-signed message.
-    #[clap(long, value_name = "FILE")]
-    pub verify: Option<PathBuf>,
-
-    /// For `--sign` / `--sign-inline`: signer identifier
-    /// (fingerprint, key ID, or exact email).
-    /// For `--verify`: path to a public key file to verify against
-    /// (omit to look the signer up in the keystore by issuer ID).
-    #[clap(long, value_name = "SIGNER|PUBKEY_FILE")]
-    pub with_key: Option<String>,
-
-    /// Detached signature file (only valid with `--verify`).
-    #[clap(long, value_name = "SIG_FILE")]
-    pub signature: Option<PathBuf>,
-
-    // --- Output ---
-    /// Output ASCII-armored data (for --export).
-    #[clap(long, short = 'a')]
-    pub armor: bool,
-
-    /// Output file (for --export). Stdout if omitted.
-    #[clap(short = 'o', long = "output")]
-    pub output: Option<PathBuf>,
-
-    /// Output in binary format (for --export).
-    #[clap(long)]
-    pub binary: bool,
-
-    /// Recurse into subdirectories (for --import with directories).
-    #[clap(long)]
-    pub recursive: bool,
-
-    /// Force operation without confirmation (for --delete).
-    #[clap(short = 'f', long, hide = true)]
-    pub force: bool,
-
-    /// Fetch without importing — show key info only (for --fetch).
-    #[clap(long)]
-    pub dry_run: bool,
-
-    /// Search by email (exact, case-insensitive) instead of UID substring.
-    #[clap(long)]
-    pub email: bool,
-
-    // --- Experimental (compile-time gated behind the `experimental`
-    // Cargo feature; the flags below only exist on feature builds).
-    /// **Experimental.** Upload a secret key from the keystore to the
-    /// signing slot of a connected OpenPGP smart card. If the key has
-    /// both a sign-capable primary key and a sign-capable subkey,
-    /// pass `--which primary|sub` to disambiguate.
-    #[cfg(feature = "experimental")]
-    #[clap(long, value_name = "FINGERPRINT_OR_KEYID", hide = true)]
-    pub upload_to_card: Option<String>,
-
-    /// Select which sign-capable component of a certificate to upload
-    /// (for `--upload-to-card`). Values: `primary`, `sub`.
-    #[cfg(feature = "experimental")]
-    #[clap(long, value_name = "primary|sub", hide = true)]
-    pub which: Option<String>,
-
-    /// **Experimental.** Factory-reset the connected OpenPGP card:
-    /// block all PINs, wipe all slots, restore defaults (user PIN
-    /// `123456`, admin PIN `12345678`).
-    #[cfg(feature = "experimental")]
-    #[clap(long, hide = true)]
-    pub reset_card: bool,
-
-    /// List all connected OpenPGP smart cards with their ident,
-    /// manufacturer, serial, and cardholder name. Mutually exclusive
-    /// with every other flag except `--keystore` (which is accepted
-    /// but ignored, since this command never touches the keystore);
-    /// prints the table to stdout and exits.
-    #[clap(long)]
-    pub list_cards: bool,
-
-    /// **Experimental.** Target card ident (e.g. `000F:CB9A5355`) for
-    /// `--upload-to-card` and `--reset-card`. Use `--list-cards` to see
-    /// idents of attached cards. If omitted, there must be exactly one
-    /// OpenPGP card connected.
-    #[cfg(feature = "experimental")]
-    #[clap(long, value_name = "IDENT", hide = true)]
-    pub card_ident: Option<String>,
-
-    /// **Experimental.** Use the signing subkey (not the primary) as the
-    /// occupant of the card's signing slot. Equivalent to `--which sub`
-    /// but composes with `--include-encryption` / `--include-authentication`
-    /// for a full GPG-keytocard-style upload that keeps the primary
-    /// off-card. Errors if combined with `--which primary`.
-    #[cfg(feature = "experimental")]
-    #[clap(long, hide = true)]
-    pub include_signing: bool,
-
-    /// **Experimental.** Also upload the encryption subkey to the
-    /// card's decryption slot in the same `--upload-to-card` call. The
-    /// cert must carry an encryption subkey or libtumpa rejects the
-    /// upload before the destructive card reset.
-    #[cfg(feature = "experimental")]
-    #[clap(long, hide = true)]
-    pub include_encryption: bool,
-
-    /// **Experimental.** Also upload the authentication subkey to the
-    /// card's authentication slot in the same `--upload-to-card` call.
-    /// The cert must carry an authentication subkey or libtumpa
-    /// rejects the upload before the destructive card reset.
-    #[cfg(feature = "experimental")]
-    #[clap(long, hide = true)]
-    pub include_authentication: bool,
-
-    // --- Positional ---
-    /// Positional arguments (input files for --import).
-    pub input_files: Vec<String>,
-
-    // --- Keystore ---
     /// Path to tumpa keystore database. Defaults to ~/.tumpa/keys.db.
-    #[clap(long, env = "TUMPA_KEYSTORE")]
+    #[clap(long, env = "TUMPA_KEYSTORE", global = true)]
     pub keystore: Option<PathBuf>,
 
-    // --- SSH agent ---
-    /// SSH agent subcommand.
     #[clap(subcommand)]
-    pub subcmd: Option<SubCommand>,
-
-    // --- Shell completions ---
-    /// Generate shell completions and print to stdout.
-    #[clap(long, value_name = "SHELL", value_enum)]
-    pub completions: Option<Shell>,
+    pub subcmd: Option<Command>,
 }
 
-#[derive(Parser, Debug)]
-pub enum SubCommand {
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// List keys in the tumpa keystore (human-readable).
+    List,
+
+    /// Import keys from files or directories. Use `-` for stdin.
+    Import {
+        /// File or directory paths. Use `-` for stdin.
+        #[clap(value_name = "FILE")]
+        files: Vec<String>,
+
+        /// Recurse into subdirectories.
+        #[clap(short = 'r', long)]
+        recursive: bool,
+    },
+
+    /// Export a key from the keystore (default: ASCII-armored to stdout).
+    Export {
+        /// Key fingerprint or key ID.
+        #[clap(value_name = "FINGERPRINT_OR_KEYID")]
+        key_id: String,
+
+        /// Output file. Defaults to stdout.
+        #[clap(short = 'o', long)]
+        output: Option<PathBuf>,
+
+        /// Export as binary OpenPGP packets instead of ASCII-armored.
+        #[clap(long)]
+        binary: bool,
+    },
+
+    /// Show detailed information about a key.
+    ///
+    /// 40 or 16 hex characters are treated as a keystore lookup
+    /// (fingerprint or key ID). Anything else is treated as a path
+    /// to a key file. To force file mode for a path that happens to
+    /// be all-hex, prefix it with `./`.
+    Describe {
+        /// A fingerprint, key ID, or path to a key file.
+        #[clap(value_name = "FINGERPRINT_OR_FILE")]
+        target: String,
+    },
+
+    /// Delete a key from the keystore.
+    Delete {
+        /// Key fingerprint or key ID.
+        #[clap(value_name = "FINGERPRINT_OR_KEYID")]
+        key_id: String,
+
+        /// Skip confirmation prompt.
+        #[clap(short = 'f', long)]
+        force: bool,
+    },
+
+    /// Search for keys in the keystore.
+    Search {
+        /// Search query.
+        query: String,
+
+        /// Match by email exactly (case-insensitive) instead of UID substring.
+        #[clap(long)]
+        email: bool,
+    },
+
+    /// Fetch and import a key via WKD (Web Key Directory).
+    Fetch {
+        /// Email address to look up.
+        email: String,
+
+        /// Show key info but don't import.
+        #[clap(long)]
+        dry_run: bool,
+    },
+
+    /// Create a detached signature for FILE (use `-` for stdin).
+    /// Default output is `<FILE>.asc` (ASCII-armored).
+    Sign {
+        /// Input file. Use `-` for stdin (then `-o`/`--output` is required).
+        #[clap(value_name = "FILE")]
+        input: PathBuf,
+
+        /// Signer identifier: fingerprint, key ID, or exact email.
+        #[clap(long, value_name = "FP|KEYID|EMAIL")]
+        signer: String,
+
+        /// Output file. Defaults to `<FILE>.asc` (or `<FILE>.sig` with --binary).
+        #[clap(short = 'o', long)]
+        output: Option<PathBuf>,
+
+        /// Binary signature instead of ASCII-armored.
+        #[clap(long)]
+        binary: bool,
+    },
+
+    /// Create an inline (cleartext) signature. Software keys only.
+    SignInline {
+        /// Input file. Use `-` for stdin (then `-o`/`--output` is required).
+        #[clap(value_name = "FILE")]
+        input: PathBuf,
+
+        /// Signer identifier: fingerprint, key ID, or exact email.
+        #[clap(long, value_name = "FP|KEYID|EMAIL")]
+        signer: String,
+
+        /// Output file. Defaults to `<FILE>.asc`.
+        #[clap(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Verify a signature on FILE.
+    Verify {
+        /// Input file. Use `-` for stdin (requires --signature).
+        #[clap(value_name = "FILE")]
+        input: PathBuf,
+
+        /// Detached signature file. Without this, the input must be a
+        /// cleartext-signed message.
+        #[clap(long, value_name = "SIG_FILE")]
+        signature: Option<PathBuf>,
+
+        /// Verify against an external public-key file (skip keystore lookup).
+        #[clap(long, value_name = "PUBKEY_FILE")]
+        key_file: Option<PathBuf>,
+    },
+
+    /// OpenPGP smart card operations.
+    #[clap(subcommand)]
+    Card(CardCommand),
+
+    /// Print an agent socket path. Default `gpg`; pass `ssh` for the SSH socket.
+    Socket {
+        /// Which socket to print.
+        #[clap(value_name = "TYPE", default_value = "gpg")]
+        kind: SocketKind,
+    },
+
     /// Run the agent daemon (GPG passphrase cache + optional SSH agent).
     Agent {
-        /// Also serve as an SSH agent.
+        /// Also serve as an SSH agent (binds the SSH socket alongside the GPG cache).
         #[clap(long)]
         ssh: bool,
 
@@ -212,25 +166,23 @@ pub enum SubCommand {
         #[clap(short = 'H', long)]
         host: Option<String>,
 
-        /// Passphrase cache TTL in seconds (default: 1800 = 30 min).
+        /// Passphrase cache TTL in seconds (default 1800 = 30 min).
         #[clap(long, default_value = "1800")]
         cache_ttl: u64,
     },
 
-    /// Run as an SSH agent daemon (alias for 'agent --ssh').
-    #[clap(hide = true)]
+    /// Run only the SSH agent daemon (no GPG passphrase cache socket).
+    ///
+    /// Use this when you want SSH-only and don't want the GPG cache
+    /// listener bound (`~/.tumpa/agent.sock`). For the combined
+    /// GPG cache + SSH agent process, use `tcli agent --ssh` instead.
     SshAgent {
-        /// Binding host (e.g., unix:///tmp/tcli.sock).
+        /// SSH agent binding (e.g., unix:///tmp/tcli-ssh.sock).
         #[clap(short = 'H', long)]
         host: String,
     },
 
     /// Export the SSH public key for a given OpenPGP key.
-    ///
-    /// Extracts the authentication subkey and writes it in SSH
-    /// authorized_keys format.
-    ///
-    /// Example: tcli ssh-export FINGERPRINT ~/.ssh/id_openpgp.pub
     SshExport {
         /// Key fingerprint or key ID to export.
         key_id: String,
@@ -238,6 +190,84 @@ pub enum SubCommand {
         /// Output file for the SSH public key.
         ssh_pubkey_file: PathBuf,
     },
+
+    /// Generate shell completions for tcli and print to stdout.
+    Completions {
+        /// Target shell.
+        #[clap(value_enum)]
+        shell: Shell,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CardCommand {
+    /// Show status of the connected OpenPGP card.
+    Status,
+
+    /// List all connected OpenPGP cards.
+    List,
+
+    /// (Experimental) Upload a secret key to the card's signing slot,
+    /// optionally also to the encryption / authentication slots.
+    ///
+    /// `--signing-from` has no default: when the certificate carries
+    /// both a sign-capable primary and a signing subkey, the upload
+    /// fails closed and asks for an explicit choice. Pass
+    /// `--signing-from primary` or `--signing-from sub` to disambiguate.
+    #[cfg(feature = "experimental")]
+    Upload {
+        /// Key fingerprint or key ID to upload.
+        #[clap(value_name = "FINGERPRINT_OR_KEYID")]
+        key_id: String,
+
+        /// Target card ident. If omitted, exactly one card must be connected.
+        #[clap(long, value_name = "IDENT")]
+        card_ident: Option<String>,
+
+        /// Which component fills the signing slot. Required when the
+        /// certificate carries both a sign-capable primary and a
+        /// signing subkey; optional otherwise.
+        #[clap(long, value_enum, value_name = "primary|sub")]
+        signing_from: Option<SigningFrom>,
+
+        /// Comma-separated list of additional slots to fill from
+        /// matching subkeys: `encryption`, `authentication`. May be
+        /// repeated.
+        #[clap(long, value_name = "SLOTS", value_delimiter = ',')]
+        with: Vec<Slot>,
+    },
+
+    /// (Experimental) Factory-reset a card (clears all PINs and slots).
+    #[cfg(feature = "experimental")]
+    Reset {
+        /// Target card ident. If omitted, exactly one card must be connected.
+        #[clap(long, value_name = "IDENT")]
+        card_ident: Option<String>,
+
+        /// Skip confirmation prompt.
+        #[clap(short = 'y', long)]
+        yes: bool,
+    },
+}
+
+#[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum SocketKind {
+    Gpg,
+    Ssh,
+}
+
+#[cfg(feature = "experimental")]
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum SigningFrom {
+    Primary,
+    Sub,
+}
+
+#[cfg(feature = "experimental")]
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum Slot {
+    Encryption,
+    Authentication,
 }
 
 #[cfg(feature = "experimental")]
@@ -264,7 +294,6 @@ pub enum Mode {
     },
     Export {
         key_id: String,
-        armor: bool,
         binary: bool,
         output: Option<PathBuf>,
     },
@@ -331,362 +360,187 @@ pub fn is_stdio(path: &std::path::Path) -> bool {
     path.as_os_str() == "-"
 }
 
+/// True if the argument matches a 40-hex fingerprint or 16-hex key ID
+/// (case-insensitive). Used by `Describe` to decide between keystore
+/// lookup and file path.
+fn looks_like_keystore_id(s: &str) -> bool {
+    matches!(s.len(), 40 | 16) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 impl TryFrom<Args> for Mode {
     type Error = String;
 
     fn try_from(value: Args) -> Result<Self, Self::Error> {
-        // `--list-cards` must win over subcommands (agent / ssh-agent /
-        // ssh-export), otherwise clap's subcommand match below would
-        // silently consume the invocation and ignore --list-cards.
-        if value.list_cards && value.subcmd.is_some() {
-            return Err("--list-cards cannot be combined with other flags".to_string());
-        }
-
-        // Sign/verify flags must also beat subcommands; otherwise the
-        // early subcommand dispatch below would silently ignore them.
-        if value.subcmd.is_some()
-            && (value.sign.is_some()
-                || value.sign_inline.is_some()
-                || value.verify.is_some()
-                || value.signature.is_some()
-                || value.with_key.is_some())
-        {
-            return Err(
-                "subcommands cannot be combined with --sign / --sign-inline / --verify".to_string(),
-            );
-        }
-
-        // Subcommands
         match value.subcmd {
-            Some(SubCommand::Agent {
-                ssh,
-                host,
-                cache_ttl,
-            }) => {
-                return Ok(Mode::Agent {
-                    ssh,
-                    ssh_host: host,
-                    cache_ttl,
+            Some(cmd) => mode_from_subcommand(cmd),
+            None => Ok(Mode::None),
+        }
+    }
+}
+
+fn mode_from_subcommand(cmd: Command) -> Result<Mode, String> {
+    match cmd {
+        Command::List => Ok(Mode::ListKeys),
+
+        Command::Import { files, recursive } => {
+            let paths = files.iter().map(PathBuf::from).collect();
+            Ok(Mode::Import { paths, recursive })
+        }
+
+        Command::Export {
+            key_id,
+            output,
+            binary,
+        } => Ok(Mode::Export {
+            key_id,
+            binary,
+            output,
+        }),
+
+        Command::Describe { target } => {
+            if looks_like_keystore_id(&target) {
+                Ok(Mode::Info { key_id: target })
+            } else {
+                Ok(Mode::Desc {
+                    path: PathBuf::from(target),
                 })
             }
-            Some(SubCommand::SshAgent { host }) => return Ok(Mode::SshAgent { host }),
-            Some(SubCommand::SshExport {
-                key_id,
-                ssh_pubkey_file,
-            }) => {
-                return Ok(Mode::SshExport {
-                    key_id,
-                    ssh_pubkey_file,
-                })
-            }
-            None => {}
         }
 
-        // --- Shell completions ---
+        Command::Delete { key_id, force } => Ok(Mode::Delete { key_id, force }),
 
-        if let Some(shell) = value.completions {
-            return Ok(Mode::Completions { shell });
-        }
+        Command::Search { query, email } => Ok(Mode::Search { query, email }),
 
-        // --- Signing and verification ---
-        //
-        // `--sign`, `--sign-inline`, `--verify` are pairwise exclusive
-        // and exclusive with every other action flag and with positional
-        // input files. They are checked *before* the card-status / list
-        // / experimental / key-management blocks below so that "tcli
-        // --sign foo" never falls through to a different mode silently.
-        let sign_count = [
-            value.sign.is_some(),
-            value.sign_inline.is_some(),
-            value.verify.is_some(),
-        ]
-        .iter()
-        .filter(|v| **v)
-        .count();
-        if sign_count > 1 {
-            return Err("--sign, --sign-inline, and --verify are mutually exclusive".to_string());
-        }
-        if sign_count == 1 {
-            // Reject conflicts with other action / modifier flags.
-            if value.list_keys
-                || value.import
-                || value.export.is_some()
-                || value.info.is_some()
-                || value.desc.is_some()
-                || value.delete.is_some()
-                || value.search.is_some()
-                || value.fetch.is_some()
-                || value.show_socket.is_some()
-                || value.card_status
-                || value.list_cards
-                || !value.input_files.is_empty()
-                || value.armor
-                || value.recursive
-                || value.force
-                || value.dry_run
-                || value.email
-            {
+        Command::Fetch { email, dry_run } => Ok(Mode::Fetch { email, dry_run }),
+
+        Command::Sign {
+            input,
+            signer,
+            output,
+            binary,
+        } => {
+            if is_stdio(&input) && output.is_none() {
                 return Err(
-                    "--sign / --sign-inline / --verify cannot be combined with other action flags"
+                    "sign reading from stdin requires -o/--output (no input file to derive a default path from)"
                         .to_string(),
                 );
             }
+            Ok(Mode::Sign {
+                input,
+                with_key: signer,
+                binary,
+                output,
+            })
+        }
 
-            // --signature only valid with --verify.
-            if value.signature.is_some() && value.verify.is_none() {
-                return Err("--signature is only valid with --verify".to_string());
-            }
-
-            // --binary only valid with --sign (cleartext is text-only;
-            // verify never produces output).
-            if value.binary && value.sign.is_none() {
+        Command::SignInline {
+            input,
+            signer,
+            output,
+        } => {
+            if is_stdio(&input) && output.is_none() {
                 return Err(
-                    "--binary is only valid with --sign (cleartext signatures are text-only)"
+                    "sign-inline reading from stdin requires -o/--output (no input file to derive a default path from)"
                         .to_string(),
                 );
             }
+            Ok(Mode::SignInline {
+                input,
+                with_key: signer,
+                output,
+            })
+        }
 
-            // --output only valid with --sign / --sign-inline.
-            if value.output.is_some() && value.verify.is_some() {
-                return Err("--output is not valid with --verify".to_string());
-            }
-
-            if let Some(input) = value.sign.clone() {
-                let with_key = value
-                    .with_key
-                    .clone()
-                    .ok_or("--sign requires --with-key FP|KEYID|EMAIL")?;
-                if is_stdio(&input) && value.output.is_none() {
-                    return Err(
-                        "--sign reading from stdin requires -o/--output (no input file to derive a default path from)"
-                            .to_string(),
-                    );
-                }
-                return Ok(Mode::Sign {
-                    input,
-                    with_key,
-                    binary: value.binary,
-                    output: value.output.clone(),
-                });
-            }
-
-            if let Some(input) = value.sign_inline.clone() {
-                let with_key = value
-                    .with_key
-                    .clone()
-                    .ok_or("--sign-inline requires --with-key FP|KEYID|EMAIL")?;
-                if is_stdio(&input) && value.output.is_none() {
-                    return Err(
-                        "--sign-inline reading from stdin requires -o/--output (no input file to derive a default path from)"
-                            .to_string(),
-                    );
-                }
-                return Ok(Mode::SignInline {
-                    input,
-                    with_key,
-                    output: value.output.clone(),
-                });
-            }
-
-            if let Some(input) = value.verify.clone() {
-                if value.signature.is_none() && is_stdio(&input) {
-                    return Err(
-                        "--verify reading from stdin requires --signature SIG_FILE (cannot read both data and inline signature from stdin)"
-                            .to_string(),
-                    );
-                }
-                let with_key_file = value.with_key.clone().map(PathBuf::from);
-                return Ok(Mode::Verify {
-                    input,
-                    signature: value.signature.clone(),
-                    with_key_file,
-                });
-            }
-        } else {
-            // No sign/verify in play — these companion flags are stray.
-            if value.signature.is_some() {
-                return Err("--signature is only valid with --verify".to_string());
-            }
-            if value.with_key.is_some() {
+        Command::Verify {
+            input,
+            signature,
+            key_file,
+        } => {
+            if signature.is_none() && is_stdio(&input) {
                 return Err(
-                    "--with-key is only valid with --sign / --sign-inline / --verify".to_string(),
+                    "verify reading from stdin requires --signature SIG_FILE (cannot read both data and inline signature from stdin)"
+                        .to_string(),
                 );
             }
+            Ok(Mode::Verify {
+                input,
+                signature,
+                with_key_file: key_file,
+            })
         }
 
-        // --- Card and socket info ---
+        Command::Card(card) => mode_from_card(card),
 
-        if value.card_status {
-            return Ok(Mode::CardStatus);
-        }
+        Command::Socket { kind } => Ok(Mode::ShowSocket {
+            ssh: kind == SocketKind::Ssh,
+        }),
 
-        // `--list-cards` is read-only and must be the only flag on the
-        // command line. It ignores --keystore (doesn't touch the
-        // keystore at all) but rejects every other flag — action
-        // flags, positionals, and modifiers like --armor / --binary /
-        // --output / --recursive / --force / --dry-run / --email that
-        // only make sense with another action — so users aren't
-        // surprised by silently-dropped arguments.
-        if value.list_cards {
-            if value.list_keys
-                || value.import
-                || value.export.is_some()
-                || value.info.is_some()
-                || value.desc.is_some()
-                || value.delete.is_some()
-                || value.search.is_some()
-                || value.fetch.is_some()
-                || value.show_socket.is_some()
-                || value.card_status
-                || value.completions.is_some()
-                || value.sign.is_some()
-                || value.sign_inline.is_some()
-                || value.verify.is_some()
-                || value.signature.is_some()
-                || value.with_key.is_some()
-                || !value.input_files.is_empty()
-                || value.armor
-                || value.binary
-                || value.output.is_some()
-                || value.recursive
-                || value.force
-                || value.dry_run
-                || value.email
-            {
-                return Err("--list-cards cannot be combined with other flags".to_string());
-            }
-            #[cfg(feature = "experimental")]
-            {
-                if value.upload_to_card.is_some()
-                    || value.which.is_some()
-                    || value.reset_card
-                    || value.card_ident.is_some()
-                    || value.include_signing
-                    || value.include_encryption
-                    || value.include_authentication
-                {
-                    return Err("--list-cards cannot be combined with other flags".to_string());
-                }
-            }
-            return Ok(Mode::ListCards);
-        }
+        Command::Agent {
+            ssh,
+            host,
+            cache_ttl,
+        } => Ok(Mode::Agent {
+            ssh,
+            ssh_host: host,
+            cache_ttl,
+        }),
 
-        // --- Experimental card ops (only compiled in with
-        // `--features experimental`) ---
+        Command::SshAgent { host } => Ok(Mode::SshAgent { host }),
+
+        Command::SshExport {
+            key_id,
+            ssh_pubkey_file,
+        } => Ok(Mode::SshExport {
+            key_id,
+            ssh_pubkey_file,
+        }),
+
+        Command::Completions { shell } => Ok(Mode::Completions { shell }),
+    }
+}
+
+fn mode_from_card(cmd: CardCommand) -> Result<Mode, String> {
+    match cmd {
+        CardCommand::Status => Ok(Mode::CardStatus),
+        CardCommand::List => Ok(Mode::ListCards),
+
         #[cfg(feature = "experimental")]
-        {
-            if let Some(key_id) = value.upload_to_card.clone() {
-                let which = match value.which.as_deref() {
-                    None => None,
-                    Some("primary") => Some(WhichKey::Primary),
-                    Some("sub") | Some("subkey") => Some(WhichKey::Sub),
-                    Some(other) => {
-                        return Err(format!(
-                            "invalid --which value {:?}: expected `primary` or `sub`",
-                            other
-                        ))
-                    }
-                };
-                if value.include_signing && which == Some(WhichKey::Primary) {
-                    return Err("--include-signing contradicts --which primary; \
-                         --include-signing means \"signing subkey into the \
-                         signing slot\""
-                        .to_string());
-                }
-                return Ok(Mode::UploadToCard {
-                    key_id,
-                    which,
-                    card_ident: value.card_ident.clone(),
-                    include_signing: value.include_signing,
-                    include_encryption: value.include_encryption,
-                    include_authentication: value.include_authentication,
-                });
-            }
-
-            if value.which.is_some() {
-                return Err("--which only applies to --upload-to-card".to_string());
-            }
-
-            if value.include_signing || value.include_encryption || value.include_authentication {
-                return Err("--include-signing / --include-encryption / \
-                     --include-authentication only apply to --upload-to-card"
-                    .to_string());
-            }
-
-            if value.reset_card {
-                return Ok(Mode::ResetCard {
-                    card_ident: value.card_ident.clone(),
-                });
-            }
-
-            if value.card_ident.is_some() {
-                return Err(
-                    "--card-ident only applies to --upload-to-card or --reset-card".to_string(),
-                );
-            }
-        }
-
-        if let Some(socket_type) = value.show_socket {
-            return Ok(Mode::ShowSocket {
-                ssh: socket_type == "ssh",
+        CardCommand::Upload {
+            key_id,
+            card_ident,
+            signing_from,
+            with,
+        } => {
+            // None → None preserves the ambiguity-fails-closed property
+            // of `select_sign_target`: when the cert carries both a
+            // sign-capable primary and a signing subkey and the user
+            // hasn't picked, the upload errors instead of silently
+            // choosing the primary.
+            let which = signing_from.map(|s| match s {
+                SigningFrom::Primary => WhichKey::Primary,
+                SigningFrom::Sub => WhichKey::Sub,
             });
-        }
-
-        // --- Key management flags ---
-
-        if value.import {
-            let paths = value.input_files.iter().map(PathBuf::from).collect();
-            return Ok(Mode::Import {
-                paths,
-                recursive: value.recursive,
-            });
-        }
-
-        if let Some(key_id) = value.export {
-            return Ok(Mode::Export {
+            let include_encryption = with.contains(&Slot::Encryption);
+            let include_authentication = with.contains(&Slot::Authentication);
+            Ok(Mode::UploadToCard {
                 key_id,
-                armor: value.armor,
-                binary: value.binary,
-                output: value.output.clone(),
-            });
+                which,
+                card_ident,
+                include_signing: false,
+                include_encryption,
+                include_authentication,
+            })
         }
 
-        if let Some(key_id) = value.info {
-            return Ok(Mode::Info { key_id });
+        #[cfg(feature = "experimental")]
+        CardCommand::Reset { card_ident, yes } => {
+            // `yes` is currently a no-op: cmd_reset_card() does not
+            // prompt. Keeping the flag in the grammar so users can
+            // pre-write scripts; if confirmation is added later, this
+            // wires straight in.
+            let _ = yes;
+            Ok(Mode::ResetCard { card_ident })
         }
-
-        if let Some(path) = value.desc {
-            return Ok(Mode::Desc { path });
-        }
-
-        if let Some(key_id) = value.delete {
-            return Ok(Mode::Delete {
-                key_id,
-                force: value.force,
-            });
-        }
-
-        if let Some(query) = value.search {
-            return Ok(Mode::Search {
-                query,
-                email: value.email,
-            });
-        }
-
-        if let Some(email) = value.fetch {
-            return Ok(Mode::Fetch {
-                email,
-                dry_run: value.dry_run,
-            });
-        }
-
-        // --- Key listing (human-readable; --with-colons form lives in tclig) ---
-
-        if value.list_keys {
-            return Ok(Mode::ListKeys);
-        }
-
-        Ok(Mode::None)
     }
 }
 
@@ -701,89 +555,356 @@ mod tests {
         Mode::try_from(args)
     }
 
+    // ----- top-level subcommands -----
+
     #[test]
-    fn list_cards_alone_parses() {
-        assert!(matches!(parse(&["--list-cards"]), Ok(Mode::ListCards)));
+    fn list_subcommand() {
+        assert!(matches!(parse(&["list"]), Ok(Mode::ListKeys)));
     }
 
     #[test]
-    fn list_cards_rejects_other_action_flags() {
-        let err = parse(&["--list-cards", "--list-keys"]).unwrap_err();
-        assert!(
-            err.contains("--list-cards cannot be combined"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn list_cards_rejects_positional_inputs() {
-        let err = parse(&["--list-cards", "some-key.asc"]).unwrap_err();
-        assert!(
-            err.contains("--list-cards cannot be combined"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn list_cards_rejects_modifier_flags() {
-        // Spot-check one modifier from each family (bool and Option).
-        for extra in [
-            &["--armor"][..],
-            &["--output", "/tmp/x"][..],
-            &["--email"][..],
-        ] {
-            let mut argv = vec!["--list-cards"];
-            argv.extend_from_slice(extra);
-            let err = parse(&argv).unwrap_err();
-            assert!(
-                err.contains("--list-cards cannot be combined"),
-                "for {extra:?} got: {err}"
-            );
+    fn import_subcommand_collects_files() {
+        match parse(&["import", "a.asc", "b.asc"]).unwrap() {
+            Mode::Import { paths, recursive } => {
+                assert_eq!(paths.len(), 2);
+                assert!(!recursive);
+            }
+            other => panic!("expected Import, got {:?}", std::mem::discriminant(&other)),
         }
     }
 
     #[test]
-    fn list_cards_rejects_subcommand() {
-        let err = parse(&["--list-cards", "ssh-agent", "-H", "unix:///tmp/s"]).unwrap_err();
-        assert!(
-            err.contains("--list-cards cannot be combined"),
-            "got: {err}"
-        );
+    fn import_subcommand_recursive() {
+        match parse(&["import", "keys/", "-r"]).unwrap() {
+            Mode::Import { recursive, .. } => assert!(recursive),
+            other => panic!("expected Import, got {:?}", std::mem::discriminant(&other)),
+        }
     }
+
+    #[test]
+    fn export_subcommand_default_armored() {
+        match parse(&["export", "ABCD"]).unwrap() {
+            Mode::Export { binary, .. } => assert!(!binary),
+            other => panic!("expected Export, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn export_subcommand_binary() {
+        match parse(&["export", "ABCD", "--binary", "-o", "/tmp/x"]).unwrap() {
+            Mode::Export { binary, output, .. } => {
+                assert!(binary);
+                assert_eq!(output.as_deref(), Some(std::path::Path::new("/tmp/x")));
+            }
+            other => panic!("expected Export, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn describe_with_fingerprint_routes_to_info() {
+        let fp = "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD"; // 40 hex
+        match parse(&["describe", fp]).unwrap() {
+            Mode::Info { key_id } => assert_eq!(key_id, fp),
+            other => panic!("expected Info, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn describe_with_keyid_routes_to_info() {
+        let kid = "ABCDABCDABCDABCD"; // 16 hex
+        match parse(&["describe", kid]).unwrap() {
+            Mode::Info { key_id } => assert_eq!(key_id, kid),
+            other => panic!("expected Info, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn describe_with_path_routes_to_desc() {
+        match parse(&["describe", "alice.asc"]).unwrap() {
+            Mode::Desc { path } => assert_eq!(path, PathBuf::from("alice.asc")),
+            other => panic!("expected Desc, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn describe_with_dotslash_forces_file_mode() {
+        let argv = ["describe", "./ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD"];
+        match parse(&argv).unwrap() {
+            Mode::Desc { path } => assert_eq!(
+                path,
+                PathBuf::from("./ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
+            ),
+            other => panic!("expected Desc, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn search_subcommand_email_is_a_modifier() {
+        match parse(&["search", "alice@example.com", "--email"]).unwrap() {
+            Mode::Search { query, email } => {
+                assert_eq!(query, "alice@example.com");
+                assert!(email);
+            }
+            other => panic!("expected Search, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn fetch_subcommand_dry_run() {
+        match parse(&["fetch", "a@b.c", "--dry-run"]).unwrap() {
+            Mode::Fetch { dry_run, .. } => assert!(dry_run),
+            other => panic!("expected Fetch, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn delete_subcommand_force() {
+        match parse(&["delete", "ABCD", "-f"]).unwrap() {
+            Mode::Delete { force, .. } => assert!(force),
+            other => panic!("expected Delete, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    // ----- sign / verify -----
+
+    #[test]
+    fn sign_subcommand_with_signer() {
+        match parse(&["sign", "msg.txt", "--signer", "alice@example.com"]).unwrap() {
+            Mode::Sign {
+                input,
+                with_key,
+                binary,
+                output,
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt"));
+                assert_eq!(with_key, "alice@example.com");
+                assert!(!binary);
+                assert!(output.is_none());
+            }
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn sign_subcommand_binary_threads_through() {
+        match parse(&[
+            "sign",
+            "msg.txt",
+            "--signer",
+            "alice@example.com",
+            "--binary",
+        ])
+        .unwrap()
+        {
+            Mode::Sign { binary, .. } => assert!(binary),
+            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn sign_inline_subcommand() {
+        match parse(&["sign-inline", "msg.txt", "--signer", "alice@example.com"]).unwrap() {
+            Mode::SignInline { with_key, .. } => assert_eq!(with_key, "alice@example.com"),
+            other => panic!(
+                "expected SignInline, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn sign_stdin_requires_output_subcommand() {
+        let err = parse(&["sign", "-", "--signer", "alice@example.com"]).unwrap_err();
+        assert!(err.contains("requires -o/--output"), "got: {err}");
+    }
+
+    #[test]
+    fn verify_subcommand_inline() {
+        match parse(&["verify", "msg.asc"]).unwrap() {
+            Mode::Verify {
+                input,
+                signature,
+                with_key_file,
+            } => {
+                assert_eq!(input, PathBuf::from("msg.asc"));
+                assert!(signature.is_none());
+                assert!(with_key_file.is_none());
+            }
+            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn verify_subcommand_detached() {
+        match parse(&["verify", "msg.txt", "--signature", "msg.sig"]).unwrap() {
+            Mode::Verify {
+                input, signature, ..
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt"));
+                assert_eq!(signature.as_deref(), Some(std::path::Path::new("msg.sig")));
+            }
+            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn verify_subcommand_with_external_pubkey() {
+        match parse(&["verify", "msg.asc", "--key-file", "alice.pub"]).unwrap() {
+            Mode::Verify { with_key_file, .. } => assert_eq!(
+                with_key_file.as_deref(),
+                Some(std::path::Path::new("alice.pub"))
+            ),
+            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn verify_stdin_requires_signature_subcommand() {
+        let err = parse(&["verify", "-"]).unwrap_err();
+        assert!(err.contains("--signature"), "got: {err}");
+    }
+
+    // ----- card / socket / agent / ssh-agent / ssh-export / completions -----
+
+    #[test]
+    fn card_status_subcommand() {
+        assert!(matches!(parse(&["card", "status"]), Ok(Mode::CardStatus)));
+    }
+
+    #[test]
+    fn card_list_subcommand() {
+        assert!(matches!(parse(&["card", "list"]), Ok(Mode::ListCards)));
+    }
+
+    #[test]
+    fn socket_default_is_gpg() {
+        match parse(&["socket"]).unwrap() {
+            Mode::ShowSocket { ssh } => assert!(!ssh),
+            other => panic!(
+                "expected ShowSocket, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn socket_ssh_subcommand() {
+        match parse(&["socket", "ssh"]).unwrap() {
+            Mode::ShowSocket { ssh } => assert!(ssh),
+            other => panic!(
+                "expected ShowSocket, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn agent_subcommand_defaults() {
+        match parse(&["agent"]).unwrap() {
+            Mode::Agent {
+                ssh,
+                ssh_host,
+                cache_ttl,
+            } => {
+                assert!(!ssh);
+                assert!(ssh_host.is_none());
+                assert_eq!(cache_ttl, 1800);
+            }
+            other => panic!("expected Agent, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn ssh_agent_subcommand_requires_host() {
+        // `ssh-agent` is a distinct subcommand from `agent --ssh`
+        // (no GPG cache socket). It requires a binding.
+        let err = parse(&["ssh-agent"]).unwrap_err();
+        assert!(err.contains("--host") || err.contains("-H"), "got: {err}");
+    }
+
+    #[test]
+    fn ssh_agent_subcommand_with_host() {
+        match parse(&["ssh-agent", "-H", "unix:///tmp/tcli-ssh.sock"]).unwrap() {
+            Mode::SshAgent { host } => assert_eq!(host, "unix:///tmp/tcli-ssh.sock"),
+            other => panic!(
+                "expected SshAgent, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn ssh_export_subcommand() {
+        match parse(&["ssh-export", "ABCD", "/tmp/id.pub"]).unwrap() {
+            Mode::SshExport {
+                key_id,
+                ssh_pubkey_file,
+            } => {
+                assert_eq!(key_id, "ABCD");
+                assert_eq!(ssh_pubkey_file, PathBuf::from("/tmp/id.pub"));
+            }
+            other => panic!(
+                "expected SshExport, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn completions_subcommand() {
+        assert!(matches!(
+            parse(&["completions", "zsh"]),
+            Ok(Mode::Completions { .. })
+        ));
+    }
+
+    // ----- pre-0.4 flag forms are gone -----
+
+    #[test]
+    fn old_list_keys_flag_is_rejected() {
+        let err = parse(&["--list-keys"]).unwrap_err();
+        assert!(err.contains("unexpected argument"), "got: {err}");
+    }
+
+    #[test]
+    fn old_card_status_flag_is_rejected() {
+        let err = parse(&["--card-status"]).unwrap_err();
+        assert!(err.contains("unexpected argument"), "got: {err}");
+    }
+
+    #[test]
+    fn old_with_key_flag_is_rejected() {
+        let err = parse(&["sign", "msg.txt", "--with-key", "alice@example.com"]).unwrap_err();
+        assert!(err.contains("unexpected argument"), "got: {err}");
+    }
+
+    #[test]
+    fn no_subcommand_is_mode_none() {
+        assert!(matches!(parse(&[]), Ok(Mode::None)));
+    }
+
+    // ----- experimental: card upload / reset -----
 
     #[cfg(feature = "experimental")]
     #[test]
-    fn list_cards_rejects_card_ident() {
-        let err = parse(&["--list-cards", "--card-ident", "000F:ABCD"]).unwrap_err();
-        assert!(
-            err.contains("--list-cards cannot be combined"),
-            "got: {err}"
-        );
-    }
-
-    #[cfg(feature = "experimental")]
-    #[test]
-    fn card_ident_without_upload_or_reset_errors() {
-        let err = parse(&["--card-ident", "000F:ABCD"]).unwrap_err();
-        assert!(err.contains("--card-ident only applies to"), "got: {err}");
-    }
-
-    #[cfg(feature = "experimental")]
-    #[test]
-    fn upload_to_card_threads_card_ident() {
-        let mode = parse(&["--upload-to-card", "ABCDEF", "--card-ident", "000F:ABCD"]).unwrap();
+    fn card_upload_no_signing_from_yields_none() {
+        // The fix for the silent-default regression: with no
+        // --signing-from, `which` must be None so select_sign_target's
+        // ambiguity check fires for certs with both sign-capable
+        // primary and signing subkey.
+        let mode = parse(&["card", "upload", "ABCDEF"]).unwrap();
         match mode {
             Mode::UploadToCard {
                 key_id,
-                card_ident,
                 which,
+                card_ident,
                 include_signing,
                 include_encryption,
                 include_authentication,
             } => {
                 assert_eq!(key_id, "ABCDEF");
-                assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
-                assert!(which.is_none());
+                assert!(which.is_none(), "no --signing-from must yield which=None");
+                assert!(card_ident.is_none());
                 assert!(!include_signing);
                 assert!(!include_encryption);
                 assert!(!include_authentication);
@@ -797,24 +918,40 @@ mod tests {
 
     #[cfg(feature = "experimental")]
     #[test]
-    fn upload_to_card_threads_include_subkey_flags() {
+    fn card_upload_signing_from_primary_explicit() {
+        let mode = parse(&["card", "upload", "ABCDEF", "--signing-from", "primary"]).unwrap();
+        match mode {
+            Mode::UploadToCard { which, .. } => {
+                assert_eq!(which, Some(WhichKey::Primary));
+            }
+            other => panic!(
+                "expected UploadToCard, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[cfg(feature = "experimental")]
+    #[test]
+    fn card_upload_signing_from_sub_with_extras() {
         let mode = parse(&[
-            "--upload-to-card",
+            "card",
+            "upload",
             "ABCDEF",
-            "--which",
-            "primary",
-            "--include-encryption",
-            "--include-authentication",
+            "--signing-from",
+            "sub",
+            "--with",
+            "encryption,authentication",
         ])
         .unwrap();
         match mode {
             Mode::UploadToCard {
-                include_signing,
+                which,
                 include_encryption,
                 include_authentication,
                 ..
             } => {
-                assert!(!include_signing);
+                assert_eq!(which, Some(WhichKey::Sub));
                 assert!(include_encryption);
                 assert!(include_authentication);
             }
@@ -827,23 +964,28 @@ mod tests {
 
     #[cfg(feature = "experimental")]
     #[test]
-    fn include_subkey_flags_require_upload_to_card() {
-        let err = parse(&["--include-signing"]).unwrap_err();
-        assert!(err.contains("only apply to --upload-to-card"), "got: {err}");
-        let err = parse(&["--include-encryption"]).unwrap_err();
-        assert!(err.contains("only apply to --upload-to-card"), "got: {err}");
-        let err = parse(&["--include-authentication"]).unwrap_err();
-        assert!(err.contains("only apply to --upload-to-card"), "got: {err}");
-    }
-
-    #[cfg(feature = "experimental")]
-    #[test]
-    fn include_signing_threads_through_mode() {
-        let mode = parse(&["--upload-to-card", "ABCDEF", "--include-signing"]).unwrap();
+    fn card_upload_positional_floats_after_flags() {
+        let mode = parse(&[
+            "card",
+            "upload",
+            "--signing-from",
+            "sub",
+            "--with",
+            "encryption",
+            "ABCDEF",
+        ])
+        .unwrap();
         match mode {
             Mode::UploadToCard {
-                include_signing, ..
-            } => assert!(include_signing),
+                key_id,
+                which,
+                include_encryption,
+                ..
+            } => {
+                assert_eq!(key_id, "ABCDEF");
+                assert_eq!(which, Some(WhichKey::Sub));
+                assert!(include_encryption);
+            }
             other => panic!(
                 "expected UploadToCard, got {:?}",
                 std::mem::discriminant(&other)
@@ -853,22 +995,8 @@ mod tests {
 
     #[cfg(feature = "experimental")]
     #[test]
-    fn include_signing_contradicts_which_primary() {
-        let err = parse(&[
-            "--upload-to-card",
-            "ABCDEF",
-            "--which",
-            "primary",
-            "--include-signing",
-        ])
-        .unwrap_err();
-        assert!(err.contains("contradicts --which primary"), "got: {err}");
-    }
-
-    #[cfg(feature = "experimental")]
-    #[test]
-    fn reset_card_threads_card_ident() {
-        let mode = parse(&["--reset-card", "--card-ident", "000F:ABCD"]).unwrap();
+    fn card_reset_subcommand() {
+        let mode = parse(&["card", "reset", "--card-ident", "000F:ABCD"]).unwrap();
         match mode {
             Mode::ResetCard { card_ident } => {
                 assert_eq!(card_ident.as_deref(), Some("000F:ABCD"));
@@ -878,281 +1006,5 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
-    }
-
-    // ----- sign / sign-inline / verify -----
-
-    #[test]
-    fn sign_with_fp_parses_to_armored_default() {
-        let mode = parse(&[
-            "--sign",
-            "msg.txt",
-            "--with-key",
-            "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD",
-        ])
-        .unwrap();
-        match mode {
-            Mode::Sign {
-                input,
-                with_key,
-                binary,
-                output,
-            } => {
-                assert_eq!(input, PathBuf::from("msg.txt"));
-                assert_eq!(with_key, "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD");
-                assert!(!binary, "default must be armored");
-                assert!(output.is_none(), "default output is sibling .asc");
-            }
-            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn sign_with_email_parses() {
-        let mode = parse(&["--sign", "msg.txt", "--with-key", "alice@example.com"]).unwrap();
-        match mode {
-            Mode::Sign { with_key, .. } => assert_eq!(with_key, "alice@example.com"),
-            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn sign_binary_threads_through() {
-        let mode = parse(&[
-            "--sign",
-            "msg.txt",
-            "--with-key",
-            "alice@example.com",
-            "--binary",
-        ])
-        .unwrap();
-        match mode {
-            Mode::Sign { binary, .. } => assert!(binary),
-            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn sign_output_threads_through() {
-        let mode = parse(&[
-            "--sign",
-            "msg.txt",
-            "--with-key",
-            "alice@example.com",
-            "-o",
-            "/tmp/x.asc",
-        ])
-        .unwrap();
-        match mode {
-            Mode::Sign { output, .. } => {
-                assert_eq!(output.as_deref(), Some(std::path::Path::new("/tmp/x.asc")))
-            }
-            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn sign_requires_with_key() {
-        let err = parse(&["--sign", "msg.txt"]).unwrap_err();
-        assert!(err.contains("--with-key"), "got: {err}");
-    }
-
-    #[test]
-    fn sign_inline_parses() {
-        let mode = parse(&[
-            "--sign-inline",
-            "msg.txt",
-            "--with-key",
-            "alice@example.com",
-        ])
-        .unwrap();
-        match mode {
-            Mode::SignInline {
-                input,
-                with_key,
-                output,
-            } => {
-                assert_eq!(input, PathBuf::from("msg.txt"));
-                assert_eq!(with_key, "alice@example.com");
-                assert!(output.is_none());
-            }
-            other => panic!(
-                "expected SignInline, got {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
-    }
-
-    #[test]
-    fn sign_inline_rejects_binary() {
-        let err = parse(&[
-            "--sign-inline",
-            "msg.txt",
-            "--with-key",
-            "alice@example.com",
-            "--binary",
-        ])
-        .unwrap_err();
-        assert!(
-            err.contains("--binary is only valid with --sign"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn sign_inline_requires_with_key() {
-        let err = parse(&["--sign-inline", "msg.txt"]).unwrap_err();
-        assert!(err.contains("--with-key"), "got: {err}");
-    }
-
-    #[test]
-    fn verify_inline_parses() {
-        let mode = parse(&["--verify", "msg.txt.asc"]).unwrap();
-        match mode {
-            Mode::Verify {
-                input,
-                signature,
-                with_key_file,
-            } => {
-                assert_eq!(input, PathBuf::from("msg.txt.asc"));
-                assert!(signature.is_none());
-                assert!(with_key_file.is_none());
-            }
-            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn verify_detached_parses() {
-        let mode = parse(&["--verify", "msg.txt", "--signature", "msg.txt.sig"]).unwrap();
-        match mode {
-            Mode::Verify {
-                input, signature, ..
-            } => {
-                assert_eq!(input, PathBuf::from("msg.txt"));
-                assert_eq!(
-                    signature.as_deref(),
-                    Some(std::path::Path::new("msg.txt.sig"))
-                );
-            }
-            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn verify_with_external_pubkey_parses() {
-        let mode = parse(&["--verify", "msg.txt.asc", "--with-key", "alice.pub"]).unwrap();
-        match mode {
-            Mode::Verify { with_key_file, .. } => {
-                assert_eq!(
-                    with_key_file.as_deref(),
-                    Some(std::path::Path::new("alice.pub"))
-                );
-            }
-            other => panic!("expected Verify, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn signature_without_verify_errors() {
-        let err = parse(&["--list-keys", "--signature", "x.sig"]).unwrap_err();
-        assert!(err.contains("--signature"), "got: {err}");
-    }
-
-    #[test]
-    fn with_key_without_sign_or_verify_errors() {
-        let err = parse(&["--list-keys", "--with-key", "alice@example.com"]).unwrap_err();
-        assert!(err.contains("--with-key"), "got: {err}");
-    }
-
-    #[test]
-    fn sign_and_verify_are_mutually_exclusive() {
-        let err = parse(&[
-            "--sign",
-            "a.txt",
-            "--verify",
-            "b.txt",
-            "--with-key",
-            "alice@example.com",
-        ])
-        .unwrap_err();
-        assert!(err.contains("mutually exclusive"), "got: {err}");
-    }
-
-    #[test]
-    fn sign_and_sign_inline_are_mutually_exclusive() {
-        let err = parse(&[
-            "--sign",
-            "a.txt",
-            "--sign-inline",
-            "a.txt",
-            "--with-key",
-            "alice@example.com",
-        ])
-        .unwrap_err();
-        assert!(err.contains("mutually exclusive"), "got: {err}");
-    }
-
-    #[test]
-    fn sign_conflicts_with_other_actions() {
-        let err = parse(&[
-            "--sign",
-            "a.txt",
-            "--with-key",
-            "alice@example.com",
-            "--list-keys",
-        ])
-        .unwrap_err();
-        assert!(
-            err.contains("cannot be combined with other action flags"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn sign_stdin_requires_output() {
-        let err = parse(&["--sign", "-", "--with-key", "alice@example.com"]).unwrap_err();
-        assert!(err.contains("requires -o/--output"), "got: {err}");
-    }
-
-    #[test]
-    fn sign_stdin_with_output_ok() {
-        let mode = parse(&["--sign", "-", "--with-key", "alice@example.com", "-o", "-"]).unwrap();
-        match mode {
-            Mode::Sign { input, output, .. } => {
-                assert!(is_stdio(&input));
-                assert_eq!(output.as_deref().map(is_stdio), Some(true));
-            }
-            other => panic!("expected Sign, got {:?}", std::mem::discriminant(&other)),
-        }
-    }
-
-    #[test]
-    fn verify_stdin_inline_errors_without_signature() {
-        let err = parse(&["--verify", "-"]).unwrap_err();
-        assert!(err.contains("--signature"), "got: {err}");
-    }
-
-    #[test]
-    fn list_cards_rejects_sign_flag() {
-        // The order in which the two mutual-exclusion checks fire isn't
-        // load-bearing; what matters is that the combination is rejected.
-        let err = parse(&["--list-cards", "--sign", "x"]).unwrap_err();
-        assert!(err.contains("cannot be combined"), "got: {err}");
-    }
-
-    #[test]
-    fn subcommand_rejects_sign_flag() {
-        let err = parse(&[
-            "--sign",
-            "msg.txt",
-            "--with-key",
-            "abc",
-            "ssh-agent",
-            "--host",
-            "sock",
-        ])
-        .unwrap_err();
-        assert!(err.contains("subcommands cannot be combined"), "got: {err}");
     }
 }

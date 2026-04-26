@@ -1,5 +1,5 @@
 #!/bin/bash
-# Integration test for `tcli --sign / --sign-inline / --verify`.
+# Integration test for `tcli sign / sign-inline / verify`.
 #
 # Prerequisites:
 #   - tcli built (cargo build)
@@ -39,7 +39,7 @@ fi
 if [[ -n "${1:-}" ]]; then
     KEY_FP="$1"
 else
-    KEY_FP=$("$TCLI" --list-keys 2>/dev/null \
+    KEY_FP=$("$TCLI" list 2>/dev/null \
         | grep "^sec" \
         | head -1 \
         | awk '{print $2}')
@@ -49,9 +49,9 @@ if [[ -z "$KEY_FP" ]]; then
     exit 1
 fi
 
-# Try to extract the first email from the key info; used for --with-key EMAIL
+# Try to extract the first email from the key info; used for --signer EMAIL
 # coverage. Fall back to skipping the email cases if we can't find one.
-KEY_EMAIL=$("$TCLI" --info "$KEY_FP" 2>/dev/null \
+KEY_EMAIL=$("$TCLI" describe "$KEY_FP" 2>/dev/null \
     | grep -oE '<[^>]+@[^>]+>' \
     | head -1 \
     | tr -d '<>')
@@ -133,17 +133,17 @@ echo
 # 1. Detached, default = ASCII armored, sibling .asc
 echo "[1] Detached signature, default armored"
 expect_file "  --sign FILE -> FILE.asc" payload.txt.asc \
-    -- "$TCLI" --sign payload.txt --with-key "$KEY_FP"
+    -- "$TCLI" sign payload.txt --signer "$KEY_FP"
 expect_grep "  output is ASCII armored" "BEGIN PGP SIGNATURE" payload.txt.asc
 expect_rc 0 "  verify good" \
-    -- "$TCLI" --verify payload.txt --signature payload.txt.asc
+    -- "$TCLI" verify payload.txt --signature payload.txt.asc
 echo
 
 # 2. Detached, --binary -> sibling .sig
 echo "[2] Detached signature, --binary"
 rm -f payload.txt.sig
 expect_file "  --sign --binary -> FILE.sig" payload.txt.sig \
-    -- "$TCLI" --sign payload.txt --with-key "$KEY_FP" --binary
+    -- "$TCLI" sign payload.txt --signer "$KEY_FP" --binary
 # Binary form must NOT start with the ASCII armor header.
 if LC_ALL=C head -c 64 payload.txt.sig | grep -aq '^-----BEGIN PGP SIGNATURE-----$'; then
     echo "  FAIL  --binary output contains BEGIN PGP marker"
@@ -153,93 +153,97 @@ else
     PASS_COUNT=$((PASS_COUNT + 1))
 fi
 expect_rc 0 "  verify binary signature" \
-    -- "$TCLI" --verify payload.txt --signature payload.txt.sig
+    -- "$TCLI" verify payload.txt --signature payload.txt.sig
 echo
 
 # 3. -o overrides default destination
 echo "[3] -o/--output override"
 rm -f custom.asc
 expect_file "  --sign -o custom.asc" custom.asc \
-    -- "$TCLI" --sign payload.txt --with-key "$KEY_FP" -o custom.asc
+    -- "$TCLI" sign payload.txt --signer "$KEY_FP" -o custom.asc
 expect_rc 0 "  verify custom.asc" \
-    -- "$TCLI" --verify payload.txt --signature custom.asc
+    -- "$TCLI" verify payload.txt --signature custom.asc
 echo
 
 # 4. Inline (cleartext) sign + verify
 echo "[4] Inline cleartext sign + verify"
 rm -f payload.signed.asc
 expect_file "  --sign-inline -> payload.signed.asc" payload.signed.asc \
-    -- "$TCLI" --sign-inline payload.txt --with-key "$KEY_FP" -o payload.signed.asc
+    -- "$TCLI" sign-inline payload.txt --signer "$KEY_FP" -o payload.signed.asc
 expect_grep "  output is cleartext-signed" "BEGIN PGP SIGNED MESSAGE" payload.signed.asc
 expect_rc 0 "  verify cleartext message" \
-    -- "$TCLI" --verify payload.signed.asc
+    -- "$TCLI" verify payload.signed.asc
 echo
 
 # 5. BAD signature -> exit 1
 echo "[5] BAD signature"
 expect_rc 1 "  verify tampered data" \
-    -- "$TCLI" --verify tampered.txt --signature payload.txt.asc
+    -- "$TCLI" verify tampered.txt --signature payload.txt.asc
 echo
 
 # 6. UNKNOWN signer -> exit 2
 echo "[6] UNKNOWN signer (fresh empty keystore)"
 FRESH_DB=$(mktemp -d)/empty.db
 expect_rc 2 "  verify against empty keystore" \
-    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" --verify payload.txt --signature payload.txt.asc
+    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" verify payload.txt --signature payload.txt.asc
 echo
 
-# 7. UNKNOWN keystore + --with-key external pubkey -> exit 0
-echo "[7] --with-key external pubkey"
-"$TCLI" --export "$KEY_FP" --armor -o pub.asc >/dev/null 2>&1
-expect_rc 0 "  verify with external --with-key" \
-    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" --verify payload.txt --signature payload.txt.asc --with-key pub.asc
-expect_rc 0 "  verify inline with external --with-key" \
-    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" --verify payload.signed.asc --with-key pub.asc
-expect_rc 1 "  external --with-key catches tampered data" \
-    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" --verify tampered.txt --signature payload.txt.asc --with-key pub.asc
+# 7. UNKNOWN keystore + --key-file external pubkey -> exit 0
+echo "[7] --key-file external pubkey"
+"$TCLI" export "$KEY_FP" -o pub.asc >/dev/null 2>&1
+expect_rc 0 "  verify with external --key-file" \
+    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" verify payload.txt --signature payload.txt.asc --key-file pub.asc
+expect_rc 0 "  verify inline with external --key-file" \
+    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" verify payload.signed.asc --key-file pub.asc
+expect_rc 1 "  external --key-file catches tampered data" \
+    -- env TUMPA_KEYSTORE="$FRESH_DB" "$TCLI" verify tampered.txt --signature payload.txt.asc --key-file pub.asc
 echo
 
 # 8. stdin -> stdout sign and verify
 echo "[8] stdin / stdout sign"
-cat payload.txt | "$TCLI" --sign - --with-key "$KEY_FP" -o - > stdin-sig.asc 2>/dev/null
+cat payload.txt | "$TCLI" sign - --signer "$KEY_FP" -o - > stdin-sig.asc 2>/dev/null
 expect_grep "  stdin sign produces armored output on stdout" "BEGIN PGP SIGNATURE" stdin-sig.asc
 expect_rc 0 "  verify stdin-produced signature" \
-    -- "$TCLI" --verify payload.txt --signature stdin-sig.asc
+    -- "$TCLI" verify payload.txt --signature stdin-sig.asc
 echo
 
-# 9. --with-key by email (if we found one)
+# 9. --signer by email (if we found one)
 if [[ -n "$KEY_EMAIL" ]]; then
-    echo "[9] --with-key EMAIL"
+    echo "[9] --signer EMAIL"
     rm -f payload.email.asc
-    expect_file "  --sign --with-key $KEY_EMAIL" payload.email.asc \
-        -- "$TCLI" --sign payload.txt --with-key "$KEY_EMAIL" -o payload.email.asc
+    expect_file "  sign --signer $KEY_EMAIL" payload.email.asc \
+        -- "$TCLI" sign payload.txt --signer "$KEY_EMAIL" -o payload.email.asc
     expect_rc 0 "  verify email-selected signature" \
-        -- "$TCLI" --verify payload.txt --signature payload.email.asc
+        -- "$TCLI" verify payload.txt --signature payload.email.asc
     echo
 fi
 
 # 10. Unknown email -> non-zero
 echo "[10] Unknown email is rejected"
-expect_rc 1 "  --sign --with-key nonexistent@example.com" \
-    -- "$TCLI" --sign payload.txt --with-key "this-address-does-not-exist@example.com" -o /dev/null
+expect_rc 1 "  sign --signer nonexistent@example.com" \
+    -- "$TCLI" sign payload.txt --signer "this-address-does-not-exist@example.com" -o /dev/null
 echo
 
 # 11. CLI parse-time rejections (no key/keystore touched)
+#
+# clap returns rc=2 for unknown or missing arguments; our own
+# validator (mode_from_subcommand) returns rc=1 for valid clap parses
+# that fail semantic checks (e.g. stdin verify without --signature).
 echo "[11] CLI parse rejections"
-expect_rc 1 "  --sign without --with-key" \
-    -- "$TCLI" --sign payload.txt
-expect_rc 1 "  --sign-inline without --with-key" \
-    -- "$TCLI" --sign-inline payload.txt
-expect_rc 1 "  --sign-inline rejects --binary" \
-    -- "$TCLI" --sign-inline payload.txt --with-key "$KEY_FP" --binary
-expect_rc 1 "  --sign + --verify together" \
-    -- "$TCLI" --sign payload.txt --verify payload.txt --with-key "$KEY_FP"
-expect_rc 1 "  --signature without --verify" \
-    -- "$TCLI" --signature payload.txt.asc --list-keys
-expect_rc 1 "  --with-key without sign/verify" \
-    -- "$TCLI" --with-key "$KEY_FP" --list-keys
-expect_rc 1 "  --verify - without --signature (stdin needs detached)" \
-    -- bash -c "echo data | '$TCLI' --verify -"
+expect_rc 2 "  sign without --signer" \
+    -- "$TCLI" sign payload.txt
+expect_rc 2 "  sign-inline without --signer" \
+    -- "$TCLI" sign-inline payload.txt
+expect_rc 2 "  sign-inline rejects --binary" \
+    -- "$TCLI" sign-inline payload.txt --signer "$KEY_FP" --binary
+expect_rc 2 "  --signature is rejected outside verify" \
+    -- "$TCLI" list --signature payload.txt.asc
+expect_rc 2 "  --signer is rejected outside sign/sign-inline" \
+    -- "$TCLI" list --signer "$KEY_FP"
+expect_rc 2 "  --key-file is rejected outside verify" \
+    -- "$TCLI" list --key-file pub.asc
+expect_rc 1 "  verify - without --signature (stdin needs detached)" \
+    -- bash -c "echo data | '$TCLI' verify -"
 echo
 
 # 12. Inline verify of tampered cleartext -> BAD
@@ -266,7 +270,7 @@ sys.stdout.buffer.write(bytes(mutated))
 sys.stdout.buffer.write(tail)
 PY
 expect_rc 1 "  inline verify of tampered cleartext" \
-    -- "$TCLI" --verify tampered.signed.asc
+    -- "$TCLI" verify tampered.signed.asc
 echo
 
 # --- Summary ---

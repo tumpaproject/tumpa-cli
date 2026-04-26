@@ -1,17 +1,17 @@
 #!/bin/bash
-# Integration tests for `tcli --upload-to-card`.
+# Integration tests for `tcli card upload`.
 #
 # This test assumes tcli was built with the `experimental` Cargo
 # feature:
 #
 #     cargo build --features experimental
 #
-# On a default build the experimental flags do not exist on the
+# On a default build the experimental subcommands do not exist on the
 # binary, and this script exits early with an explanatory error
 # instead of producing misleading failures.
 #
 # Stage A (always runs): CLI argument validation. No smart card
-# needed. Covers --which disambiguation and keystore-resolution
+# needed. Covers --signing-from value validation and keystore-resolution
 # errors.
 #
 # Stage B (runs only when a writable OpenPGP card is plugged in and
@@ -26,7 +26,7 @@
 #       ./tests/test_upload_card.sh
 #
 # Multi-card host (e.g. Nitrokey 3 + jcecard virtual reader): set
-# TCLI_CARD_IDENT to the IDENT printed by `tcli --list-cards` (e.g.
+# TCLI_CARD_IDENT to the IDENT printed by `tcli card list` (e.g.
 # "000F:CB9A5355", i.e. MFG_ID:SERIAL where MFG_ID is the 4-hex
 # manufacturer code, NOT the human-readable manufacturer name) to pin
 # every card-touching tcli call to that reader. Stage A doesn't need
@@ -75,20 +75,21 @@ expect_error_containing() {
 # Preflight: require a feature-experimental build
 # ---------------------------------------------------------------------
 #
-# A default build rejects `--upload-to-card` as an unknown argument
-# ("unexpected argument"). A feature build gets past argv parsing and
-# falls through to keystore resolution ("key not found"). Anything
-# else means something unrelated went wrong and we should not run
-# Stage A at all.
+# A default build does not include the `card upload` subcommand at all
+# (clap reports an unrecognized subcommand). A feature build gets past
+# argv parsing and falls through to keystore resolution ("key not
+# found"). Anything else means something unrelated went wrong and we
+# should not run Stage A at all.
 
-preflight_out=$("$TCLI" --upload-to-card 0000000000000000000000000000000000000000 2>&1 || true)
-if [[ "$preflight_out" == *"unexpected argument"* ]]; then
+preflight_out=$("$TCLI" card upload 0000000000000000000000000000000000000000 2>&1 || true)
+if [[ "$preflight_out" == *"unrecognized subcommand"* ]] \
+   || [[ "$preflight_out" == *"unexpected argument"* ]]; then
     echo "ERROR: tcli was built without the 'experimental' Cargo feature." >&2
     echo "       Rebuild with:  cargo build --features experimental" >&2
     exit 2
 fi
 if [[ "$preflight_out" != *"key not found"* ]]; then
-    echo "ERROR: unexpected --upload-to-card preflight output:" >&2
+    echo "ERROR: unexpected 'card upload' preflight output:" >&2
     echo "$preflight_out" >&2
     exit 2
 fi
@@ -100,49 +101,53 @@ fi
 echo ""
 echo "=== Stage A: CLI argument validation ==="
 
-# A1: --which alone (no --upload-to-card) is an input error.
+# A1: --signing-from is only present on `card upload`. clap rejects
+#     it on any other subcommand with an "unexpected argument" error.
 expect_error_containing \
-    "rejects --which without --upload-to-card" \
-    "--which only applies to --upload-to-card" \
-    "$TCLI" --which primary
+    "rejects --signing-from outside 'card upload'" \
+    "unexpected argument" \
+    "$TCLI" list --signing-from primary
 
-# A2: --which with an unknown value is rejected.
+# A2: --signing-from with an unknown value is rejected at parse time
+#     (clap value_enum produces "invalid value").
 expect_error_containing \
-    "rejects invalid --which value" \
-    "invalid --which value" \
-    "$TCLI" --upload-to-card AAAA --which bogus
+    "rejects invalid --signing-from value" \
+    "invalid value" \
+    "$TCLI" card upload AAAA --signing-from bogus
 
 # A3: unknown fingerprint is surfaced as "key not found".
 expect_error_containing \
     "surfaces unknown fingerprint" \
     "key not found" \
-    "$TCLI" --upload-to-card \
+    "$TCLI" card upload \
     0000000000000000000000000000000000000000
 
-# A4: --which primary / --which sub both parse (without any keystore key,
-# they must still reach keystore resolution and fail there with a lookup
-# error — this proves the flag value is accepted).
+# A4: --signing-from primary / --signing-from sub both parse (without
+#     any keystore key, they must still reach keystore resolution and
+#     fail there with a lookup error — this proves the flag value is
+#     accepted).
 expect_error_containing \
-    "accepts --which primary" \
+    "accepts --signing-from primary" \
     "key not found" \
-    "$TCLI" \
-    --upload-to-card 0000000000000000000000000000000000000000 \
-    --which primary
+    "$TCLI" card upload \
+    0000000000000000000000000000000000000000 \
+    --signing-from primary
 
 expect_error_containing \
-    "accepts --which sub" \
+    "accepts --signing-from sub" \
     "key not found" \
-    "$TCLI" \
-    --upload-to-card 0000000000000000000000000000000000000000 \
-    --which sub
+    "$TCLI" card upload \
+    0000000000000000000000000000000000000000 \
+    --signing-from sub
 
-# A5: even on a feature build the flag is hidden from --help.
-if "$TCLI" --help 2>&1 | grep -q -- '--upload-to-card'; then
-    fail "--upload-to-card stays hidden in --help" \
-        "flag leaked to visible --help"
-else
-    ok "--upload-to-card stays hidden in --help"
-fi
+# A5: --with parses comma-separated slot lists (without a keystore key,
+#     reaches "key not found" — flag value accepted).
+expect_error_containing \
+    "accepts --with encryption,authentication" \
+    "key not found" \
+    "$TCLI" card upload \
+    0000000000000000000000000000000000000000 \
+    --with encryption,authentication
 
 # ---------------------------------------------------------------------
 # Stage B — End-to-end upload + card sign (requires opt-in + real card)
@@ -167,15 +172,14 @@ fi
 export TUMPA_ADMIN_PIN="$ADMIN_PIN"
 
 # Optional multi-card disambiguation. If TCLI_CARD_IDENT is set,
-# `tcli --upload-to-card` and `tcli --reset-card` are pinned to that
-# reader via `--card-ident`. The diagnostic `tcli --card-status` /
-# `tcli --list-cards` calls below are intentionally NOT filtered:
-# `--card-status` doesn't accept `--card-ident`, and `--list-cards`
-# is documented as mutually exclusive with every other flag. The
-# Stage-B verification logic below assumes the test always operates on
-# a freshly-reset card whose only populated slots are the ones the
-# test just wrote, so an unfiltered fingerprint grep stays
-# unambiguous.
+# `tcli card upload` and `tcli card reset` are pinned to that reader
+# via `--card-ident`. The diagnostic `tcli card status` / `tcli card
+# list` calls below are intentionally NOT filtered: `card status`
+# does not take `--card-ident`, and `card list` enumerates every
+# attached reader. The Stage-B verification logic below assumes the
+# test always operates on a freshly-reset card whose only populated
+# slots are the ones the test just wrote, so an unfiltered fingerprint
+# grep stays unambiguous.
 CARD_IDENT_ARGS=()
 if [[ -n "${TCLI_CARD_IDENT:-}" ]]; then
     CARD_IDENT_ARGS=(--card-ident "$TCLI_CARD_IDENT")
@@ -184,16 +188,16 @@ fi
 command -v gpg >/dev/null || { echo "ERROR: gpg not installed"; exit 1; }
 command -v git >/dev/null || { echo "ERROR: git not installed"; exit 1; }
 
-# A card must actually be reachable. `--list-cards` is the right probe
+# A card must actually be reachable. `card list` is the right probe
 # here: it does only ATR-level enumeration (one PCSC connect per
 # reader, no get_card_details / no APDU traffic that can transiently
 # fail on a freshly-attached jcecard slot), so a positive result is a
-# reliable yes/no on card presence. `--card-status` is reserved for
+# reliable yes/no on card presence. `card status` is reserved for
 # the diagnostic dump on failure where richer info is helpful.
-if ! "$TCLI" --list-cards 2>&1 | grep -qE '^[0-9A-Fa-f]{4}:'; then
+if ! "$TCLI" card list 2>&1 | grep -qE '^[0-9A-Fa-f]{4}:'; then
     echo "ERROR: Stage B requested but no OpenPGP card detected." >&2
-    "$TCLI" --list-cards >&2 || true
-    "$TCLI" --card-status >&2 || true
+    "$TCLI" card list >&2 || true
+    "$TCLI" card status >&2 || true
     exit 1
 fi
 
@@ -201,7 +205,7 @@ fi
 # This makes Stage B idempotent across local reruns — critical for the
 # virtual jcecard, whose state file persists across pcscd restarts.
 # After reset the admin PIN is back to its default of 12345678.
-if ! "$TCLI" --reset-card "${CARD_IDENT_ARGS[@]}" >"$TEST_DIR/reset.out" 2>&1; then
+if ! "$TCLI" card reset "${CARD_IDENT_ARGS[@]}" >"$TEST_DIR/reset.out" 2>&1; then
     fail "card reset (Stage B setup)" "$(cat "$TEST_DIR/reset.out")"
     exit 1
 fi
@@ -240,18 +244,22 @@ echo "$KEY_FP:6:" | gpg --import-ownertrust 2>/dev/null
 gpg --pinentry-mode loopback --passphrase "$TUMPA_PASSPHRASE" \
     --batch --yes --armor --export-secret-keys "$KEY_FP" \
     > "$TEST_DIR/secret.asc"
-"$TCLI" --import "$TEST_DIR/secret.asc" >/dev/null
+"$TCLI" import "$TEST_DIR/secret.asc" >/dev/null
 ok "imported sign+cert+sign-subkey cert $KEY_FP into keystore"
 
-# B2: ambiguous upload (primary AND signing subkey) without --which
-# must refuse.
+# B2: ambiguous upload (primary AND signing subkey) without
+# --signing-from must refuse. select_sign_target's error message
+# still references the legacy `--which primary` / `--which sub`
+# flag names; this test greps for that exact text. When LOW-2
+# (refresh select_sign_target error texts to mention --signing-from)
+# lands, update the grep accordingly.
 expect_error_containing \
-    "refuses ambiguous upload without --which" \
+    "refuses ambiguous upload without --signing-from" \
     "--which primary" \
-    "$TCLI" --upload-to-card "$KEY_FP"
+    "$TCLI" card upload "$KEY_FP"
 
-# B3: upload the PRIMARY with --which primary.
-if "$TCLI" --upload-to-card "$KEY_FP" --which primary "${CARD_IDENT_ARGS[@]}" \
+# B3: upload the PRIMARY with --signing-from primary.
+if "$TCLI" card upload "$KEY_FP" --signing-from primary "${CARD_IDENT_ARGS[@]}" \
         >"$TEST_DIR/upload.out" 2>&1; then
     ok "upload primary → signing slot"
 else
@@ -337,23 +345,22 @@ V4_PASS="redhat"
 
 # Reset card so this case starts from a clean slate (the RSA upload
 # above left a key in the signing slot).
-if ! "$TCLI" --reset-card "${CARD_IDENT_ARGS[@]}" >"$TEST_DIR/reset2.out" 2>&1; then
+if ! "$TCLI" card reset "${CARD_IDENT_ARGS[@]}" >"$TEST_DIR/reset2.out" 2>&1; then
     fail "card reset before Cv25519Modern upload" "$(cat "$TEST_DIR/reset2.out")"
     exit 1
 fi
 ok "card reset before Cv25519Modern upload"
 
-if ! "$TCLI" --import "$V4_FIXTURE" >"$TEST_DIR/v4_import.out" 2>&1; then
+if ! "$TCLI" import "$V4_FIXTURE" >"$TEST_DIR/v4_import.out" 2>&1; then
     fail "import Cv25519Modern fixture" "$(cat "$TEST_DIR/v4_import.out")"
     exit 1
 fi
 ok "imported Cv25519Modern fixture $V4_FP"
 
 if TUMPA_PASSPHRASE="$V4_PASS" "$TCLI" \
-        --upload-to-card "$V4_FP" \
-        --which primary \
-        --include-encryption \
-        --include-authentication \
+        card upload "$V4_FP" \
+        --signing-from primary \
+        --with encryption,authentication \
         "${CARD_IDENT_ARGS[@]}" \
         >"$TEST_DIR/v4_upload.out" 2>&1; then
     ok "upload Cv25519Modern primary + E + A subkeys (Nitrokey path)"
@@ -370,9 +377,9 @@ V4_ENC_FP="D0C8D771D446D6170531DB90068C54B217F6384F"
 # Ed25519 authentication subkey of v4_x25519_cs_primary.asc:
 V4_AUTH_FP="626936B80CF7A4E793B893236134A4EB28428F1C"
 
-# tcli --card-status prints fingerprints with spaces every 4 chars; strip
+# tcli card status prints fingerprints with spaces every 4 chars; strip
 # them out and compare against the bare hex to keep the assertion robust.
-status_out=$("$TCLI" --card-status 2>&1)
+status_out=$("$TCLI" card status 2>&1)
 status_compact=$(printf '%s' "$status_out" | tr -d '[:space:]' | tr 'a-f' 'A-F')
 
 for label in "$V4_FP:signing" "$V4_ENC_FP:encryption" "$V4_AUTH_FP:authentication"; do

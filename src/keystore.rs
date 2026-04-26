@@ -337,7 +337,6 @@ fn merge_and_reimport(
 /// Export a key from the keystore.
 pub fn cmd_export(
     key_id: &str,
-    _armor: bool,
     binary: bool,
     output: Option<&PathBuf>,
     keystore_path: Option<&PathBuf>,

@@ -74,7 +74,7 @@ Linux also needs PC/SC libraries for card support — see
 **2. Import the public key matching your card**
 
 ```
-tcli --import my-public-key.asc
+tcli import my-public-key.asc
 ```
 
 The secret bits live on the card; the keystore only needs the public
@@ -84,8 +84,8 @@ decryption to the card.
 **3. Verify the key and the card**
 
 ```
-tcli --info <FINGERPRINT>     # details for the imported key
-tcli --card-status            # connected cards, serial, PIN retries
+tcli describe <FINGERPRINT>   # details for the imported key
+tcli card status              # connected cards, serial, PIN retries
 ```
 
 **4. Configure git**
@@ -166,7 +166,7 @@ The first step is importing your OpenPGP key. The keystore directory
 (`~/.tumpa/`) and database are created automatically on first use:
 
 ```
-tcli --import my-secret-key.asc
+tcli import my-secret-key.asc
 ```
 
 Already have keys in GnuPG? Import the whole keyring in one shot —
@@ -174,15 +174,15 @@ both process substitution and stdin work, and multi-key streams
 are split into individual keys:
 
 ```
-tcli --import <(gpg --export)          # all public keys from gpg
-gpg --export | tcli --import -         # same via a pipe
-gpg --export-secret-keys | tcli --import -
+tcli import <(gpg --export)            # all public keys from gpg
+gpg --export | tcli import -           # same via a pipe
+gpg --export-secret-keys | tcli import -
 ```
 
 Verify it was imported:
 
 ```
-tcli --list-keys
+tcli list
 ```
 
 If you don't have a key yet, generate one with
@@ -195,12 +195,12 @@ then import it.
 
 ```bash
 # Bash
-tcli --completions bash > ~/.local/share/bash-completion/completions/tcli
+tcli completions bash > ~/.local/share/bash-completion/completions/tcli
 tpass --completions bash > ~/.local/share/bash-completion/completions/tpass
 
 # Zsh
 mkdir -p ~/.zfunc
-tcli --completions zsh > ~/.zfunc/_tcli
+tcli completions zsh > ~/.zfunc/_tcli
 tpass --completions zsh > ~/.zfunc/_tpass
 
 # Add to .zshrc:
@@ -209,7 +209,7 @@ tpass --completions zsh > ~/.zfunc/_tpass
 # compinit
 
 # Fish
-tcli --completions fish > ~/.config/fish/completions/tcli.fish
+tcli completions fish > ~/.config/fish/completions/tcli.fish
 tpass --completions fish > ~/.config/fish/completions/tpass.fish
 ```
 
@@ -257,7 +257,7 @@ pass init <FINGERPRINT>
 ### Finding your key fingerprint
 
 ```
-tcli --list-keys
+tcli list
 ```
 
 Keys are managed through the [tumpa](https://github.com/tumpaproject/tumpa)
@@ -298,23 +298,23 @@ three human-friendly commands. Pick a key by fingerprint, key ID, or
 
 ```
 # Detached signature (default = ASCII armored, sibling .asc).
-tcli --sign report.pdf --with-key alice@example.com
+tcli sign report.pdf --signer alice@example.com
 # -> writes report.pdf.asc
 
 # Binary detached (.sig instead of .asc).
-tcli --sign report.pdf --with-key alice@example.com --binary
+tcli sign report.pdf --signer alice@example.com --binary
 
 # Inline cleartext (-----BEGIN PGP SIGNED MESSAGE-----, software keys only).
-tcli --sign-inline notice.txt --with-key alice@example.com
+tcli sign-inline notice.txt --signer alice@example.com
 
 # Verify a detached signature against the keystore.
-tcli --verify report.pdf --signature report.pdf.asc
+tcli verify report.pdf --signature report.pdf.asc
 
 # Verify a cleartext-signed message in place.
-tcli --verify notice.txt.asc
+tcli verify notice.txt.asc
 
 # Verify against an external public-key file (skips the keystore).
-tcli --verify report.pdf --signature report.pdf.asc --with-key alice.pub
+tcli verify report.pdf --signature report.pdf.asc --key-file alice.pub
 ```
 
 `-o`/`--output` overrides the destination; `-` reads stdin or writes
@@ -358,32 +358,33 @@ For card operations, the PIN is requested the same way.
 ### Key management
 
 ```
-tcli --import mykey.asc              # import from file
-tcli --import /path/to/keys/ -r      # import from directory (recursive)
-tcli --import <(gpg --export)        # migrate from gpg in one go
-gpg --export | tcli --import -       # or read keyring bytes from stdin
-tcli --export <FP> -o key.asc        # export (armored)
-tcli --info <FP>                     # detailed info for a keystore key
-tcli --desc mykey.asc                # detailed info for a key file (no import)
-tcli --search "Kushal"               # search by name
-tcli --search --email user@example.com  # search by email
-tcli --fetch user@example.com        # fetch via WKD
-tcli --fetch user@example.com --dry-run  # preview without importing
-tcli --delete <FP>                   # delete a key
+tcli import mykey.asc                  # import from file
+tcli import /path/to/keys/ -r          # import from directory (recursive)
+tcli import <(gpg --export)            # migrate from gpg in one go
+gpg --export | tcli import -           # or read keyring bytes from stdin
+tcli export <FP> -o key.asc            # export (armored is the default)
+tcli describe <FP>                     # detailed info for a keystore key
+tcli describe mykey.asc                # detailed info for a key file (no import)
+tcli search "Kushal"                   # search by name
+tcli search user@example.com --email   # search by email (exact match)
+tcli fetch user@example.com            # fetch via WKD
+tcli fetch user@example.com --dry-run  # preview without importing
+tcli delete <FP>                       # delete a key
 ```
 
 ### Listing keys
 
 ```
-tcli --list-keys                     # human-readable
-tcli --list-keys --with-colons       # GnuPG colon format
-tcli --list-secret-keys --with-colons
+tcli list                            # human-readable
+tclig --list-keys --with-colons      # GnuPG colon format (used by pass)
+tclig --list-secret-keys --with-colons
 ```
 
 ### Smart card status
 
 ```
-tcli --card-status
+tcli card status     # status of the connected card
+tcli card list       # all connected cards (ident + serial)
 ```
 
 Shows details of connected OpenPGP cards (manufacturer, serial,
@@ -392,7 +393,7 @@ key fingerprints, PIN retry counters), similar to `gpg --card-status`.
 ### Custom keystore path
 
 ```
-tcli --keystore /path/to/keys.db --list-keys
+tcli --keystore /path/to/keys.db list
 ```
 
 Or set `TUMPA_KEYSTORE` environment variable.
@@ -471,14 +472,14 @@ The agent is purely additive.
 ### Querying socket paths
 
 ```
-tcli --show-socket         # GPG agent socket (~/.tumpa/agent.sock)
-tcli --show-socket ssh     # SSH agent socket (/run/user/<UID>/tcli-ssh.sock)
+tcli socket                # GPG agent socket (~/.tumpa/agent.sock)
+tcli socket ssh            # SSH agent socket (/run/user/<UID>/tcli-ssh.sock)
 ```
 
 Useful for scripting:
 
 ```bash
-export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+export SSH_AUTH_SOCK=$(tcli socket ssh)
 ```
 
 ### How it works

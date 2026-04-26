@@ -31,7 +31,7 @@ test-pass: build
 test-sign-verify: build
     TUMPA_PASSPHRASE="${TUMPA_PASSPHRASE}" ./tests/test_sign_verify.sh
 
-# Run tcli key management tests (--import, --export, --info, --delete, --search)
+# Run tcli key management tests (import, export, describe, delete, search)
 test-keystore: build
     ./tests/test_keystore.sh
 
