@@ -23,7 +23,7 @@ At a glance, tumpa-cli works as a drop-in for:
 Three binaries are provided:
 
 - **`tcli`** -- human-facing key management and SSH agent: import, export,
-  search, fetch, describe, list, delete, card status, agent daemons, sign and verification.
+  search, fetch, describe, list, delete, card status, agent daemons, signing and verification.
 - **`tclig`** -- GnuPG drop-in for programs that invoke `gpg` (git signing,
   `pass`, anything with a `gpg.program` hook)
 - **`tpass`** -- drop-in replacement for [password-store](https://www.passwordstore.org/)

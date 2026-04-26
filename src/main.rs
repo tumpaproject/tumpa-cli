@@ -1,11 +1,14 @@
 mod cli;
 
+#[cfg(feature = "experimental")]
+mod upload_card {
+    pub use tumpa_cli::upload_card::*;
+}
+
 use std::io::stdout;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-#[cfg(feature = "experimental")]
-use tumpa_cli::upload_card;
 use tumpa_cli::{keystore, pinentry, sign_cmd, ssh, store, verify_cmd};
 
 use cli::*;

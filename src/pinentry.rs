@@ -105,7 +105,7 @@ pub fn cache_pin(fingerprint: &str, pin: &Zeroizing<String>) {
     try_agent_put(&cache_key_for_slot(fingerprint, CacheSlot::Pin), pin);
 }
 
-/// Store a passphrase / PIN in the running tumpa agent's cache.
+/// Store a passphrase in the running tumpa agent's cache.
 ///
 /// Call this only **after** the value has been confirmed correct by a
 /// successful sign or decrypt. Silent no-op if no agent is running.
@@ -120,7 +120,7 @@ pub fn clear_cached_pin(fingerprint: &str) {
     try_agent_clear(&cache_key_for_slot(fingerprint, CacheSlot::Pin));
 }
 
-/// Drop a cached passphrase / PIN from the running tumpa agent.
+/// Drop a cached passphrase from the running tumpa agent.
 ///
 /// Call this whenever a sign or decrypt operation fails, to ensure a
 /// stale (or freshly-typed-but-wrong) value is never reused on the

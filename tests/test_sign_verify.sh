@@ -144,8 +144,8 @@ echo "[2] Detached signature, --binary"
 rm -f payload.txt.sig
 expect_file "  --sign --binary -> FILE.sig" payload.txt.sig \
     -- "$TCLI" --sign payload.txt --with-key "$KEY_FP" --binary
-# Binary form must NOT contain the BEGIN PGP marker.
-if grep -q "BEGIN PGP" payload.txt.sig; then
+# Binary form must NOT start with the ASCII armor header.
+if LC_ALL=C head -c 64 payload.txt.sig | grep -aq '^-----BEGIN PGP SIGNATURE-----$'; then
     echo "  FAIL  --binary output contains BEGIN PGP marker"
     FAIL_COUNT=$((FAIL_COUNT + 1))
 else
@@ -167,7 +167,8 @@ echo
 
 # 4. Inline (cleartext) sign + verify
 echo "[4] Inline cleartext sign + verify"
-expect_file "  --sign-inline -> FILE.asc" payload.txt.asc \
+rm -f payload.signed.asc
+expect_file "  --sign-inline -> payload.signed.asc" payload.signed.asc \
     -- "$TCLI" --sign-inline payload.txt --with-key "$KEY_FP" -o payload.signed.asc
 expect_grep "  output is cleartext-signed" "BEGIN PGP SIGNED MESSAGE" payload.signed.asc
 expect_rc 0 "  verify cleartext message" \
@@ -209,7 +210,8 @@ echo
 # 9. --with-key by email (if we found one)
 if [[ -n "$KEY_EMAIL" ]]; then
     echo "[9] --with-key EMAIL"
-    expect_file "  --sign --with-key $KEY_EMAIL" payload.txt.asc \
+    rm -f payload.email.asc
+    expect_file "  --sign --with-key $KEY_EMAIL" payload.email.asc \
         -- "$TCLI" --sign payload.txt --with-key "$KEY_EMAIL" -o payload.email.asc
     expect_rc 0 "  verify email-selected signature" \
         -- "$TCLI" --verify payload.txt --signature payload.email.asc
