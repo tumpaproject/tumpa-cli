@@ -103,15 +103,15 @@ Generate completions for your shell and source them:
 
 ```bash
 # Bash
-tcli --completions bash > ~/.local/share/bash-completion/completions/tcli
+tcli completions bash > ~/.local/share/bash-completion/completions/tcli
 tpass --completions bash > ~/.local/share/bash-completion/completions/tpass
 
 # Zsh (add ~/.zfunc to your fpath in .zshrc first)
-tcli --completions zsh > ~/.zfunc/_tcli
+tcli completions zsh > ~/.zfunc/_tcli
 tpass --completions zsh > ~/.zfunc/_tpass
 
 # Fish
-tcli --completions fish > ~/.config/fish/completions/tcli.fish
+tcli completions fish > ~/.config/fish/completions/tcli.fish
 tpass --completions fish > ~/.config/fish/completions/tpass.fish
 ```
 
@@ -128,7 +128,7 @@ created automatically on first use — no manual setup needed.
 ### Import your public/secret key
 
 ```
-tcli --import my-secret-key.asc
+tcli import my-secret-key.asc
 ```
 
 This imports both the secret key material and the public certificate.
@@ -137,15 +137,15 @@ If `~/.tumpa/keys.db` doesn't exist yet, it is created automatically.
 ### Migrate from GnuPG
 
 If your keys already live in GnuPG, feed `gpg --export` (or
-`gpg --export-secret-keys`) straight into `tcli --import`. The
+`gpg --export-secret-keys`) straight into `tcli import`. The
 stream can contain many keys concatenated — every key is imported
 or merged:
 
 ```
-tcli --import <(gpg --export)                # all public keys
-tcli --import <(gpg --export-secret-keys)    # public + secret material
-gpg --export | tcli --import -               # same via a pipe
-gpg --export | tcli --import                 # no path = read stdin
+tcli import <(gpg --export)                # all public keys
+tcli import <(gpg --export-secret-keys)    # public + secret material
+gpg --export | tcli import -               # same via a pipe
+gpg --export | tcli import                 # no path = read stdin
 ```
 
 The process-substitution form (`<(...)`) works because bash exposes
@@ -157,7 +157,7 @@ up renewed expiries and new certifications instead of duplicating.
 ### Verify the import
 
 ```
-$ tcli --list-keys
+$ tcli list
 sec A85FF376759C994A8A1168D8D8219C8C43F6C5E1 Alice <alice@example.com>
 ```
 
@@ -168,12 +168,12 @@ for git signing, `pass init`, and encryption.
 ### Import contacts' public keys
 
 ```
-tcli --import colleague-pubkey.asc
-tcli --fetch colleague@example.com       # or fetch via WKD
+tcli import colleague-pubkey.asc
+tcli fetch colleague@example.com       # or fetch via WKD
 ```
 
 These are stored as public-only certificates (shown as `pub` in
-`tcli --list-keys`) and used as encryption recipients.
+`tcli list`) and used as encryption recipients.
 
 ### Next steps
 
@@ -200,11 +200,11 @@ line or through the tumpa desktop application.
 ### Importing keys
 
 ```
-tcli --import mykey.asc
-tcli --import /path/to/keys/ --recursive
-tcli --import <(gpg --export)                # process substitution
-gpg --export | tcli --import -               # stdin (explicit)
-gpg --export | tcli --import                 # stdin (implicit)
+tcli import mykey.asc
+tcli import /path/to/keys/ --recursive
+tcli import <(gpg --export)                # process substitution
+gpg --export | tcli import -               # stdin (explicit)
+gpg --export | tcli import                 # stdin (implicit)
 ```
 
 Accepts armored and binary OpenPGP files. For directories, imports all
@@ -223,7 +223,7 @@ subkey bindings, and new user IDs. If the imported data is identical to
 what's already stored, the key is reported as "Unchanged".
 
 ```
-$ tcli --import updated_key.asc
+$ tcli import updated_key.asc
 Updated A85FF376759C994A... (Alice <alice@example.com>) — merged new signatures
 ```
 
@@ -233,8 +233,8 @@ rationale behind multi-key and stdin support.
 ### Fetching keys via WKD
 
 ```
-tcli --fetch user@example.com
-tcli --fetch user@example.com --dry-run   # preview without importing
+tcli fetch user@example.com
+tcli fetch user@example.com --dry-run   # preview without importing
 ```
 
 Looks up the key via Web Key Directory (WKD) and prompts to import.
@@ -247,7 +247,7 @@ key after they renew their expiry or add new subkeys.
 ### Key information
 
 ```
-tcli --info <FINGERPRINT>
+tcli describe <FINGERPRINT>
 ```
 
 Shows algorithm, capabilities, UIDs (primary first), subkeys with
@@ -256,8 +256,8 @@ full fingerprints, creation and expiry timestamps.
 ### Inspecting a key file before importing
 
 ```
-tcli --desc mykey.asc
-tcli --desc /path/to/key.pub
+tcli describe mykey.asc
+tcli describe /path/to/key.pub
 ```
 
 Renders the same detail view as `--info`, but reads directly from a
@@ -272,29 +272,29 @@ return a non-zero exit code with a clear error.
 ### Searching keys
 
 ```
-tcli --search "Kushal"                  # search by name (substring)
-tcli --search --email user@example.com  # search by email (exact)
+tcli search "Kushal"                    # search by name (substring)
+tcli search user@example.com --email    # search by email (exact)
 ```
 
 ### Exporting keys
 
 ```
-tcli --export <FINGERPRINT>                # armored to stdout
-tcli --export <FINGERPRINT> -o key.asc     # armored to file
-tcli --export <FINGERPRINT> --binary -o key.gpg  # binary format
+tcli export <FINGERPRINT>                # armored to stdout
+tcli export <FINGERPRINT> -o key.asc     # armored to file
+tcli export <FINGERPRINT> --binary -o key.gpg  # binary format
 ```
 
 ### Deleting keys
 
 ```
-tcli --delete <FINGERPRINT>       # prompts for confirmation
-tcli --delete <FINGERPRINT> -f    # force, no prompt
+tcli delete <FINGERPRINT>       # prompts for confirmation
+tcli delete <FINGERPRINT> -f    # force, no prompt
 ```
 
 ### Listing keys
 
 ```
-$ tcli --list-keys
+$ tcli list
 pub A85FF376759C994A8A1168D8D8219C8C43F6C5E1 Kushal Das <kushal@fedoraproject.org>
 sec 5794A58891584E513386AA6EF2F491FA8C62645C Fire Cat <cat@cat.se>
 ```
@@ -317,7 +317,7 @@ tclig --list-secret-keys --with-colons
 ### Using a different keystore
 
 ```
-tcli --keystore /path/to/other/keys.db --list-keys
+tcli --keystore /path/to/other/keys.db list
 ```
 
 Or set the environment variable:
@@ -339,7 +339,7 @@ binary; the human-facing `tcli` does not accept `gpg` flags.
 git config --global gpg.program tclig
 ```
 
-Set your signing key (use the fingerprint from `tcli --list-keys`):
+Set your signing key (use the fingerprint from `tcli list`):
 
 ```
 git config --global user.signingkey <FINGERPRINT>
@@ -832,11 +832,11 @@ hood: `tcli` picks signers by fingerprint, key ID, or **email**;
 defaults to ASCII armor; supports stdin/stdout via `-`; and returns
 script-friendly exit codes.
 
-| Command            | What it produces                                            |
-|--------------------|-------------------------------------------------------------|
-| `tcli --sign`      | Detached signature (`<file>.asc` armored, `<file>.sig` binary). |
-| `tcli --sign-inline` | Cleartext-signed message (`-----BEGIN PGP SIGNED MESSAGE-----`, software keys only). |
-| `tcli --verify`    | Verifies a detached or cleartext signature; exits 0/1/2.    |
+| Command              | What it produces                                            |
+|----------------------|-------------------------------------------------------------|
+| `tcli sign`          | Detached signature (`<file>.asc` armored, `<file>.sig` binary). |
+| `tcli sign-inline`   | Cleartext-signed message (`-----BEGIN PGP SIGNED MESSAGE-----`, software keys only). |
+| `tcli verify`        | Verifies a detached or cleartext signature; exits 0/1/2.    |
 
 ### Detached signatures
 
@@ -844,54 +844,54 @@ Sign a file using its primary key (default = ASCII-armored,
 sibling `.asc`):
 
 ```
-tcli --sign report.pdf --with-key 62162BC9FA951F481F8457D566B7F2009745BD06
+tcli sign report.pdf --signer 62162BC9FA951F481F8457D566B7F2009745BD06
 # writes report.pdf.asc
 ```
 
 Use email instead of fingerprint:
 
 ```
-tcli --sign report.pdf --with-key alice@example.com
+tcli sign report.pdf --signer alice@example.com
 ```
 
 Email matching is case-insensitive and exact. If multiple keys in the
 keystore share the same email, `tcli` lists them and refuses to pick;
-re-run with `--with-key <FINGERPRINT>` to disambiguate.
+re-run with `--signer <FINGERPRINT>` to disambiguate.
 
 Produce a binary `.sig` instead of `.asc`:
 
 ```
-tcli --sign report.pdf --with-key alice@example.com --binary
+tcli sign report.pdf --signer alice@example.com --binary
 # writes report.pdf.sig
 ```
 
 Override the destination with `-o`/`--output` (use `-` for stdout):
 
 ```
-tcli --sign report.pdf --with-key alice@example.com -o /tmp/report.sig --binary
-cat report.pdf | tcli --sign - --with-key alice@example.com -o - > report.sig
+tcli sign report.pdf --signer alice@example.com -o /tmp/report.sig --binary
+cat report.pdf | tcli sign - --signer alice@example.com -o - > report.sig
 ```
 
-Reading from stdin (`--sign -`) requires `-o`/`--output` because there
-is no input filename to derive a default destination from.
+Reading from stdin (`tcli sign -`) requires `-o`/`--output` because
+there is no input filename to derive a default destination from.
 
 ### Inline (cleartext) signatures
 
 Cleartext signatures embed the original text inline between
 `-----BEGIN PGP SIGNED MESSAGE-----` and `-----BEGIN PGP SIGNATURE-----`.
-The signed message stays human-readable. Use `--sign-inline`:
+The signed message stays human-readable. Use `tcli sign-inline`:
 
 ```
-tcli --sign-inline notice.txt --with-key alice@example.com
+tcli sign-inline notice.txt --signer alice@example.com
 # writes notice.txt.asc
 ```
 
 Inline signing is **software-only** in this release — there is no
 card-based cleartext-signing primitive. If the chosen key has no
 software secret key in the keystore (card-only), `tcli` errors out
-with a clear message; use `--sign` (detached) for card-only keys.
+with a clear message; use `tcli sign` (detached) for card-only keys.
 
-`--binary` is rejected on `--sign-inline` (cleartext is text by
+`--binary` is rejected on `tcli sign-inline` (cleartext is text by
 definition).
 
 ### Verifying
@@ -899,33 +899,33 @@ definition).
 Verify a detached signature using a key from the keystore:
 
 ```
-tcli --verify report.pdf --signature report.pdf.asc
+tcli verify report.pdf --signature report.pdf.asc
 ```
 
 Verify a cleartext-signed message in place (no separate signature
 file):
 
 ```
-tcli --verify notice.txt.asc
+tcli verify notice.txt.asc
 ```
 
 Verify against an external public key file (skips the keystore
 entirely):
 
 ```
-tcli --verify report.pdf --signature report.pdf.asc --with-key alice.pub
-tcli --verify notice.txt.asc --with-key alice.pub
+tcli verify report.pdf --signature report.pdf.asc --key-file alice.pub
+tcli verify notice.txt.asc --key-file alice.pub
 ```
 
-`--with-key` on the verify side is always a path to a public-key file
-(armored or binary). To use a key already in the keystore, omit
-`--with-key`; `tcli` will look the signer up by issuer fingerprint /
-key ID embedded in the signature.
+`--key-file` is always a path to a public-key file (armored or
+binary). To use a key already in the keystore, omit `--key-file`;
+`tcli` will look the signer up by issuer fingerprint / key ID
+embedded in the signature.
 
 Verify reads the data from stdin too:
 
 ```
-cat report.pdf | tcli --verify - --signature report.pdf.asc
+cat report.pdf | tcli verify - --signature report.pdf.asc
 ```
 
 (Stdin verify always needs `--signature`; reading both data and an
@@ -933,7 +933,7 @@ inline signature from stdin is not supported.)
 
 ### Output and exit codes
 
-`tcli --verify` prints a human-readable report on stderr, listing
+`tcli verify` prints a human-readable report on stderr, listing
 every non-revoked UID (primary first, then `aka …`) plus the verifier
 fingerprint. Exit codes:
 
@@ -941,7 +941,7 @@ fingerprint. Exit codes:
 |------|------------------------------------------------------------|
 | `0`  | Good signature.                                            |
 | `1`  | BAD signature (signer is known, signature does not match). |
-| `2`  | Unknown signer (issuer key not in keystore, no `--with-key`). |
+| `2`  | Unknown signer (issuer key not in keystore, no `--key-file`). |
 
 Example success output:
 
@@ -951,7 +951,7 @@ tcli:                 aka "Alice <alice@work.example.com>"
 tcli: Primary key fingerprint: 62162BC9FA951F481F8457D566B7F2009745BD06
 ```
 
-`tcli --sign` and `--sign-inline` print a one-line confirmation on
+`tcli sign` and `tcli sign-inline` print a one-line confirmation on
 stderr (`tcli: Wrote signature to <path>`) and the signing backend
 (`Signed with card …` or `Signed with software key …`). All real
 output goes to the file or stdout depending on `-o`.
@@ -965,9 +965,9 @@ commands. You generally won't run `tclig` directly — let git/pass call
 it via the GPG-program hook (see [Git signing](#git-signing) and
 [Password store (pass)](#password-store-pass)).
 
-For ad-hoc signing of arbitrary files at the shell, prefer `tcli
---sign / --sign-inline / --verify`: shorter flags, email-based key
-selection, sane defaults, sensible exit codes.
+For ad-hoc signing of arbitrary files at the shell, prefer
+`tcli sign` / `tcli sign-inline` / `tcli verify`: shorter form,
+email-based key selection, sane defaults, sensible exit codes.
 
 ### Limitations
 
@@ -1138,7 +1138,7 @@ if ! pgrep -f "tcli agent" >/dev/null; then
     tcli agent --ssh &
     disown
 fi
-export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+export SSH_AUTH_SOCK=$(tcli socket ssh)
 ```
 
 This is a fallback — it does not restart the agent on crash and
@@ -1147,24 +1147,24 @@ only runs in interactive shells.
 ### Querying socket paths
 
 ```
-tcli --show-socket         # GPG agent socket
-tcli --show-socket ssh     # SSH agent socket
+tcli socket                # GPG agent socket
+tcli socket ssh     # SSH agent socket
 ```
 
 Output:
 
 ```
-$ tcli --show-socket
+$ tcli socket
 /home/user/.tumpa/agent.sock
 
-$ tcli --show-socket ssh
+$ tcli socket ssh
 /run/user/1000/tcli-ssh.sock
 ```
 
 Useful for shell profile setup:
 
 ```bash
-export SSH_AUTH_SOCK=$(tcli --show-socket ssh)
+export SSH_AUTH_SOCK=$(tcli socket ssh)
 ```
 
 The SSH socket defaults to `/run/user/<UID>/tcli-ssh.sock` on Linux
@@ -1234,7 +1234,7 @@ factory-reset step, so your card is never left in a half-reset state.
 ### Card status
 
 ```
-tcli --card-status
+tcli card status
 ```
 
 Shows details of all connected OpenPGP cards, similar to
@@ -1279,7 +1279,7 @@ entry (e.g., in CI).
 `tcli` enumerates every OpenPGP card visible to PCSC with:
 
 ```
-tcli --list-cards
+tcli card list
 ```
 
 `--list-cards` is always available (no Cargo feature needed). It
@@ -1295,7 +1295,7 @@ IDENT          MANUFACTURER   SERIAL    HOLDER
 ```
 
 The IDENT column is the value you pass to `--card-ident` on
-`--upload-to-card` / `--reset-card` when more than one card is
+`tcli card upload` / `tcli card reset` when more than one card is
 attached.
 
 ### Uploading a key to a card (experimental)
@@ -1303,22 +1303,20 @@ attached.
 Builds compiled with `cargo build --features experimental` expose:
 
 ```
-tcli --upload-to-card FINGERPRINT
-     [--which primary|sub]
-     [--include-signing]
-     [--include-encryption]
-     [--include-authentication]
+tcli card upload FINGERPRINT
+     [--signing-from primary|sub]      # must be provided
+     [--with encryption,authentication] # comma list of extra slots
      [--card-ident IDENT]
 ```
 
-**Warning — destructive:** `--upload-to-card` **factory-resets the
+**Warning — destructive:** `tcli card upload` **factory-resets the
 card first** (cardholder name, URL, user PIN, and admin PIN are
 cleared to defaults) before writing the selected slots. Only the key
 passphrase is prompted; the admin PIN is managed internally and set
 to the factory default `12345678` after reset.
 
 With multiple cards attached, pass `--card-ident` (see
-`--list-cards` for the value). With a single card, `--card-ident`
+`tcli card list` for the value). With a single card, `--card-ident`
 can be omitted.
 
 For Nitrokey, the key must be `Cv25519Modern` (Ed25519 + X25519) or
@@ -1327,32 +1325,22 @@ and `X448` keys are rejected before any I/O hits the card.
 
 #### Selecting the signing-slot occupant
 
-By default `--upload-to-card` puts the **primary** key into the card's
-signing slot. The behaviour matters when a cert carries both a
-sign-capable primary and a signing subkey:
-
-- `--which primary` — primary into signing slot (the default if the
-  cert has no signing subkey).
-- `--which sub` — signing subkey into signing slot.
-- `--include-signing` — same as `--which sub`, but composes naturally
-  with the other `--include-*` flags below. Mutually exclusive with
-  `--which primary`.
-
-If the cert has both a sign-capable primary and a signing subkey,
-`tcli` refuses an ambiguous upload and asks for an explicit
-disambiguation (`--include-signing`, `--which primary`, or
-`--which sub`).
+By default `tcli card upload` puts the **primary** key into the card's
+signing slot (`--signing-from primary`). When a cert carries both a
+sign-capable primary and a signing subkey, pass `--signing-from sub`
+to put the signing subkey there instead (and leave the primary
+off-card).
 
 #### Filling decryption and authentication slots in the same call
 
-`libtumpa` factory-resets the card once per `--upload-to-card`
-invocation, so multiple sequential uploads would wipe each other.
-To fill more than one slot, do it in a single call with the
-`--include-*` flags:
+`libtumpa` factory-resets the card once per upload invocation, so
+multiple sequential uploads would wipe each other. To fill more than
+one slot, do it in a single call by passing extra slot names to
+`--with` (comma-separated, may be repeated):
 
-- `--include-encryption` — also writes the encryption subkey to the
+- `--with encryption` — also writes the encryption subkey to the
   card's decryption slot.
-- `--include-authentication` — also writes the authentication subkey
+- `--with authentication` — also writes the authentication subkey
   to the card's authentication slot.
 
 If the cert lacks the requested subkey, libtumpa rejects the upload
@@ -1362,22 +1350,22 @@ The GPG `keytocard` equivalent (offline primary, all three subkeys on
 the card) is therefore one command:
 
 ```
-tcli --upload-to-card FINGERPRINT \
-     --include-signing --include-encryption --include-authentication \
+tcli card upload FINGERPRINT \
+     --signing-from sub --with encryption,authentication \
      [--card-ident IDENT]
 ```
 
 For a `Cv25519Modern` cert with a Certify+Sign primary (no separate
-signing subkey) the same all-slot pattern uses `--which primary`
-instead of `--include-signing`:
+signing subkey) the same all-slot pattern keeps the default
+`--signing-from primary`:
 
 ```
-tcli --upload-to-card FINGERPRINT \
-     --which primary --include-encryption --include-authentication \
+tcli card upload FINGERPRINT \
+     --with encryption,authentication \
      [--card-ident IDENT]
 ```
 
-After the upload, `tcli --card-status` shows the three slot
+After the upload, `tcli card status` shows the three slot
 fingerprints. They should match the primary's signing slot occupant,
 the encryption subkey, and the authentication subkey of the source
 cert.
@@ -1385,7 +1373,7 @@ cert.
 Factory-reset without upload (e.g. to re-provision):
 
 ```
-tcli --reset-card [--card-ident IDENT]
+tcli card reset [--card-ident IDENT]
 ```
 
 ---
@@ -1448,13 +1436,13 @@ TTL (default 30 minutes). This is especially valuable for:
 ### "No key found for identifier: ..."
 
 The fingerprint or key ID you provided doesn't match any key in the
-tumpa keystore. Run `tcli --list-keys` to see available keys. Make
+tumpa keystore. Run `tcli list` to see available keys. Make
 sure the key was imported in the tumpa desktop app.
 
 ### "No secret key found for key IDs: ..."
 
 The encrypted message is addressed to a key you don't have the secret
-for. Check `tcli --list-keys` -- keys marked `sec` can decrypt with
+for. Check `tcli list` -- keys marked `sec` can decrypt with
 software keys, and keys marked `pub` can decrypt if the corresponding
 OpenPGP card is connected. Make sure `pcscd` is running if using a card.
 
@@ -1534,7 +1522,7 @@ Common causes:
 
    ```
    git config --global user.signingkey
-   tcli --list-keys
+   tcli list
    ```
 
 ### `gpg: unknown option --verify` after upgrading

@@ -57,6 +57,6 @@ KEY_FP=$(gpg --homedir "$GNUPGHOME" --list-keys --with-colons ci-repro@test.loca
 
 gpg --homedir "$GNUPGHOME" --pinentry-mode loopback --passphrase "$TEST_PASS" \
     --batch --yes --armor --export-secret-keys "$KEY_FP" > "$TEST_DIR/secret.asc"
-"$TCLI" --import "$TEST_DIR/secret.asc" >&2
+"$TCLI" import "$TEST_DIR/secret.asc" >&2
 
 echo "$KEY_FP"

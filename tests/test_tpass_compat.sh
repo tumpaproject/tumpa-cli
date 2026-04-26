@@ -42,7 +42,7 @@ fi
 if [[ -n "${1:-}" ]]; then
     KEY_FP="$1"
 else
-    KEY_FP=$("$TCLI" --list-keys 2>/dev/null \
+    KEY_FP=$("$TCLI" list 2>/dev/null \
         | grep "^sec" \
         | head -1 \
         | awk '{print $2}')

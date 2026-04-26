@@ -87,7 +87,7 @@ echo "  generated key: $KEY_FP"
 # Export secret key, import into tumpa keystore
 gpg --homedir "$GNUPGHOME" --pinentry-mode loopback --passphrase "$TEST_PASS" \
     --batch --yes --armor --export-secret-keys "$KEY_FP" > "$TEST_DIR/secret.asc"
-"$TCLI" --keystore "$TUMPA_KEYSTORE" --import "$TEST_DIR/secret.asc" >/dev/null
+"$TCLI" --keystore "$TUMPA_KEYSTORE" import "$TEST_DIR/secret.asc" >/dev/null
 ok "key generated and imported into tumpa keystore"
 
 # --- Step 2: init git repo, configure tclig as signing tool ---
