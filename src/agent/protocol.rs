@@ -24,9 +24,16 @@ fn is_valid_fingerprint(s: &str) -> bool {
 
 /// A request from a client to the agent.
 pub enum Request {
-    Get { fingerprint: String },
-    Put { fingerprint: String, passphrase: Zeroizing<String> },
-    Clear { fingerprint: String },
+    Get {
+        fingerprint: String,
+    },
+    Put {
+        fingerprint: String,
+        passphrase: Zeroizing<String>,
+    },
+    Clear {
+        fingerprint: String,
+    },
 }
 
 /// A response from the agent to a client.

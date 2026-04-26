@@ -44,13 +44,16 @@ pub fn cmd_generate(
     let recipients = get_recipients(&prefix, &dir_path)?;
     let git_dir = git::find_git_dir(&passfile, &prefix);
 
-    if !in_place && !force && passfile.exists()
+    if !in_place
+        && !force
+        && passfile.exists()
         && !yesno(&format!(
             "An entry already exists for {}. Overwrite it?",
             path
-        )) {
-            std::process::exit(1);
-        }
+        ))
+    {
+        std::process::exit(1);
+    }
 
     // Generate password using /dev/urandom + tr (matching pass behavior)
     let pass = generate_password(length, &characters)?;
@@ -58,18 +61,11 @@ pub fn cmd_generate(
     if in_place {
         // Replace only the first line of the existing file
         if !passfile.exists() {
-            anyhow::bail!(
-                "Error: {} does not exist. Cannot use --in-place.",
-                path
-            );
+            anyhow::bail!("Error: {} does not exist. Cannot use --in-place.", path);
         }
         let existing = crypto::decrypt_file(&passfile, None)?;
         let existing_str = String::from_utf8_lossy(&existing);
-        let rest: String = existing_str
-            .lines()
-            .skip(1)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let rest: String = existing_str.lines().skip(1).collect::<Vec<_>>().join("\n");
 
         let new_content = if rest.is_empty() {
             format!("{}\n", pass)

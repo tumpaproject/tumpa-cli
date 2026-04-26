@@ -21,11 +21,7 @@ pub fn cmd_git(args: &[String]) -> Result<()> {
         }
 
         // Add current contents
-        let _ = git::git_add_file(
-            &prefix,
-            &prefix,
-            "Add current contents of password store.",
-        );
+        let _ = git::git_add_file(&prefix, &prefix, "Add current contents of password store.");
 
         // Create .gitattributes
         let gitattributes = prefix.join(".gitattributes");
@@ -61,9 +57,7 @@ pub fn cmd_git(args: &[String]) -> Result<()> {
     } else if let Some(ref gd) = git_dir {
         git::git_run(gd, args)?;
     } else {
-        anyhow::bail!(
-            "Error: the password store is not a git repository. Try \"tpass git init\"."
-        );
+        anyhow::bail!("Error: the password store is not a git repository. Try \"tpass git init\".");
     }
 
     Ok(())

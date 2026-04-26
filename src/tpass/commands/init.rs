@@ -38,8 +38,7 @@ pub fn get_recipients(prefix: &std::path::Path, subpath: &str) -> Result<Vec<Str
 
 /// Read a .gpg-id file, returning the list of GPG IDs.
 fn read_gpg_id_file(path: &std::path::Path) -> Result<Vec<String>> {
-    let content = std::fs::read_to_string(path)
-        .context(format!("Failed to read {:?}", path))?;
+    let content = std::fs::read_to_string(path).context(format!("Failed to read {:?}", path))?;
     let ids: Vec<String> = content
         .lines()
         .map(|line| {
@@ -88,8 +87,10 @@ pub fn reencrypt_path(
 
         // Recompute target key IDs if recipients changed
         if prev_recipients.as_ref() != Some(&recipients) {
-            target_key_ids =
-                Some(crypto::recipient_encryption_key_ids(&recipients, keystore_path)?);
+            target_key_ids = Some(crypto::recipient_encryption_key_ids(
+                &recipients,
+                keystore_path,
+            )?);
             prev_recipients = Some(recipients.clone());
         }
 
@@ -110,11 +111,7 @@ pub fn reencrypt_path(
                 .to_string_lossy()
                 .trim_end_matches(".gpg")
                 .to_string();
-            eprintln!(
-                "{}: reencrypting to {}",
-                display,
-                sorted_target.join(" ")
-            );
+            eprintln!("{}: reencrypting to {}", display, sorted_target.join(" "));
 
             // Decrypt and re-encrypt
             let plaintext = crypto::decrypt_file(&entry_path, keystore_path)?;
@@ -136,10 +133,7 @@ fn walkdir(
     Ok(Box::new(entries.into_iter().map(Ok)))
 }
 
-fn walk_recursive(
-    path: &std::path::Path,
-    entries: &mut Vec<std::fs::DirEntry>,
-) -> Result<()> {
+fn walk_recursive(path: &std::path::Path, entries: &mut Vec<std::fs::DirEntry>) -> Result<()> {
     if !path.is_dir() {
         return Ok(());
     }
@@ -181,7 +175,10 @@ pub fn cmd_init(path: Option<&str>, gpg_ids: &[String]) -> Result<()> {
 
     // Check that if id_path exists, it's a directory
     if !id_path.is_empty() && full_path.exists() && !full_path.is_dir() {
-        anyhow::bail!("Error: {} exists but is not a directory.", full_path.display());
+        anyhow::bail!(
+            "Error: {} exists but is not a directory.",
+            full_path.display()
+        );
     }
 
     let gpg_id_file = full_path.join(".gpg-id");
@@ -341,10 +338,7 @@ pub fn ensure_no_symlink_in_path(path: &Path, prefix: &Path) -> Result<()> {
 }
 
 /// Remove empty parent directories up to (but not including) the stop directory.
-pub fn remove_empty_parents(
-    start: &std::path::Path,
-    stop: &std::path::Path,
-) -> Result<()> {
+pub fn remove_empty_parents(start: &std::path::Path, stop: &std::path::Path) -> Result<()> {
     let mut current = start.to_path_buf();
     while current != stop.to_path_buf() {
         if current.is_dir() {

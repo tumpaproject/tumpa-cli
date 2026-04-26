@@ -120,11 +120,11 @@ fn try_decrypt_on_card(
 
     match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj, Some(&card.card.ident)) {
         Ok(z) => {
-            pinentry::cache_passphrase(&card.key_info.fingerprint, &pin);
+            pinentry::cache_pin(&card.key_info.fingerprint, &pin);
             Ok(Zeroizing::new(z.to_vec()))
         }
         Err(e) => {
-            pinentry::clear_cached_passphrase(&card.key_info.fingerprint);
+            pinentry::clear_cached_pin(&card.key_info.fingerprint);
             Err(anyhow::anyhow!("{e}")).context("Card decryption failed")
         }
     }

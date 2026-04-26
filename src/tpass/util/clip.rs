@@ -149,7 +149,11 @@ fn get_clipboard_base64(paste_cmd: &[String]) -> Option<String> {
             child.wait_with_output().ok()
         })?;
 
-    Some(String::from_utf8_lossy(&base64_output.stdout).trim().to_string())
+    Some(
+        String::from_utf8_lossy(&base64_output.stdout)
+            .trim()
+            .to_string(),
+    )
 }
 
 fn shell_escape(s: &str) -> String {

@@ -2,7 +2,10 @@ use anyhow::Result;
 
 use crate::util::{config, git};
 
-use super::init::{check_sneaky_paths, checked_passfile_path, checked_store_path, reencrypt_path, remove_empty_parents};
+use super::init::{
+    check_sneaky_paths, checked_passfile_path, checked_store_path, reencrypt_path,
+    remove_empty_parents,
+};
 use super::insert::yesno;
 
 /// `tpass mv [--force,-f] old-path new-path`
@@ -23,13 +26,10 @@ pub fn cmd_mv(old_path: &str, new_path: &str, force: bool) -> Result<()> {
     }
 
     // Check for overwrite
-    if !force && new_full.exists()
-        && !yesno(&format!(
-            "{} already exists. Overwrite it?",
-            new_path
-        )) {
-            std::process::exit(1);
-        }
+    if !force && new_full.exists() && !yesno(&format!("{} already exists. Overwrite it?", new_path))
+    {
+        std::process::exit(1);
+    }
 
     // Move
     std::fs::rename(&old_full, &new_full)?;

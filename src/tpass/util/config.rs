@@ -41,19 +41,15 @@ pub fn x_selection() -> String {
 }
 
 pub fn signing_key() -> Option<Vec<String>> {
-    std::env::var("PASSWORD_STORE_SIGNING_KEY").ok().map(|v| {
-        v.split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
-    })
+    std::env::var("PASSWORD_STORE_SIGNING_KEY")
+        .ok()
+        .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
 }
 
 pub fn store_key() -> Option<Vec<String>> {
-    std::env::var("PASSWORD_STORE_KEY").ok().map(|v| {
-        v.split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
-    })
+    std::env::var("PASSWORD_STORE_KEY")
+        .ok()
+        .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
 }
 
 pub fn extensions_enabled() -> bool {

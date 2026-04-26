@@ -2,7 +2,9 @@ use anyhow::Result;
 
 use crate::util::{config, git};
 
-use super::init::{check_sneaky_paths, checked_passfile_path, checked_store_path, remove_empty_parents};
+use super::init::{
+    check_sneaky_paths, checked_passfile_path, checked_store_path, remove_empty_parents,
+};
 use super::insert::yesno;
 
 /// `tpass rm [--recursive,-r] [--force,-f] pass-name`
@@ -34,20 +36,19 @@ pub fn cmd_rm(path: &str, recursive: bool, force: bool) -> Result<()> {
         anyhow::bail!("Error: {} is not in the password store.", path);
     }
 
-    if !force
-        && !yesno(&format!(
-            "Are you sure you would like to delete {}?",
-            path
-        )) {
-            std::process::exit(1);
-        }
+    if !force && !yesno(&format!("Are you sure you would like to delete {}?", path)) {
+        std::process::exit(1);
+    }
 
     // Remove the file/directory
     if target.is_dir() {
         if recursive {
             std::fs::remove_dir_all(&target)?;
         } else {
-            anyhow::bail!("Error: {} is a directory. Use -r to remove recursively.", path);
+            anyhow::bail!(
+                "Error: {} is a directory. Use -r to remove recursively.",
+                path
+            );
         }
     } else {
         std::fs::remove_file(&target)?;

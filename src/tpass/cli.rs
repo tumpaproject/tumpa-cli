@@ -6,7 +6,7 @@ use clap_complete::Shell;
     name = "tpass",
     about = "tpass - password store backed by tumpa keystore",
     version,
-    disable_help_subcommand = true,
+    disable_help_subcommand = true
 )]
 pub struct Args {
     #[clap(subcommand)]

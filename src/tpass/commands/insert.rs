@@ -15,13 +15,15 @@ pub fn cmd_insert(path: &str, multiline: bool, echo: bool, force: bool) -> Resul
     let passfile = checked_passfile_path(&prefix, path)?;
     let git_dir = git::find_git_dir(&passfile, &prefix);
 
-    if !force && passfile.exists()
+    if !force
+        && passfile.exists()
         && !yesno(&format!(
             "An entry already exists for {}. Overwrite it?",
-        path
-        )) {
-            std::process::exit(1);
-        }
+            path
+        ))
+    {
+        std::process::exit(1);
+    }
 
     // Create parent directories
     if let Some(parent) = passfile.parent() {
@@ -53,8 +55,7 @@ pub fn cmd_insert(path: &str, multiline: bool, echo: bool, force: bool) -> Resul
     } else {
         // No-echo mode: read password twice, confirm match
         let password = rpassword::prompt_password(format!("Enter password for {}: ", path))?;
-        let password_again =
-            rpassword::prompt_password(format!("Retype password for {}: ", path))?;
+        let password_again = rpassword::prompt_password(format!("Retype password for {}: ", path))?;
 
         if password != password_again {
             anyhow::bail!("Error: the entered passwords do not match.");

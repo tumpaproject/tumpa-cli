@@ -84,12 +84,7 @@ pub fn cmd_edit(path: &str) -> Result<()> {
         let _ = git::git_add_file(
             gd,
             &passfile,
-            &format!(
-                "{} password for {} using {}.",
-                action,
-                path,
-                editor
-            ),
+            &format!("{} password for {} using {}.", action, path, editor),
         );
     }
 
@@ -123,7 +118,11 @@ fn create_secure_tmpdir() -> Result<PathBuf> {
 }
 
 fn create_secure_tmpfile(dir: &Path, path: &str) -> Result<PathBuf> {
-    let tmp_file = dir.join(format!("{}-{}.txt", path.replace('/', "-"), random_suffix()?));
+    let tmp_file = dir.join(format!(
+        "{}-{}.txt",
+        path.replace('/', "-"),
+        random_suffix()?
+    ));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

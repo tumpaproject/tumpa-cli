@@ -47,7 +47,10 @@ fn main() {
             Shell::Zsh => include_str!("../../completions/tpass.zsh"),
             Shell::Fish => include_str!("../../completions/tpass.fish"),
             _ => {
-                eprintln!("Completions not available for {:?}. Supported: bash, zsh, fish.", shell);
+                eprintln!(
+                    "Completions not available for {:?}. Supported: bash, zsh, fish.",
+                    shell
+                );
                 std::process::exit(1);
             }
         };
@@ -254,7 +257,10 @@ fn run_extension(path: &std::path::Path, args: &[String]) -> bool {
     std::env::set_var("EXTENSIONS", util::config::extensions_dir());
     std::env::set_var("X_SELECTION", util::config::x_selection());
     std::env::set_var("CLIP_TIME", util::config::clip_time().to_string());
-    std::env::set_var("GENERATED_LENGTH", util::config::generated_length().to_string());
+    std::env::set_var(
+        "GENERATED_LENGTH",
+        util::config::generated_length().to_string(),
+    );
     std::env::set_var("CHARACTER_SET", util::config::character_set());
     std::env::set_var(
         "CHARACTER_SET_NO_SYMBOLS",
@@ -265,9 +271,7 @@ fn run_extension(path: &std::path::Path, args: &[String]) -> bool {
     let mut cmd_args = vec![path.to_string_lossy().to_string()];
     cmd_args.extend(args.iter().cloned());
 
-    let status = std::process::Command::new("bash")
-        .args(&cmd_args)
-        .status();
+    let status = std::process::Command::new("bash").args(&cmd_args).status();
 
     match status {
         Ok(s) => {

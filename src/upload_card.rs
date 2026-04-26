@@ -78,9 +78,7 @@ pub fn cmd_upload_to_card(
     }
 
     if include_signing && matches!(which, Some(WhichKey::Primary)) {
-        bail!(
-            "`--include-signing` cannot be combined with `--which primary`"
-        );
+        bail!("`--include-signing` cannot be combined with `--which primary`");
     }
 
     // `--include-signing` is the discoverable spelling of "use the
@@ -95,9 +93,7 @@ pub fn cmd_upload_to_card(
     // never passed `--which`.
     let effective_which = if include_signing && which.is_none() {
         let has_signing_subkey = key_info.subkeys.iter().any(|sk| {
-            sk.key_type == KeyType::Signing
-                && !sk.is_revoked
-                && !store::subkey_is_expired(sk)
+            sk.key_type == KeyType::Signing && !sk.is_revoked && !store::subkey_is_expired(sk)
         });
         if !has_signing_subkey {
             bail!(
@@ -210,7 +206,9 @@ fn select_sign_target(
     let signing_subkeys: Vec<_> = key_info
         .subkeys
         .iter()
-        .filter(|sk| sk.key_type == KeyType::Signing && !sk.is_revoked && !store::subkey_is_expired(sk))
+        .filter(|sk| {
+            sk.key_type == KeyType::Signing && !sk.is_revoked && !store::subkey_is_expired(sk)
+        })
         .collect();
 
     match (primary_can_sign, signing_subkeys.len(), which) {

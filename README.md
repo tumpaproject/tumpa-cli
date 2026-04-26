@@ -23,7 +23,7 @@ At a glance, tumpa-cli works as a drop-in for:
 Three binaries are provided:
 
 - **`tcli`** -- human-facing key management and SSH agent: import, export,
-  search, fetch, describe, list, delete, card status, agent daemons
+  search, fetch, describe, list, delete, card status, agent daemons, sign and verification.
 - **`tclig`** -- GnuPG drop-in for programs that invoke `gpg` (git signing,
   `pass`, anything with a `gpg.program` hook)
 - **`tpass`** -- drop-in replacement for [password-store](https://www.passwordstore.org/)
@@ -35,24 +35,6 @@ stored in `~/.tumpa/keys.db`.
 For detailed usage instructions, see the
 [Usage Guide](https://github.com/tumpaproject/tumpa-cli/blob/main/docs/usage.md).
 
-## Upgrading from 0.1.x
-
-As of 0.3.0, the GPG drop-in flags (`-bsau`, `--verify`, `-e`, `-d`,
-`--list-keys --with-colons`, `--decrypt --list-only`, etc.) have
-moved out of `tcli` into a new binary **`tclig`**. `tcli` is now the
-human-facing key-management UI only.
-
-If you configured git with `gpg.program = tcli`, or symlinked
-`gpg2` to `tcli`, re-point them at `tclig`:
-
-```
-git config --global gpg.program tclig
-ln -sf $(which tclig) ~/bin/gpg2
-```
-
-Everything you typed at the `tcli` prompt as a human (`tcli
---import`, `tcli --list-keys`, `tcli agent --ssh`, etc.) is
-unchanged.
 
 ## Features
 
@@ -307,6 +289,40 @@ tumpa keystore.
 
 Git invokes `tclig --verify <sigfile> -` automatically for commands
 like `git verify-commit`, `git verify-tag`, and `git log --show-signature`.
+
+### Signing and verifying files with `tcli`
+
+For ad-hoc signing of arbitrary files at the shell, `tcli` exposes
+three human-friendly commands. Pick a key by fingerprint, key ID, or
+**email**:
+
+```
+# Detached signature (default = ASCII armored, sibling .asc).
+tcli --sign report.pdf --with-key alice@example.com
+# -> writes report.pdf.asc
+
+# Binary detached (.sig instead of .asc).
+tcli --sign report.pdf --with-key alice@example.com --binary
+
+# Inline cleartext (-----BEGIN PGP SIGNED MESSAGE-----, software keys only).
+tcli --sign-inline notice.txt --with-key alice@example.com
+
+# Verify a detached signature against the keystore.
+tcli --verify report.pdf --signature report.pdf.asc
+
+# Verify a cleartext-signed message in place.
+tcli --verify notice.txt.asc
+
+# Verify against an external public-key file (skips the keystore).
+tcli --verify report.pdf --signature report.pdf.asc --with-key alice.pub
+```
+
+`-o`/`--output` overrides the destination; `-` reads stdin or writes
+stdout. Verify exit codes: **0** good, **1** bad, **2** unknown signer.
+
+See [docs/usage.md → Signing and verifying with `tcli`](docs/usage.md#signing-and-verifying-with-tcli)
+for the full surface (email-ambiguity handling, card vs software
+backend, parse-time validation, limitations).
 
 ### Encryption
 

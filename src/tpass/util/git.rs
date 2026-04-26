@@ -14,7 +14,12 @@ pub fn find_git_dir(path: &Path, prefix: &Path) -> Option<std::path::PathBuf> {
             break;
         }
         let output = Command::new("git")
-            .args(["-C", &current.to_string_lossy(), "rev-parse", "--is-inside-work-tree"])
+            .args([
+                "-C",
+                &current.to_string_lossy(),
+                "rev-parse",
+                "--is-inside-work-tree",
+            ])
             .output()
             .ok()?;
         if output.status.success() {
@@ -37,7 +42,12 @@ pub fn find_git_dir(path: &Path, prefix: &Path) -> Option<std::path::PathBuf> {
 /// Checks pass.signcommits config for -S flag.
 pub fn git_add_file(git_dir: &Path, file: &Path, message: &str) -> Result<()> {
     let status = Command::new("git")
-        .args(["-C", &git_dir.to_string_lossy(), "add", &file.to_string_lossy()])
+        .args([
+            "-C",
+            &git_dir.to_string_lossy(),
+            "add",
+            &file.to_string_lossy(),
+        ])
         .status()
         .context("Failed to run git add")?;
 
@@ -83,11 +93,7 @@ pub fn git_commit(git_dir: &Path, message: &str) -> Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false);
 
-    let mut cmd_args = vec![
-        "-C".to_string(),
-        git_dir_str,
-        "commit".to_string(),
-    ];
+    let mut cmd_args = vec!["-C".to_string(), git_dir_str, "commit".to_string()];
     if sign {
         cmd_args.push("-S".to_string());
     }

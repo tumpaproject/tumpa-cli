@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use zeroize::Zeroizing;
 
-use libtumpa::sign::{
-    sign_detached as libtumpa_sign_detached, Secret, SecretRequest, SignBackend,
-};
+use libtumpa::sign::{sign_detached as libtumpa_sign_detached, Secret, SecretRequest, SignBackend};
 use libtumpa::{Passphrase, Pin};
 
 use crate::pinentry;
@@ -82,12 +80,17 @@ pub fn sign(
     let (signature, backend) = match result {
         Ok(ok) => {
             if let Some(secret) = last_secret.borrow().as_ref() {
-                pinentry::cache_passphrase(&key_info.fingerprint, secret);
+                match backend_secret_kind(&ok.1) {
+                    SecretKind::Pin => pinentry::cache_pin(&key_info.fingerprint, secret),
+                    SecretKind::Passphrase => {
+                        pinentry::cache_passphrase(&key_info.fingerprint, secret)
+                    }
+                }
             }
             ok
         }
         Err(e) => {
-            pinentry::clear_cached_passphrase(&key_info.fingerprint);
+            pinentry::clear_all_cached_secrets(&key_info.fingerprint);
             return Err(anyhow!("{e}"));
         }
     };
@@ -129,7 +132,7 @@ pub fn sign(
 ///
 /// Returns `Zeroizing<String>` so the secret is wiped from memory when
 /// the value is dropped — never converted to a plain `String`.
-fn prompt_card_pin(
+pub(crate) fn prompt_card_pin(
     card_ident: &str,
     key_info: &wecanencrypt::KeyInfo,
 ) -> Result<Zeroizing<String>> {
@@ -158,7 +161,7 @@ fn prompt_card_pin(
 ///
 /// Returns `Zeroizing<String>` so the secret is wiped from memory when
 /// the value is dropped — never converted to a plain `String`.
-fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<Zeroizing<String>> {
+pub(crate) fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<Zeroizing<String>> {
     let desc = format!("Enter passphrase for key {}", primary_uid(key_info));
     pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))
 }
@@ -176,4 +179,16 @@ fn primary_uid(key_info: &wecanencrypt::KeyInfo) -> &str {
         .or_else(|| key_info.user_ids.iter().find(|u| !u.revoked))
         .map(|u| u.value.as_str())
         .unwrap_or(&key_info.fingerprint)
+}
+
+enum SecretKind {
+    Pin,
+    Passphrase,
+}
+
+fn backend_secret_kind(backend: &SignBackend) -> SecretKind {
+    match backend {
+        SignBackend::Card => SecretKind::Pin,
+        SignBackend::Software => SecretKind::Passphrase,
+    }
 }
