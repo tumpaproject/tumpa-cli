@@ -268,11 +268,9 @@ impl TryFrom<Args> for Mode {
             // sign+encrypt would change the output format the
             // user explicitly asked for.
             if value.clearsign {
-                return Err(
-                    "--clearsign cannot be combined with --encrypt; \
+                return Err("--clearsign cannot be combined with --encrypt; \
                      use --sign for sign-then-encrypt"
-                        .into(),
-                );
+                    .into());
             }
             let output = value.output.ok_or("Encryption requires -o/--output")?;
             let input = value.input_files.first().map(PathBuf::from);
@@ -346,9 +344,7 @@ impl TryFrom<Args> for Mode {
             // be a silent no-op, which is exactly the trap a GPG
             // drop-in must avoid.
             if value.digest_algo.is_some() && shape != SignShape::Detached {
-                return Err(
-                    "--digest-algo is only supported for detached signatures (-b)".into(),
-                );
+                return Err("--digest-algo is only supported for detached signatures (-b)".into());
             }
             return Ok(Mode::Sign {
                 signer_id,
@@ -564,9 +560,7 @@ mod tests {
         .unwrap();
         match m {
             Mode::Sign {
-                shape,
-                digest_algo,
-                ..
+                shape, digest_algo, ..
             } => {
                 assert_eq!(shape, SignShape::Detached);
                 assert_eq!(digest_algo.as_deref(), Some("SHA512"));

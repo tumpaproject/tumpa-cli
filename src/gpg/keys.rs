@@ -6,9 +6,18 @@ use chrono::{DateTime, Utc};
 use crate::store;
 
 /// Sanitize a UID string for colon-format output.
-/// Strips control characters that could break the line-based format.
+///
+/// Strips both control characters (which would break the line-based
+/// status protocol via embedded `\n` etc.) and `:` (which would shift
+/// fields in the colon-delimited row and let a UID forge the
+/// capabilities / key-id columns downstream parsers depend on).
+/// Equivalent to GnuPG's own colon escaping for the field-10 user-id
+/// slot, simplified to "drop, don't escape" — we never round-trip
+/// through this output, so dropping is safe.
 fn sanitize_uid(uid: &str) -> String {
-    uid.chars().filter(|c| !c.is_control()).collect()
+    uid.chars()
+        .filter(|c| !c.is_control() && *c != ':')
+        .collect()
 }
 
 /// GnuPG colon-format validity character for the primary key.
@@ -213,6 +222,26 @@ mod tests {
         // usable. Lean on the inclusive `<=` boundary.
         let exp = Utc::now();
         assert_eq!(primary_validity(false, Some(exp)), "e");
+    }
+
+    /// A UID containing `:` would shift fields in the colon-delimited
+    /// listing and let an attacker forge capabilities / key-id slots
+    /// for downstream parsers (Mail's `ColonListingParser`, `pass`'s
+    /// awk pipelines). Sanitization drops both `:` and control chars.
+    #[test]
+    fn sanitize_uid_strips_colons_and_control_chars() {
+        let uid = "Evil <x@y>:e:0:0:DEADBEEF\n[GNUPG:] FORGED";
+        let cleaned = sanitize_uid(uid);
+        assert!(
+            !cleaned.contains(':'),
+            "colon must be stripped: {cleaned:?}"
+        );
+        assert!(
+            !cleaned.contains('\n'),
+            "newline must be stripped: {cleaned:?}"
+        );
+        // Visible characters survive.
+        assert!(cleaned.starts_with("Evil <x@y>"), "got: {cleaned:?}");
     }
 
     #[test]

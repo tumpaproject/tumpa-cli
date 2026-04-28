@@ -15,20 +15,28 @@ use libtumpa::{HashAlgorithm, Passphrase, Pin};
 use crate::pinentry;
 use crate::store;
 
-/// Map a `HashAlgorithm` to the GnuPG numeric ID used in `[GNUPG:]
-/// SIG_CREATED` status lines (RFC 4880 §9.4).
-fn gpg_hash_algo_id(alg: HashAlgorithm) -> u8 {
+/// Map a `HashAlgorithm` to the OpenPGP numeric hash ID used in
+/// `[GNUPG:] SIG_CREATED` status lines. Covers RFC 4880 §9.4 values
+/// plus newer OpenPGP crypto-refresh / 4880bis assignments such as
+/// SHA-3 (IDs 12 / 14).
+///
+/// Returns `None` for algorithms not in the OpenPGP-registered set
+/// (e.g. a future libtumpa addition we haven't taught this mapping):
+/// the caller emits no `SIG_CREATED` line in that case rather than
+/// lying with `hash_algo=0`, which PGP/MIME `micalg` parsers would
+/// reject. The caller logs a warning so the gap is visible at runtime.
+fn gpg_hash_algo_id(alg: HashAlgorithm) -> Option<u8> {
     match alg {
-        HashAlgorithm::Sha256 => 8,
-        HashAlgorithm::Sha384 => 9,
-        HashAlgorithm::Sha512 => 10,
-        HashAlgorithm::Sha224 => 11,
-        HashAlgorithm::Sha3_256 => 12,
-        HashAlgorithm::Sha3_512 => 14,
-        HashAlgorithm::Md5 => 1,
-        HashAlgorithm::Sha1 => 2,
-        HashAlgorithm::Ripemd160 => 3,
-        _ => 0,
+        HashAlgorithm::Sha256 => Some(8),
+        HashAlgorithm::Sha384 => Some(9),
+        HashAlgorithm::Sha512 => Some(10),
+        HashAlgorithm::Sha224 => Some(11),
+        HashAlgorithm::Sha3_256 => Some(12),
+        HashAlgorithm::Sha3_512 => Some(14),
+        HashAlgorithm::Md5 => Some(1),
+        HashAlgorithm::Sha1 => Some(2),
+        HashAlgorithm::Ripemd160 => Some(3),
+        _ => None,
     }
 }
 
@@ -165,12 +173,28 @@ pub fn sign(
     // We fill <hash_algo> from libtumpa so PGP/MIME callers can read the
     // line on status-fd to learn what hash to put in `micalg`. Other
     // fields stay empty/zero — git only requires the prefix.
-    let hash_id = gpg_hash_algo_id(sign_result.hash_algorithm);
-    writeln!(
-        err,
-        "\n[GNUPG:] SIG_CREATED D 0 {hash_id} 00 0 {}",
-        key_info.fingerprint
-    )?;
+    //
+    // If libtumpa returns a hash we don't have an OpenPGP-registered ID
+    // for (future variant), we deliberately suppress SIG_CREATED rather
+    // than emitting `hash_algo=0`: PGP/MIME `micalg` parsers reject 0,
+    // and a missing line tells the caller to fall back rather than
+    // hard-fail on a fabricated value. Git users on such a key would
+    // need to add the mapping; the warning makes the gap visible.
+    match gpg_hash_algo_id(sign_result.hash_algorithm) {
+        Some(hash_id) => {
+            writeln!(
+                err,
+                "\n[GNUPG:] SIG_CREATED D 0 {hash_id} 00 0 {}",
+                key_info.fingerprint
+            )?;
+        }
+        None => {
+            log::warn!(
+                "no OpenPGP hash ID known for {:?}; omitting SIG_CREATED line",
+                sign_result.hash_algorithm
+            );
+        }
+    }
 
     Ok(())
 }
@@ -328,16 +352,13 @@ pub fn clearsign(
     out.write_all(&signed)
         .context("Failed to write cleartext-signed message to stdout")?;
 
-    // Cleartext sigs use the hash the signing key's params imply (SHA256
-    // for our default Ed25519 / RSA keys, larger for ECDSA P-384/P-521).
-    // We don't get the actual hash back from the cleartext path, so emit
-    // an informational SIG_CREATED line keyed to SHA256 — git-on-PGP/MIME
-    // callers don't consume cleartext-sig status anyway.
-    writeln!(
-        err,
-        "\n[GNUPG:] SIG_CREATED C 0 8 00 0 {}",
-        key_info.fingerprint
-    )?;
+    // Intentionally do NOT emit a SIG_CREATED status line for cleartext
+    // signatures. libtumpa's cleartext path doesn't surface the hash
+    // algorithm it actually used, and the previous code hard-coded
+    // SHA-256 (`hash_algo=8`) — that lies to PGP/MIME `micalg` parsers
+    // when the key is RSA-3072+ / ECDSA P-384/P-521 and ends up using a
+    // different digest. Cleartext signatures are not consumed by git's
+    // gpg-interface either, so dropping the line is safe.
 
     Ok(())
 }
@@ -353,7 +374,7 @@ pub fn clearsign(
 ///
 /// The output is an OpenPGP message containing one-pass-signature +
 /// literal + signature packets; the recipient runs
-/// `tclig --decrypt --verify` to recover the original bytes plus
+/// `tclig --verify-decrypt` to recover the original bytes plus
 /// signer identity.
 pub fn sign_inline(
     mut data: impl Read,
@@ -398,11 +419,11 @@ pub fn sign_inline(
     )?;
     out.write_all(&signed)
         .context("Failed to write inline-signed message to stdout")?;
-    writeln!(
-        err,
-        "\n[GNUPG:] SIG_CREATED S 0 8 00 0 {}",
-        key_info.fingerprint
-    )?;
+
+    // Intentionally no SIG_CREATED line for inline-opaque signing —
+    // same reasoning as `clearsign`: wecanencrypt's `sign_bytes` does
+    // not expose the actual hash chosen, and emitting a hard-coded
+    // SHA-256 ID would lie to any PGP/MIME `micalg` consumer.
 
     Ok(())
 }
@@ -411,18 +432,21 @@ pub fn sign_inline(
 mod tests {
     use super::*;
 
-    /// SIG_CREATED status lines must use GnuPG's RFC 4880 §9.4 hash IDs.
-    /// PGP/MIME callers parse `<hash_algo>` to derive the `micalg`
-    /// parameter; a wrong number here means clients reject the
+    /// SIG_CREATED status lines must use OpenPGP's registered hash
+    /// IDs (RFC 4880 §9.4 plus crypto-refresh additions). PGP/MIME
+    /// callers parse `<hash_algo>` to derive the `micalg` parameter;
+    /// a wrong number here means clients reject the
     /// `multipart/signed` mail as malformed.
     #[test]
-    fn gpg_hash_algo_id_matches_rfc4880() {
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha256), 8);
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha384), 9);
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha512), 10);
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha224), 11);
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Md5), 1);
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha1), 2);
-        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Ripemd160), 3);
+    fn gpg_hash_algo_id_matches_openpgp_registry() {
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha256), Some(8));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha384), Some(9));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha512), Some(10));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha224), Some(11));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha3_256), Some(12));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha3_512), Some(14));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Md5), Some(1));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha1), Some(2));
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Ripemd160), Some(3));
     }
 }
