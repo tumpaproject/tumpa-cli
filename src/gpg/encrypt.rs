@@ -382,4 +382,104 @@ mod tests {
 
         assert!(out_path.exists());
     }
+
+    /// `TUMPA_PASSPHRASE` is process-global, so any test that sets it
+    /// must serialize against any other such test in this binary. We
+    /// don't hold the lock for tests that don't touch the env var.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard: set `TUMPA_PASSPHRASE` for the duration of the
+    /// test, then remove it even on panic. The guard pairs with
+    /// `ENV_LOCK` so the set/remove window is exclusive.
+    struct PassphraseEnvGuard;
+    impl PassphraseEnvGuard {
+        fn set(value: &str) -> Self {
+            std::env::set_var("TUMPA_PASSPHRASE", value);
+            Self
+        }
+    }
+    impl Drop for PassphraseEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("TUMPA_PASSPHRASE");
+        }
+    }
+
+    /// Software sign+encrypt: with no card connected, the dispatch
+    /// must fall back to the software secret key, sign, then encrypt
+    /// to the recipient. Round-trip via `decrypt_and_verify` and
+    /// confirm the inner signature is `Good` and the verifier is the
+    /// signer we asked for. This pins the card-first/software-
+    /// fallback contract called out in the doc comment.
+    #[test]
+    fn software_sign_and_encrypt_round_trips() {
+        let _env_guard = ENV_LOCK.lock().unwrap();
+        let _passphrase_guard = PassphraseEnvGuard::set("pw");
+
+        let (_tmp, ks_path) = fresh_keystore();
+        let out_path = ks_path.parent().unwrap().join("ct.asc");
+        let pt_path = ks_path.parent().unwrap().join("plain.txt");
+        std::fs::write(&pt_path, b"hello over signed channel").unwrap();
+
+        // Recipient (Bob) — secret needed so the test can decrypt and
+        // verify the result without involving libtumpa's card paths.
+        let bob = create_key_simple("pw", &["Bob <bob@example.com>"]).unwrap();
+        // Signer (Alice) — secret in the keystore so software fallback
+        // can sign with `TUMPA_PASSPHRASE`.
+        let alice = create_key_simple("pw", &["Alice <alice@example.com>"]).unwrap();
+
+        let keystore = wecanencrypt::KeyStore::open(&ks_path).unwrap();
+        keystore.import_key(&bob.secret_key).unwrap();
+        keystore.import_key(&alice.secret_key).unwrap();
+        drop(keystore);
+
+        let mut status: Vec<u8> = Vec::new();
+        encrypt_with_status(
+            Some(&pt_path),
+            &out_path,
+            &["bob@example.com".to_string()],
+            true,
+            Some(&alice.fingerprint),
+            Some(&ks_path),
+            &mut status,
+        )
+        .unwrap();
+
+        assert!(out_path.exists(), "ciphertext must be produced");
+        let s = String::from_utf8(status).unwrap();
+        assert!(!s.contains("INV_RECP"), "no recipient errors: {s}");
+
+        // Round-trip: decrypt with Bob's secret and verify the inner
+        // signature was produced by Alice. This is the property that
+        // distinguishes sign+encrypt from encrypt-only.
+        let ciphertext = std::fs::read(&out_path).unwrap();
+        let bob_passphrase: libtumpa::Passphrase =
+            zeroize::Zeroizing::new("pw".to_string());
+        let store = wecanencrypt::KeyStore::open(&ks_path).unwrap();
+        let result = libtumpa::decrypt::decrypt_and_verify_with_key(
+            &store,
+            &bob.secret_key,
+            &ciphertext,
+            &bob_passphrase,
+        )
+        .expect("decrypt+verify should succeed for sign+encrypt output");
+
+        assert_eq!(
+            &*result.plaintext,
+            b"hello over signed channel",
+            "round-tripped plaintext mismatch"
+        );
+        match result.outcome {
+            libtumpa::decrypt::DecryptVerifyOutcome::Good {
+                verifier_fingerprint,
+                ..
+            } => {
+                assert_eq!(
+                    verifier_fingerprint.to_uppercase(),
+                    alice.fingerprint.to_uppercase(),
+                    "inner signature must verify against Alice"
+                );
+            }
+            other => panic!("expected Good signature outcome, got {other:?}"),
+        }
+    }
 }

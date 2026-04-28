@@ -345,10 +345,16 @@ pub fn clearsign(
 /// Sign data from stdin and write an inline opaque signed message
 /// (`gpg --sign` shape) to stdout.
 ///
-/// Software-key only, same constraint as [`clearsign`]. The output is
-/// an OpenPGP message containing one-pass-signature + literal +
-/// signature packets; the recipient runs `tclig --decrypt --verify` to
-/// recover the original bytes plus signer identity.
+/// Software-key only at this layer: libtumpa does not yet expose an
+/// on-card inline-opaque signing primitive. (Detached signing and
+/// [`clearsign`] both have card-first dispatch already.) When a
+/// connected card is the only source for the signing key, the call
+/// returns an error pointing the user at `--detach-sign`.
+///
+/// The output is an OpenPGP message containing one-pass-signature +
+/// literal + signature packets; the recipient runs
+/// `tclig --decrypt --verify` to recover the original bytes plus
+/// signer identity.
 pub fn sign_inline(
     mut data: impl Read,
     mut out: impl Write,

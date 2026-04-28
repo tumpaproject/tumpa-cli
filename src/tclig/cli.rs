@@ -339,6 +339,17 @@ impl TryFrom<Args> for Mode {
             } else {
                 SignShape::InlineOpaque
             };
+            // --digest-algo only locks the digest for the detached path;
+            // clearsign and inline-opaque embed the digest in the
+            // signature packet so the receiver doesn't need PGP/MIME
+            // micalg negotiation. Accepting it for those shapes would
+            // be a silent no-op, which is exactly the trap a GPG
+            // drop-in must avoid.
+            if value.digest_algo.is_some() && shape != SignShape::Detached {
+                return Err(
+                    "--digest-algo is only supported for detached signatures (-b)".into(),
+                );
+            }
             return Ok(Mode::Sign {
                 signer_id,
                 armor: value.armor,
@@ -496,6 +507,72 @@ mod tests {
             err.to_lowercase().contains("clearsign"),
             "error must mention --clearsign, got: {err}"
         );
+    }
+
+    /// `--digest-algo` only locks `micalg` for the detached path
+    /// (PGP/MIME multipart/signed). Accepting it for `--clearsign`
+    /// or `--sign` (inline-opaque) would silently no-op and mislead
+    /// the caller, so we reject it.
+    #[test]
+    fn digest_algo_with_clearsign_is_rejected() {
+        let result = mode_from_args(&[
+            "tclig",
+            "--clearsign",
+            "--digest-algo",
+            "SHA512",
+            "-u",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ]);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error, got Ok(Mode::...)"),
+        };
+        assert!(
+            err.to_lowercase().contains("digest-algo"),
+            "error must mention --digest-algo, got: {err}"
+        );
+    }
+
+    #[test]
+    fn digest_algo_with_inline_sign_is_rejected() {
+        let result = mode_from_args(&[
+            "tclig",
+            "--sign",
+            "--digest-algo",
+            "SHA512",
+            "-u",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ]);
+        assert!(
+            result.is_err(),
+            "--digest-algo with inline --sign must be rejected"
+        );
+    }
+
+    /// `--digest-algo` with `--detach-sign` is the canonical PGP/MIME
+    /// shape and must keep working.
+    #[test]
+    fn digest_algo_with_detach_sign_is_accepted() {
+        let m = mode_from_args(&[
+            "tclig",
+            "--detach-sign",
+            "--digest-algo",
+            "SHA512",
+            "-u",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ])
+        .unwrap();
+        match m {
+            Mode::Sign {
+                shape,
+                digest_algo,
+                ..
+            } => {
+                assert_eq!(shape, SignShape::Detached);
+                assert_eq!(digest_algo.as_deref(), Some("SHA512"));
+            }
+            _ => panic!("expected Mode::Sign(Detached)"),
+        }
     }
 
     /// Bare `--sign` (no `--encrypt`) keeps the existing sign-only

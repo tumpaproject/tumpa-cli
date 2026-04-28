@@ -45,8 +45,9 @@ default = []
 experimental = []
 
 [dependencies]
-# 0.14.1 ships the Curve25519 `0x40` prefix + (X25519, X25519) match
-# arm needed by Nitrokey 3 (opcard-rs >= 1.5) ECC card uploads.
+# Keep this on a wecanencrypt release that ships the Curve25519 `0x40`
+# prefix + (X25519, X25519) match arm needed by Nitrokey 3
+# (opcard-rs >= 1.5) ECC card uploads.
 wecanencrypt = { version = "0.14.2", features = ["keystore", "card-pcsc", "network"] }
 libtumpa = { version = "0.3.0", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
