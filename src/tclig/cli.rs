@@ -190,8 +190,9 @@ pub enum Mode {
         /// When `Some`, sign-then-encrypt (single OpenPGP message
         /// containing a one-pass-signature, the literal data, and
         /// the signature packet — i.e. what `gpg --sign --encrypt`
-        /// produces). Software-key only; card-backed sign+encrypt
-        /// is not yet wired through libtumpa.
+        /// produces). Card-first dispatch: a connected OpenPGP card
+        /// whose signing slot matches the signer is used before
+        /// falling back to a software secret key.
         signer_id: Option<String>,
     },
     Decrypt {
@@ -258,6 +259,20 @@ impl TryFrom<Args> for Mode {
         if value.encrypt {
             if value.recipients.is_empty() {
                 return Err("Encryption requires at least one -r/--recipient".into());
+            }
+            // --clearsign produces an armored "BEGIN PGP SIGNED
+            // MESSAGE" block — that shape is incompatible with
+            // --encrypt (encryption wraps a binary message, not
+            // a cleartext-signed envelope). GnuPG itself rejects
+            // this combination, and silently coercing it to
+            // sign+encrypt would change the output format the
+            // user explicitly asked for.
+            if value.clearsign {
+                return Err(
+                    "--clearsign cannot be combined with --encrypt; \
+                     use --sign for sign-then-encrypt"
+                        .into(),
+                );
             }
             let output = value.output.ok_or("Encryption requires -o/--output")?;
             let input = value.input_files.first().map(PathBuf::from);
@@ -453,6 +468,33 @@ mod tests {
         assert!(
             err.to_lowercase().contains("-u") || err.to_lowercase().contains("local-user"),
             "error must point to -u/--local-user, got: {err}"
+        );
+    }
+
+    /// `--encrypt --clearsign` is incompatible (clearsign produces
+    /// armored cleartext, not a binary message that --encrypt can
+    /// wrap) and must be rejected with a clear error rather than
+    /// silently falling back to encrypt-only.
+    #[test]
+    fn encrypt_with_clearsign_is_rejected() {
+        let result = mode_from_args(&[
+            "tclig",
+            "--encrypt",
+            "--clearsign",
+            "-u",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "-r",
+            "alice@example.com",
+            "-o",
+            "/tmp/out.asc",
+        ]);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error, got Ok(Mode::...)"),
+        };
+        assert!(
+            err.to_lowercase().contains("clearsign"),
+            "error must mention --clearsign, got: {err}"
         );
     }
 

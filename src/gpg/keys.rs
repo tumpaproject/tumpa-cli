@@ -102,11 +102,12 @@ pub fn list_keys_colon(key_ids: &[String], keystore_path: Option<&PathBuf>) -> R
             }
         }
 
-        // Subkey lines
+        // Subkey lines. Revoked subkeys stay in the listing with
+        // validity "r" — GnuPG's colon format keeps them, and the
+        // validity field is the documented filter knob for callers
+        // (Mail's recipient picker, pass) so they can skip unusable
+        // subkeys without re-querying the keystore.
         for sk in &key.subkeys {
-            if sk.is_revoked {
-                continue;
-            }
             let sk_creation = sk.creation_time.timestamp();
             let sk_expiry = sk
                 .expiration_time
@@ -161,11 +162,10 @@ pub fn list_secret_keys_colon(keystore_path: Option<&PathBuf>) -> Result<()> {
             }
         }
 
-        // Subkey lines
+        // Subkey lines. Revoked subkeys stay in the listing with
+        // validity "r" (matches GnuPG); see list_keys_colon for the
+        // rationale.
         for sk in &key.subkeys {
-            if sk.is_revoked {
-                continue;
-            }
             let sk_creation = sk.creation_time.timestamp();
             let sk_validity = subkey_validity(sk.is_revoked, sk.expiration_time);
             let caps = match sk.key_type {

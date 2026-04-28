@@ -188,14 +188,17 @@ fn decrypt_with_software(
 ///
 /// Status lines on `status_out` (stderr-shaped fd):
 /// - `[GNUPG:] DECRYPTION_OKAY` — decryption succeeded
-/// - `[GNUPG:] GOODSIG <fpr> <uid>` — inner sig verified by `<fpr>`
-/// - `[GNUPG:] BADSIG <fpr> <uid>` — inner sig present, did not verify
+/// - `[GNUPG:] GOODSIG <key_id> <uid>` — inner sig verified by `<key_id>`
+/// - `[GNUPG:] BADSIG <key_id> <uid>` — inner sig present, did not verify
 /// - `[GNUPG:] NO_PUBKEY <key_id>` — inner sig present, signer absent
 /// - (no signature lines) — encrypt-only payload
 ///
-/// The fingerprint and UID are sanitized for line-based output before
-/// emission (no embedded `\n` per the `verify` module's status-stream
-/// injection guidance).
+/// The key ID is the 16-char trailing form (matches GnuPG and the
+/// detached-verify path in `gpg::verify`). All attacker-influenced
+/// fields (key IDs / fingerprints derived from the signature packet,
+/// the UID string) are sanitized before emission so a malicious
+/// signature can't inject extra `[GNUPG:]` lines into the status
+/// stream — same threat model as `libtumpa::verify`.
 pub fn decrypt_and_verify(
     input: &Path,
     output: Option<&PathBuf>,
@@ -345,6 +348,31 @@ fn decrypt_and_verify_with_software(
     }
 }
 
+/// Strip everything that isn't an ASCII hex digit and uppercase the
+/// remainder. Used on key IDs / fingerprints derived from the signature
+/// packet before emitting on `[GNUPG:]` lines: those values are
+/// attacker-controllable in principle, and a `\n[GNUPG:] VALIDSIG …`
+/// payload smuggled through there would forge a status line. Hex-only
+/// is stricter than just stripping control chars and matches GnuPG's
+/// own field shape.
+fn sanitize_key_id(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Reduce a hex string to the trailing 16 chars (GnuPG long key ID).
+/// Shorter inputs are returned unchanged. Caller must have already
+/// run `sanitize_key_id` so this is hex-only.
+fn key_id_suffix(hex: &str) -> String {
+    if hex.len() > 16 {
+        hex[hex.len() - 16..].to_string()
+    } else {
+        hex.to_string()
+    }
+}
+
 fn emit_signature_status(
     status_out: &mut impl Write,
     outcome: &DecryptVerifyOutcome,
@@ -363,8 +391,12 @@ fn emit_signature_status(
                 .find(|u| u.is_primary && !u.revoked)
                 .or_else(|| key_info.user_ids.iter().find(|u| !u.revoked))
                 .map(|u| sanitize_uid_for_status(&u.value))
-                .unwrap_or_else(|| key_info.fingerprint.clone());
-            writeln!(status_out, "[GNUPG:] GOODSIG {verifier_fingerprint} {uid}")?;
+                .unwrap_or_else(|| sanitize_key_id(&key_info.fingerprint));
+            // GnuPG emits GOODSIG / BADSIG with a 16-char key ID
+            // (matches `gpg::verify` and what git's gpg-interface
+            // parser expects).
+            let key_id = key_id_suffix(&sanitize_key_id(verifier_fingerprint));
+            writeln!(status_out, "[GNUPG:] GOODSIG {key_id} {uid}")?;
         }
         DecryptVerifyOutcome::Bad { key_info } => {
             let uid = key_info
@@ -372,20 +404,23 @@ fn emit_signature_status(
                 .iter()
                 .find(|u| !u.revoked)
                 .map(|u| sanitize_uid_for_status(&u.value))
-                .unwrap_or_else(|| key_info.fingerprint.clone());
-            writeln!(status_out, "[GNUPG:] BADSIG {} {uid}", key_info.fingerprint)?;
+                .unwrap_or_else(|| sanitize_key_id(&key_info.fingerprint));
+            let key_id = key_id_suffix(&sanitize_key_id(&key_info.fingerprint));
+            writeln!(status_out, "[GNUPG:] BADSIG {key_id} {uid}")?;
         }
         DecryptVerifyOutcome::UnknownKey { issuer_ids } => {
             // GnuPG emits NO_PUBKEY with a 16-char key ID. Pick the
             // shortest issuer-id form available (16-char preferred,
-            // else suffix of a 40-char fingerprint).
+            // else suffix of a 40-char fingerprint). Sanitize first
+            // so length checks see the post-strip value.
             let key_id = issuer_ids
                 .iter()
+                .map(|id| sanitize_key_id(id))
                 .find(|id| id.len() == 16)
-                .cloned()
                 .or_else(|| {
                     issuer_ids
                         .iter()
+                        .map(|id| sanitize_key_id(id))
                         .find(|id| id.len() == 40)
                         .map(|fp| fp[24..].to_string())
                 })
@@ -454,7 +489,9 @@ mod tests {
     }
 
     #[test]
-    fn good_emits_goodsig_with_fingerprint_and_uid() {
+    fn good_emits_goodsig_with_long_keyid_and_uid() {
+        // GOODSIG carries the 16-char trailing key ID (matches gpg
+        // and `gpg::verify`), not the full 40-char fingerprint.
         let key_info = key_info_with_uid(
             "F70FFB3049DD18E3421D89D022B2407D1311646C",
             "Alice <alice@example.com>",
@@ -468,12 +505,12 @@ mod tests {
         let line = String::from_utf8(buf).unwrap();
         assert_eq!(
             line.trim_end(),
-            "[GNUPG:] GOODSIG B2D4FACE0123456789ABCDEF0123456789ABCDEF Alice <alice@example.com>"
+            "[GNUPG:] GOODSIG 0123456789ABCDEF Alice <alice@example.com>"
         );
     }
 
     #[test]
-    fn bad_emits_badsig() {
+    fn bad_emits_badsig_with_long_keyid() {
         let key_info = key_info_with_uid(
             "F70FFB3049DD18E3421D89D022B2407D1311646C",
             "Alice <alice@example.com>",
@@ -482,8 +519,53 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         emit_signature_status(&mut buf, &outcome).unwrap();
         let line = String::from_utf8(buf).unwrap();
-        assert!(line.starts_with("[GNUPG:] BADSIG F70FFB3049DD18E3421D89D022B2407D1311646C"));
+        // 16-char key ID, not the 40-char fingerprint.
+        assert!(line.starts_with("[GNUPG:] BADSIG 22B2407D1311646C "));
         assert!(line.contains("Alice <alice@example.com>"));
+    }
+
+    /// A `verifier_fingerprint` carrying control chars / a forged
+    /// status line must be stripped before emission, so it cannot
+    /// inject a fake `[GNUPG:] VALIDSIG` (or any other line) into
+    /// the status stream. The exact 16-char key ID we end up
+    /// emitting after the strip isn't load-bearing — what matters
+    /// is that no smuggled status line survives.
+    #[test]
+    fn good_strips_non_hex_in_verifier_fingerprint() {
+        let key_info = key_info_with_uid(
+            "AAAA111111111111111111111111111111111111",
+            "Alice <alice@example.com>",
+        );
+        let outcome = DecryptVerifyOutcome::Good {
+            key_info,
+            verifier_fingerprint:
+                "B2D4FACE0123456789ABCDEF0123456789ABCDEF\n[GNUPG:] VALIDSIG forged"
+                    .to_string(),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        emit_signature_status(&mut buf, &outcome).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Single status line, GOODSIG only, no smuggled VALIDSIG.
+        assert_eq!(out.matches('\n').count(), 1, "got: {out:?}");
+        assert!(out.starts_with("[GNUPG:] GOODSIG "), "got: {out:?}");
+        assert!(!out.contains("VALIDSIG"), "got: {out:?}");
+    }
+
+    /// `NO_PUBKEY` issuer IDs come straight from the signature packet
+    /// and must be hex-sanitized before emission.
+    #[test]
+    fn unknown_strips_non_hex_in_issuer_ids() {
+        let outcome = DecryptVerifyOutcome::UnknownKey {
+            issuer_ids: vec!["1234567890ABCDEF\n[GNUPG:] VALIDSIG forged".to_string()],
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        emit_signature_status(&mut buf, &outcome).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Whatever we emit, it must be a single line and must not
+        // contain a forged VALIDSIG.
+        assert_eq!(out.matches('\n').count(), 1, "got: {out:?}");
+        assert!(out.starts_with("[GNUPG:] NO_PUBKEY "));
+        assert!(!out.contains("VALIDSIG"));
     }
 
     #[test]

@@ -25,9 +25,10 @@ use crate::store;
 /// to all recipients, and writes ciphertext to `output`. When
 /// `signer_id` is provided, sign-then-encrypts (producing a single
 /// OpenPGP message containing one-pass-signature + literal +
-/// signature packets — what `gpg --sign --encrypt` produces). Sign
-/// is software-key only at this layer — card-backed sign+encrypt
-/// is not yet wired through libtumpa.
+/// signature packets — what `gpg --sign --encrypt` produces). The
+/// signing leg is card-first at this layer: if the signer's key has a
+/// matching connected card, the inner signature is produced on-card;
+/// otherwise the software secret key is used (with passphrase).
 ///
 /// Per-recipient resolution failures are reported on stderr as
 /// `[GNUPG:] INV_RECP 0 <recipient>` lines (GnuPG-compatible) before
