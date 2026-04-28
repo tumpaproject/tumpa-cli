@@ -2,14 +2,19 @@
 //! per-recipient `INV_RECP` status reporting, then delegate the actual
 //! encryption to wecanencrypt. Optionally sign-then-encrypt in a single
 //! OpenPGP message when a signer is supplied.
+//!
+//! Card-first dispatch on the signing leg: if the signer's key has a
+//! matching connected card, the inner signature is produced on the card;
+//! otherwise the software secret key (with passphrase) is used.
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use libtumpa::store as ltstore;
-use libtumpa::Passphrase;
+use libtumpa::{Passphrase, Pin};
+use zeroize::Zeroizing;
 
-use crate::gpg::sign::prompt_key_passphrase;
+use crate::gpg::sign::{prompt_card_pin, prompt_key_passphrase};
 use crate::pinentry;
 use crate::store;
 
@@ -84,10 +89,7 @@ pub fn encrypt_with_status(
     }
 
     if !failed.is_empty() {
-        anyhow::bail!(
-            "no usable key for recipient(s): {}",
-            failed.join(", ")
-        );
+        anyhow::bail!("no usable key for recipient(s): {}", failed.join(", "));
     }
 
     let plaintext = match input {
@@ -106,7 +108,7 @@ pub fn encrypt_with_status(
     let key_refs: Vec<&[u8]> = resolved.iter().map(|d| d.as_slice()).collect();
 
     let ciphertext = match signer_id {
-        Some(id) => sign_and_encrypt_with_passphrase(&keystore, id, &key_refs, &plaintext, armor)?,
+        Some(id) => sign_and_encrypt_dispatch(&keystore, id, &key_refs, &plaintext, armor)?,
         None => wecanencrypt::encrypt_bytes_to_multiple(&key_refs, &plaintext, armor)
             .map_err(|e| anyhow!("{e}"))
             .context("Encryption failed")?,
@@ -118,13 +120,13 @@ pub fn encrypt_with_status(
     Ok(())
 }
 
-/// Resolve `signer_id`, prompt for the unlock passphrase via the
-/// shared pinentry path (cache hit ⇒ no prompt), and call
-/// `wecanencrypt::sign_and_encrypt_to_multiple`. Software-key only —
-/// card-backed signing on the encrypt path requires a libtumpa
-/// primitive that doesn't exist yet (the existing card-aware
-/// `sign_detached_with_hash` is detached-only).
-fn sign_and_encrypt_with_passphrase(
+/// Resolve `signer_id`, dispatch the signing leg to a connected card when
+/// available, otherwise fall back to a software secret key with passphrase.
+///
+/// Mirrors the card-first / software-fallback dispatch already used by the
+/// detached signing path (`gpg::sign::sign`), so a sign+encrypt with a
+/// YubiKey behaves the same as a `--detach-sign` with the same key.
+fn sign_and_encrypt_dispatch(
     keystore: &wecanencrypt::KeyStore,
     signer_id: &str,
     recipient_keys: &[&[u8]],
@@ -134,13 +136,54 @@ fn sign_and_encrypt_with_passphrase(
     let (key_data, key_info) = store::resolve_signer(keystore, signer_id)?;
     store::ensure_key_usable_for_signing(&key_info)?;
 
+    // Try a connected card first.
+    let card_attempt = match libtumpa::encrypt::find_signing_card_for_encrypt(&key_data) {
+        Ok(Some(m)) => {
+            let card_ident = m.card.ident.clone();
+            let pin: Zeroizing<String> =
+                prompt_card_pin(&card_ident, &key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
+            let pin_obj: Pin = Zeroizing::new(pin.as_bytes().to_vec());
+            match wecanencrypt::card::sign_and_encrypt_to_multiple_on_card(
+                &key_data,
+                pin_obj.as_slice(),
+                Some(&card_ident),
+                recipient_keys,
+                plaintext,
+                armor,
+            ) {
+                Ok(ct) => {
+                    pinentry::cache_pin(&key_info.fingerprint, &pin);
+                    return Ok(ct);
+                }
+                Err(e) => {
+                    pinentry::clear_cached_pin(&key_info.fingerprint);
+                    Some(anyhow!("card sign+encrypt failed: {e}"))
+                }
+            }
+        }
+        Ok(None) => None,
+        Err(e) => {
+            log::info!(
+                "could not enumerate smartcards ({e}); skipping card path, trying software key"
+            );
+            None
+        }
+    };
+
+    // Software fallback.
     if !key_info.is_secret {
-        return Err(anyhow!(
-            "sign+encrypt requires a software secret key for {}; \
-             card-backed sign+encrypt is not yet supported — encrypt \
-             without -u, or sign separately with --detach-sign",
-            key_info.fingerprint
-        ));
+        let msg = match card_attempt {
+            Some(card_err) => format!(
+                "sign+encrypt: no software secret key available for {} ({card_err})",
+                key_info.fingerprint
+            ),
+            None => format!(
+                "sign+encrypt requires a software secret key for {} \
+                 and no matching card was found",
+                key_info.fingerprint
+            ),
+        };
+        return Err(anyhow!(msg));
     }
 
     let passphrase: Passphrase =
@@ -158,7 +201,10 @@ fn sign_and_encrypt_with_passphrase(
         // sign step failing here; clear it so the next attempt
         // re-prompts cleanly.
         pinentry::clear_cached_passphrase(&key_info.fingerprint);
-        anyhow!("{e}")
+        match card_attempt {
+            Some(card_err) => anyhow!("software fallback failed: {e}; {card_err}"),
+            None => anyhow!("{e}"),
+        }
     })
     .context("Sign-then-encrypt failed")?;
 
@@ -215,7 +261,10 @@ mod tests {
         );
         // Bail-out message names the recipient too, for human stderr.
         assert!(err.to_string().contains("nobody@example.com"));
-        assert!(!out_path.exists(), "output should not be written when any recipient is invalid");
+        assert!(
+            !out_path.exists(),
+            "output should not be written when any recipient is invalid"
+        );
     }
 
     /// Multiple invalid recipients each get their own INV_RECP line —

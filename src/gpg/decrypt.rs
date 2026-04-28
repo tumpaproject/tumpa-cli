@@ -179,10 +179,12 @@ fn decrypt_with_software(
 /// lines for the inner signature so PGP/MIME callers (Mail extension)
 /// can render lock + signed-by chrome correctly.
 ///
-/// **Software keys only** — the card path doesn't yet thread inner-
-/// signature inspection. With `--decrypt --verify` and only a card
-/// available, this errors out and the caller should retry with plain
-/// `--decrypt`.
+/// Card-first dispatch: when the decryption subkey lives on a connected
+/// card, the card decrypts the session key; otherwise we fall back to a
+/// software secret key with passphrase. In both cases the inner
+/// signature classification (Good / Bad / Unsigned / UnknownKey) is
+/// shape-identical and surfaces through the same `[GNUPG:]` status lines
+/// downstream.
 ///
 /// Status lines on `status_out` (stderr-shaped fd):
 /// - `[GNUPG:] DECRYPTION_OKAY` — decryption succeeded
@@ -210,35 +212,16 @@ pub fn decrypt_and_verify(
         anyhow::bail!("Cannot determine recipient key IDs from encrypted message");
     }
 
-    let (key_data, key_info) = ltd::find_software_decryption_key(&keystore, &ciphertext)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No software secret key found for key IDs: {}\n\
-                 (--decrypt --verify is software-only; if your decryption \
-                 subkey is on a card, retry with plain --decrypt)",
-                key_ids.join(", ")
-            )
-        })?;
-
-    let desc = format!(
-        "Enter passphrase to decrypt with key {}",
-        key_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&key_info.fingerprint)
-    );
-    let passphrase: Passphrase =
-        pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
-
-    let result = ltd::decrypt_and_verify_with_key(&keystore, &key_data, &ciphertext, &passphrase)
-        .map_err(|e| {
-            pinentry::clear_cached_passphrase(&key_info.fingerprint);
-            anyhow::anyhow!("{e}")
-        })
-        .context("Decryption failed")?;
-    pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+    let result = match try_decrypt_and_verify_on_card(&ciphertext, &keystore) {
+        Ok(r) => r,
+        Err(card_err) => {
+            log::info!(
+                "Card decrypt+verify not available ({}), trying software key",
+                card_err
+            );
+            decrypt_and_verify_with_software(&ciphertext, &keystore, &key_ids, &card_err)?
+        }
+    };
 
     // Write plaintext first, then status lines — that way a downstream
     // pipe consumer that closes early on signature status doesn't lose
@@ -265,6 +248,101 @@ pub fn decrypt_and_verify(
     emit_signature_status(&mut status_out, &result.outcome)?;
 
     Ok(())
+}
+
+/// Try to decrypt + verify on a connected card. Mirrors `try_decrypt_on_card`
+/// but threads the inner-signature outcome through libtumpa's
+/// `decrypt_and_verify_on_card`.
+fn try_decrypt_and_verify_on_card(
+    ciphertext: &[u8],
+    keystore: &wecanencrypt::KeyStore,
+) -> Result<libtumpa::decrypt::DecryptVerifyResult> {
+    let card = ltd::find_decryption_card(keystore, ciphertext)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .ok_or_else(|| anyhow::anyhow!("No card with matching decryption key found"))?;
+
+    let uid = card
+        .key_info
+        .user_ids
+        .first()
+        .map(|u| u.value.as_str())
+        .unwrap_or(&card.key_info.fingerprint);
+
+    let mut desc = format!(
+        "Please unlock the card\n\nNumber: {}",
+        card.card.serial_number
+    );
+    if let Ok(info) = wecanencrypt::card::get_card_details(Some(&card.card.ident)) {
+        if let Some(ref raw) = info.cardholder_name {
+            let name = pinentry::format_cardholder_name(raw);
+            if !name.is_empty() {
+                desc.push_str(&format!("\nHolder: {}", name));
+            }
+        }
+    }
+    desc.push_str(&format!("\n\nDecrypting for: {}", uid));
+
+    let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
+    let pin_obj = Pin::new(pin.as_bytes().to_vec());
+
+    match ltd::decrypt_and_verify_on_card(
+        keystore,
+        &card.key_data,
+        ciphertext,
+        &pin_obj,
+        Some(&card.card.ident),
+    ) {
+        Ok(r) => {
+            pinentry::cache_pin(&card.key_info.fingerprint, &pin);
+            Ok(r)
+        }
+        Err(e) => {
+            pinentry::clear_cached_pin(&card.key_info.fingerprint);
+            Err(anyhow::anyhow!("{e}")).context("Card decrypt+verify failed")
+        }
+    }
+}
+
+/// Software fallback for `decrypt_and_verify`: find a software secret key,
+/// prompt for the passphrase, decrypt, and verify the inner signature.
+fn decrypt_and_verify_with_software(
+    ciphertext: &[u8],
+    keystore: &wecanencrypt::KeyStore,
+    key_ids: &[String],
+    card_err: &anyhow::Error,
+) -> Result<libtumpa::decrypt::DecryptVerifyResult> {
+    let (key_data, key_info) = ltd::find_software_decryption_key(keystore, ciphertext)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Card decrypt+verify failed: {}\n\
+                 No software secret key found for key IDs: {}",
+                card_err,
+                key_ids.join(", ")
+            )
+        })?;
+
+    let desc = format!(
+        "Enter passphrase to decrypt with key {}",
+        key_info
+            .user_ids
+            .first()
+            .map(|u| u.value.as_str())
+            .unwrap_or(&key_info.fingerprint)
+    );
+    let passphrase: Passphrase =
+        pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
+
+    match ltd::decrypt_and_verify_with_key(keystore, &key_data, ciphertext, &passphrase) {
+        Ok(r) => {
+            pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+            Ok(r)
+        }
+        Err(e) => {
+            pinentry::clear_cached_passphrase(&key_info.fingerprint);
+            Err(anyhow::anyhow!("{e}")).context("Decryption failed")
+        }
+    }
 }
 
 fn emit_signature_status(
@@ -295,11 +373,7 @@ fn emit_signature_status(
                 .find(|u| !u.revoked)
                 .map(|u| sanitize_uid_for_status(&u.value))
                 .unwrap_or_else(|| key_info.fingerprint.clone());
-            writeln!(
-                status_out,
-                "[GNUPG:] BADSIG {} {uid}",
-                key_info.fingerprint
-            )?;
+            writeln!(status_out, "[GNUPG:] BADSIG {} {uid}", key_info.fingerprint)?;
         }
         DecryptVerifyOutcome::UnknownKey { issuer_ids } => {
             // GnuPG emits NO_PUBKEY with a 16-char key ID. Pick the

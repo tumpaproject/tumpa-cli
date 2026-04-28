@@ -25,8 +25,9 @@ pub struct Args {
     pub sign: bool,
 
     /// Produce a cleartext-signed message (`-----BEGIN PGP SIGNED
-    /// MESSAGE-----`). Software-key only; card-backed cleartext
-    /// signing is not yet supported.
+    /// MESSAGE-----`). Card-first dispatch: a connected OpenPGP card
+    /// whose signing slot matches the signer is used before falling
+    /// back to a software secret key.
     #[clap(long)]
     pub clearsign: bool,
 
@@ -62,8 +63,8 @@ pub struct Args {
 
     /// With --decrypt: also verify any inner OpenPGP signature on the
     /// payload and emit `[GNUPG:] GOODSIG / BADSIG / NO_PUBKEY` status
-    /// lines on stderr. Software keys only — card-decrypt + verify is
-    /// not yet supported.
+    /// lines on stderr. Card-first dispatch: a card whose decryption
+    /// slot matches is used before falling back to the software key.
     #[clap(long)]
     pub verify_decrypt: bool,
 
@@ -270,13 +271,9 @@ impl TryFrom<Args> for Mode {
             // --encrypt is enough to engage the signing path,
             // matching GnuPG's lenient behavior.
             let signer_id = if value.sign || value.detach_sign || value.local_user.is_some() {
-                Some(
-                    value.local_user
-                        .or(value.default_key)
-                        .ok_or(
-                            "Sign+encrypt requires -u/--local-user or --default-key for the signer",
-                        )?,
-                )
+                Some(value.local_user.or(value.default_key).ok_or(
+                    "Sign+encrypt requires -u/--local-user or --default-key for the signer",
+                )?)
             } else {
                 None
             };
@@ -357,12 +354,22 @@ mod tests {
     #[test]
     fn encrypt_only_has_no_signer() {
         let m = mode_from_args(&[
-            "tclig", "--encrypt", "-r", "alice@example.com",
-            "-o", "/tmp/out.asc", "-a",
+            "tclig",
+            "--encrypt",
+            "-r",
+            "alice@example.com",
+            "-o",
+            "/tmp/out.asc",
+            "-a",
         ])
         .unwrap();
         match m {
-            Mode::Encrypt { recipients, signer_id, armor, .. } => {
+            Mode::Encrypt {
+                recipients,
+                signer_id,
+                armor,
+                ..
+            } => {
                 assert_eq!(recipients, vec!["alice@example.com"]);
                 assert_eq!(signer_id, None, "no -u/-s ⇒ encrypt-only");
                 assert!(armor);
@@ -376,10 +383,15 @@ mod tests {
     #[test]
     fn encrypt_with_explicit_sign_carries_signer() {
         let m = mode_from_args(&[
-            "tclig", "--encrypt", "--sign",
-            "-u", "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
-            "-r", "alice@example.com",
-            "-o", "/tmp/out.asc",
+            "tclig",
+            "--encrypt",
+            "--sign",
+            "-u",
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+            "-r",
+            "alice@example.com",
+            "-o",
+            "/tmp/out.asc",
         ])
         .unwrap();
         match m {
@@ -399,10 +411,14 @@ mod tests {
     #[test]
     fn encrypt_with_local_user_only_carries_signer() {
         let m = mode_from_args(&[
-            "tclig", "--encrypt",
-            "-u", "FEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE",
-            "-r", "alice@example.com",
-            "-o", "/tmp/out.asc",
+            "tclig",
+            "--encrypt",
+            "-u",
+            "FEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE",
+            "-r",
+            "alice@example.com",
+            "-o",
+            "/tmp/out.asc",
         ])
         .unwrap();
         match m {
@@ -422,9 +438,13 @@ mod tests {
     #[test]
     fn encrypt_with_sign_but_no_signer_is_an_error() {
         let result = mode_from_args(&[
-            "tclig", "--encrypt", "--sign",
-            "-r", "alice@example.com",
-            "-o", "/tmp/out.asc",
+            "tclig",
+            "--encrypt",
+            "--sign",
+            "-r",
+            "alice@example.com",
+            "-o",
+            "/tmp/out.asc",
         ]);
         let err = match result {
             Err(e) => e,
@@ -443,8 +463,10 @@ mod tests {
     #[test]
     fn sign_only_still_goes_to_sign_mode() {
         let m = mode_from_args(&[
-            "tclig", "--sign",
-            "-u", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "tclig",
+            "--sign",
+            "-u",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         ])
         .unwrap();
         assert!(matches!(m, Mode::Sign { .. }));

@@ -115,7 +115,10 @@ pub fn cmd_sign(
     Ok(())
 }
 
-/// `tcli --sign-inline FILE --with-key VALUE [-o OUT]`. Software-only.
+/// `tcli --sign-inline FILE --with-key VALUE [-o OUT]`.
+///
+/// Card-first dispatch via `libtumpa::sign::sign_cleartext`: a connected
+/// card is tried before falling back to a software secret key.
 pub fn cmd_sign_inline(
     input: &Path,
     with_key: &str,
@@ -127,26 +130,40 @@ pub fn cmd_sign_inline(
     let (key_data, key_info) = store::resolve_signer(&keystore, with_key)?;
     store::ensure_key_usable_for_signing(&key_info)?;
 
+    let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
     let result = libtumpa_sign_cleartext(&key_data, &key_info, &data, |req| match req {
+        SecretRequest::CardPin {
+            card_ident,
+            key_info,
+        } => {
+            *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+            let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
+                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
+            *last_secret.borrow_mut() = Some(pin);
+            Ok(Secret::Pin(pin_bytes))
+        }
         SecretRequest::KeyPassphrase { key_info } => {
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             *last_secret.borrow_mut() = Some(pass.clone());
             Ok(Secret::Passphrase(pass))
         }
-        SecretRequest::CardPin { .. } => Err(libtumpa::Error::Sign(
-            "cleartext (inline) signing is software-only and never requests a card PIN".into(),
-        )),
     });
 
-    let signed = match result {
-        Ok(bytes) => {
+    let (signed, backend) = match result {
+        Ok((bytes, backend)) => {
             if let Some(secret) = last_secret.borrow().as_ref() {
-                pinentry::cache_passphrase(&key_info.fingerprint, secret);
+                match backend_secret_kind(&backend) {
+                    SecretKind::Pin => pinentry::cache_pin(&key_info.fingerprint, secret),
+                    SecretKind::Passphrase => {
+                        pinentry::cache_passphrase(&key_info.fingerprint, secret)
+                    }
+                }
             }
-            bytes
+            (bytes, backend)
         }
         Err(e) => {
             pinentry::clear_all_cached_secrets(&key_info.fingerprint);
@@ -158,10 +175,24 @@ pub fn cmd_sign_inline(
         input, output, /* binary */ false, /* inline */ true,
     )?;
     let dest_label = write_payload(&dest, &signed)?;
-    eprintln!(
-        "tcli: Signed inline with software key {}",
-        key_info.fingerprint
-    );
+    match backend {
+        SignBackend::Card => {
+            let ident = card_ident_used
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string());
+            eprintln!(
+                "tcli: Signed inline with card {} key {}",
+                ident, key_info.fingerprint
+            );
+        }
+        SignBackend::Software => {
+            eprintln!(
+                "tcli: Signed inline with software key {}",
+                key_info.fingerprint
+            );
+        }
+    }
     eprintln!("tcli: Wrote signed message to {}", dest_label);
     Ok(())
 }

@@ -6,8 +6,9 @@ use anyhow::{anyhow, Context, Result};
 use zeroize::Zeroizing;
 
 use libtumpa::sign::{
-    parse_digest_algo, sign_cleartext_with_key, sign_detached_with_hash as libtumpa_sign_detached_with_hash,
-    Secret, SecretRequest, SignBackend,
+    parse_digest_algo, sign_cleartext as libtumpa_sign_cleartext,
+    sign_detached_with_hash as libtumpa_sign_detached_with_hash, Secret, SecretRequest,
+    SignBackend,
 };
 use libtumpa::{HashAlgorithm, Passphrase, Pin};
 
@@ -84,35 +85,33 @@ pub fn sign(
     // drop.
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
-    let result = libtumpa_sign_detached_with_hash(
-        &key_data,
-        &key_info,
-        &buffer,
-        hash_preference,
-        |req| match req {
-        SecretRequest::CardPin {
-            card_ident,
-            key_info,
-        } => {
-            *card_ident_used.borrow_mut() = Some(card_ident.to_string());
-            let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
-                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            // Pin is `Zeroizing<Vec<u8>>`; the source bytes get copied
-            // into a zeroizing Vec, then `pin` (the `Zeroizing<String>`)
-            // moves into `last_secret`.
-            let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
-            *last_secret.borrow_mut() = Some(pin);
-            Ok(Secret::Pin(pin_bytes))
-        }
-        SecretRequest::KeyPassphrase { key_info } => {
-            let pass: Passphrase = prompt_key_passphrase(key_info)
-                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            // `Passphrase` is `Zeroizing<String>`; cloning produces
-            // another zeroizing copy (no plaintext leak).
-            *last_secret.borrow_mut() = Some(pass.clone());
-            Ok(Secret::Passphrase(pass))
-        }
-    });
+    let result =
+        libtumpa_sign_detached_with_hash(&key_data, &key_info, &buffer, hash_preference, |req| {
+            match req {
+                SecretRequest::CardPin {
+                    card_ident,
+                    key_info,
+                } => {
+                    *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+                    let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
+                        .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+                    // Pin is `Zeroizing<Vec<u8>>`; the source bytes get copied
+                    // into a zeroizing Vec, then `pin` (the `Zeroizing<String>`)
+                    // moves into `last_secret`.
+                    let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
+                    *last_secret.borrow_mut() = Some(pin);
+                    Ok(Secret::Pin(pin_bytes))
+                }
+                SecretRequest::KeyPassphrase { key_info } => {
+                    let pass: Passphrase = prompt_key_passphrase(key_info)
+                        .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+                    // `Passphrase` is `Zeroizing<String>`; cloning produces
+                    // another zeroizing copy (no plaintext leak).
+                    *last_secret.borrow_mut() = Some(pass.clone());
+                    Ok(Secret::Passphrase(pass))
+                }
+            }
+        });
 
     let sign_result = match result {
         Ok(ok) => {
@@ -245,10 +244,9 @@ fn backend_secret_kind(backend: &SignBackend) -> SecretKind {
 /// Sign data from stdin and write a cleartext-signed message
 /// (`-----BEGIN PGP SIGNED MESSAGE-----`) to stdout.
 ///
-/// Software-key only — the underlying libtumpa primitive doesn't yet
-/// support cleartext signing on a card. If the resolved signer has only
-/// card-backed secret material, the call fails with the libtumpa
-/// "card-only keys are not supported" error.
+/// Card-first dispatch via `libtumpa::sign::sign_cleartext`: a connected
+/// OpenPGP card whose signing slot matches the resolved signer is used
+/// before falling back to a software secret key with passphrase.
 pub fn clearsign(
     mut data: impl Read,
     mut out: impl Write,
@@ -266,38 +264,75 @@ pub fn clearsign(
     let (key_data, key_info) = store::resolve_signer(&keystore, signer_id)?;
     store::ensure_key_usable_for_signing(&key_info)?;
 
-    if !key_info.is_secret {
-        return Err(anyhow!(
-            "cleartext signing requires a software secret key for {}; \
-             card-only keys are not supported — use --detach-sign instead",
-            key_info.fingerprint
-        ));
+    let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
+    let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
+
+    let result = libtumpa_sign_cleartext(&key_data, &key_info, &buffer, |req| match req {
+        SecretRequest::CardPin {
+            card_ident,
+            key_info,
+        } => {
+            *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+            let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
+                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
+            *last_secret.borrow_mut() = Some(pin);
+            Ok(Secret::Pin(pin_bytes))
+        }
+        SecretRequest::KeyPassphrase { key_info } => {
+            let pass: Passphrase = prompt_key_passphrase(key_info)
+                .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            *last_secret.borrow_mut() = Some(pass.clone());
+            Ok(Secret::Passphrase(pass))
+        }
+    });
+
+    let (signed, backend) = match result {
+        Ok((bytes, backend)) => {
+            if let Some(secret) = last_secret.borrow().as_ref() {
+                match backend_secret_kind(&backend) {
+                    SecretKind::Pin => pinentry::cache_pin(&key_info.fingerprint, secret),
+                    SecretKind::Passphrase => {
+                        pinentry::cache_passphrase(&key_info.fingerprint, secret)
+                    }
+                }
+            }
+            (bytes, backend)
+        }
+        Err(e) => {
+            pinentry::clear_all_cached_secrets(&key_info.fingerprint);
+            return Err(anyhow!("{e}")).context("cleartext sign failed");
+        }
+    };
+
+    match backend {
+        SignBackend::Card => {
+            let ident = card_ident_used
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string());
+            writeln!(
+                err,
+                "tcli: Cleartext-signed with card {} key {}",
+                ident, key_info.fingerprint
+            )?;
+        }
+        SignBackend::Software => {
+            writeln!(
+                err,
+                "tcli: Cleartext-signed with software key {}",
+                key_info.fingerprint
+            )?;
+        }
     }
-
-    let passphrase: Passphrase = prompt_key_passphrase(&key_info)
-        .map_err(|e| anyhow!("pinentry: {e}"))?;
-
-    let signed = sign_cleartext_with_key(&key_data, &buffer, &passphrase)
-        .map_err(|e| {
-            pinentry::clear_cached_passphrase(&key_info.fingerprint);
-            anyhow!("{e}")
-        })
-        .context("cleartext sign failed")?;
-    pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
-
-    writeln!(
-        err,
-        "tcli: Cleartext-signed with software key {}",
-        key_info.fingerprint
-    )?;
     out.write_all(&signed)
         .context("Failed to write cleartext-signed message to stdout")?;
 
-    // Cleartext sigs always use SHA256 for our default keys (see the
-    // libtumpa::sign tests). Emit a plausible SIG_CREATED line — the
-    // hash is hard-coded since we don't get it back from the
-    // wecanencrypt cleartext path. PGP/MIME doesn't use cleartext sigs
-    // anyway, so this is mostly informational.
+    // Cleartext sigs use the hash the signing key's params imply (SHA256
+    // for our default Ed25519 / RSA keys, larger for ECDSA P-384/P-521).
+    // We don't get the actual hash back from the cleartext path, so emit
+    // an informational SIG_CREATED line keyed to SHA256 — git-on-PGP/MIME
+    // callers don't consume cleartext-sig status anyway.
     writeln!(
         err,
         "\n[GNUPG:] SIG_CREATED C 0 8 00 0 {}",
@@ -339,8 +374,8 @@ pub fn sign_inline(
         ));
     }
 
-    let passphrase: Passphrase = prompt_key_passphrase(&key_info)
-        .map_err(|e| anyhow!("pinentry: {e}"))?;
+    let passphrase: Passphrase =
+        prompt_key_passphrase(&key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
 
     let signed = wecanencrypt::sign_bytes(&key_data, &buffer, passphrase.as_str())
         .map_err(|e| {

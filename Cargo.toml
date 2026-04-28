@@ -73,7 +73,11 @@ sha2 = "0.10"
 p256 = "0.13"
 p384 = "0.13"
 p521 = "0.13"
+# `KeyInfo::expiration_time` is `Option<chrono::DateTime<chrono::Utc>>`,
+# and the `--list-keys --with-colons` validity computation needs to
+# compare it against `Utc::now()`. Promoted from dev-deps so production
+# code can call `Utc::now()`.
+chrono = "0.4"
 
 [dev-dependencies]
-chrono = "0.4"
 tempfile = "3"
