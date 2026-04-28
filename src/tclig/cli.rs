@@ -268,9 +268,24 @@ impl TryFrom<Args> for Mode {
             // sign+encrypt would change the output format the
             // user explicitly asked for.
             if value.clearsign {
-                return Err("--clearsign cannot be combined with --encrypt; \
+                return Err(
+                    "--clearsign cannot be combined with --encrypt; \
                      use --sign for sign-then-encrypt"
-                    .into());
+                        .into(),
+                );
+            }
+            // --digest-algo only locks the digest for the detached
+            // signing path; in --encrypt mode there is no detached
+            // signature to attach a `micalg` to, so the flag has no
+            // meaning. Silently ignoring it would mislead PGP/MIME
+            // callers that include it as a default — better to fail
+            // loudly so the caller drops the flag.
+            if value.digest_algo.is_some() {
+                return Err(
+                    "--digest-algo is not supported with --encrypt; \
+                     it only locks the digest for detached signatures (-b)"
+                        .into(),
+                );
             }
             let output = value.output.ok_or("Encryption requires -o/--output")?;
             let input = value.input_files.first().map(PathBuf::from);
@@ -314,6 +329,21 @@ impl TryFrom<Args> for Mode {
             });
         }
 
+        // --verify-decrypt without --decrypt is a usage error: the
+        // flag is a *modifier* on the decrypt path that asks for the
+        // inner signature to be verified at the same time. Without
+        // --decrypt we'd otherwise fall through to Mode::None (help),
+        // which silently swallows the user's request. Implicitly
+        // turning on --decrypt would risk confusion with --verify
+        // (the detached path), so we reject loudly instead.
+        if value.verify_decrypt {
+            return Err(
+                "--verify-decrypt requires --decrypt; \
+                 use --verify for detached-signature verification"
+                    .into(),
+            );
+        }
+
         // --verify
         if let Some(signature) = value.verify {
             return Ok(Mode::Verify {
@@ -344,7 +374,9 @@ impl TryFrom<Args> for Mode {
             // be a silent no-op, which is exactly the trap a GPG
             // drop-in must avoid.
             if value.digest_algo.is_some() && shape != SignShape::Detached {
-                return Err("--digest-algo is only supported for detached signatures (-b)".into());
+                return Err(
+                    "--digest-algo is only supported for detached signatures (-b)".into(),
+                );
             }
             return Ok(Mode::Sign {
                 signer_id,
@@ -505,6 +537,48 @@ mod tests {
         );
     }
 
+    /// `--digest-algo` is also meaningless with `--encrypt`: there
+    /// is no detached signature to attach a `micalg` to. PGP/MIME
+    /// callers shouldn't pass it, but if they do we fail loudly.
+    #[test]
+    fn digest_algo_with_encrypt_is_rejected() {
+        let result = mode_from_args(&[
+            "tclig",
+            "--encrypt",
+            "--digest-algo",
+            "SHA512",
+            "-r",
+            "alice@example.com",
+            "-o",
+            "/tmp/out.asc",
+        ]);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error, got Ok(Mode::...)"),
+        };
+        assert!(
+            err.to_lowercase().contains("digest-algo"),
+            "error must mention --digest-algo, got: {err}"
+        );
+    }
+
+    /// `--verify-decrypt` is a modifier on `--decrypt`; standalone
+    /// it would silently fall through to help. Reject loudly so the
+    /// user sees their typo (likely meant `--verify` or forgot
+    /// `--decrypt`).
+    #[test]
+    fn verify_decrypt_without_decrypt_is_rejected() {
+        let result = mode_from_args(&["tclig", "--verify-decrypt"]);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error, got Ok(Mode::...)"),
+        };
+        assert!(
+            err.to_lowercase().contains("verify-decrypt"),
+            "error must mention --verify-decrypt, got: {err}"
+        );
+    }
+
     /// `--digest-algo` only locks `micalg` for the detached path
     /// (PGP/MIME multipart/signed). Accepting it for `--clearsign`
     /// or `--sign` (inline-opaque) would silently no-op and mislead
@@ -560,7 +634,9 @@ mod tests {
         .unwrap();
         match m {
             Mode::Sign {
-                shape, digest_algo, ..
+                shape,
+                digest_algo,
+                ..
             } => {
                 assert_eq!(shape, SignShape::Detached);
                 assert_eq!(digest_algo.as_deref(), Some("SHA512"));

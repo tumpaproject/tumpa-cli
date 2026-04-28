@@ -452,7 +452,8 @@ mod tests {
         // signature was produced by Alice. This is the property that
         // distinguishes sign+encrypt from encrypt-only.
         let ciphertext = std::fs::read(&out_path).unwrap();
-        let bob_passphrase: libtumpa::Passphrase = zeroize::Zeroizing::new("pw".to_string());
+        let bob_passphrase: libtumpa::Passphrase =
+            zeroize::Zeroizing::new("pw".to_string());
         let store = wecanencrypt::KeyStore::open(&ks_path).unwrap();
         let result = libtumpa::decrypt::decrypt_and_verify_with_key(
             &store,
@@ -463,18 +464,35 @@ mod tests {
         .expect("decrypt+verify should succeed for sign+encrypt output");
 
         assert_eq!(
-            &*result.plaintext, b"hello over signed channel",
+            &*result.plaintext,
+            b"hello over signed channel",
             "round-tripped plaintext mismatch"
         );
         match result.outcome {
             libtumpa::decrypt::DecryptVerifyOutcome::Good {
+                key_info,
                 verifier_fingerprint,
-                ..
             } => {
+                // `key_info.fingerprint` is the primary cert
+                // fingerprint; `verifier_fingerprint` is the actual
+                // signing key, which for keys produced by
+                // `create_key_simple` is a *signing subkey* — those
+                // two values are not equal in general. Pin the
+                // primary, since that's what identifies the signer
+                // to a human / to the keystore.
                 assert_eq!(
-                    verifier_fingerprint.to_uppercase(),
+                    key_info.fingerprint.to_uppercase(),
                     alice.fingerprint.to_uppercase(),
-                    "inner signature must verify against Alice"
+                    "inner signature must resolve to Alice's primary cert"
+                );
+                // Sanity: the verifier fingerprint is some 40-char
+                // hex value (either the primary or one of Alice's
+                // signing subkeys). We don't pin which, only that
+                // it's well-formed.
+                assert_eq!(verifier_fingerprint.len(), 40, "got {verifier_fingerprint}");
+                assert!(
+                    verifier_fingerprint.chars().all(|c| c.is_ascii_hexdigit()),
+                    "got {verifier_fingerprint}"
                 );
             }
             other => panic!("expected Good signature outcome, got {other:?}"),

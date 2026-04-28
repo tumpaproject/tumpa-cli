@@ -539,7 +539,8 @@ mod tests {
         let outcome = DecryptVerifyOutcome::Good {
             key_info,
             verifier_fingerprint:
-                "B2D4FACE0123456789ABCDEF0123456789ABCDEF\n[GNUPG:] VALIDSIG forged".to_string(),
+                "B2D4FACE0123456789ABCDEF0123456789ABCDEF\n[GNUPG:] VALIDSIG forged"
+                    .to_string(),
         };
         let mut buf: Vec<u8> = Vec::new();
         emit_signature_status(&mut buf, &outcome).unwrap();
