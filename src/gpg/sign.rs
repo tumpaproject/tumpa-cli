@@ -5,26 +5,58 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use zeroize::Zeroizing;
 
-use libtumpa::sign::{sign_detached as libtumpa_sign_detached, Secret, SecretRequest, SignBackend};
-use libtumpa::{Passphrase, Pin};
+use libtumpa::sign::{
+    parse_digest_algo, sign_cleartext_with_key, sign_detached_with_hash as libtumpa_sign_detached_with_hash,
+    Secret, SecretRequest, SignBackend,
+};
+use libtumpa::{HashAlgorithm, Passphrase, Pin};
 
 use crate::pinentry;
 use crate::store;
 
+/// Map a `HashAlgorithm` to the GnuPG numeric ID used in `[GNUPG:]
+/// SIG_CREATED` status lines (RFC 4880 §9.4).
+fn gpg_hash_algo_id(alg: HashAlgorithm) -> u8 {
+    match alg {
+        HashAlgorithm::Sha256 => 8,
+        HashAlgorithm::Sha384 => 9,
+        HashAlgorithm::Sha512 => 10,
+        HashAlgorithm::Sha224 => 11,
+        HashAlgorithm::Sha3_256 => 12,
+        HashAlgorithm::Sha3_512 => 14,
+        HashAlgorithm::Md5 => 1,
+        HashAlgorithm::Sha1 => 2,
+        HashAlgorithm::Ripemd160 => 3,
+        _ => 0,
+    }
+}
+
 /// Sign data from stdin and write detached signature to stdout.
 ///
 /// Delegates the card-first / software-fallback dispatch to
-/// `libtumpa::sign::sign_detached`. Pinentry / passphrase / PIN acquisition
-/// stays here; libtumpa never prompts.
+/// `libtumpa::sign::sign_detached_with_hash`. Pinentry / passphrase / PIN
+/// acquisition stays here; libtumpa never prompts.
 pub fn sign(
     mut data: impl Read,
     mut out: impl Write,
     mut err: impl Write,
     signer_id: &str,
     _armor: bool,
+    digest_algo: Option<&str>,
     keystore_path: Option<&PathBuf>,
 ) -> Result<()> {
-    log::info!("sign called for signer_id: {}", signer_id);
+    log::info!(
+        "sign called for signer_id: {} digest_algo: {:?}",
+        signer_id,
+        digest_algo
+    );
+
+    // Parse --digest-algo up front so an invalid value fails before we
+    // consume stdin / prompt for a passphrase.
+    let hash_preference = match digest_algo {
+        Some(s) => Some(parse_digest_algo(s).map_err(|e| anyhow!("{e}"))?),
+        None => None,
+    };
 
     // Read all data from stdin
     let mut buffer = Vec::new();
@@ -52,7 +84,12 @@ pub fn sign(
     // drop.
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
-    let result = libtumpa_sign_detached(&key_data, &key_info, &buffer, |req| match req {
+    let result = libtumpa_sign_detached_with_hash(
+        &key_data,
+        &key_info,
+        &buffer,
+        hash_preference,
+        |req| match req {
         SecretRequest::CardPin {
             card_ident,
             key_info,
@@ -77,10 +114,10 @@ pub fn sign(
         }
     });
 
-    let (signature, backend) = match result {
+    let sign_result = match result {
         Ok(ok) => {
             if let Some(secret) = last_secret.borrow().as_ref() {
-                match backend_secret_kind(&ok.1) {
+                match backend_secret_kind(&ok.backend) {
                     SecretKind::Pin => pinentry::cache_pin(&key_info.fingerprint, secret),
                     SecretKind::Passphrase => {
                         pinentry::cache_passphrase(&key_info.fingerprint, secret)
@@ -95,7 +132,7 @@ pub fn sign(
         }
     };
 
-    match backend {
+    match sign_result.backend {
         SignBackend::Card => {
             let ident = card_ident_used
                 .borrow()
@@ -117,12 +154,24 @@ pub fn sign(
     }
 
     // Write signature to stdout
-    out.write_all(signature.as_bytes())
+    out.write_all(sign_result.armored.as_bytes())
         .context("Failed to write signature to stdout")?;
 
-    // Git checks for this status line on stderr
+    // Git checks the SIG_CREATED line prefix on stderr; the historic
+    // tclig form was `[GNUPG:] SIG_CREATED ` (no fields).
     // https://github.com/git/git/blob/11c821f2f2a31e70fb5cc449f9a29401c333aad2/gpg-interface.c#L994
-    writeln!(err, "\n[GNUPG:] SIG_CREATED ")?;
+    //
+    // GnuPG's documented field layout is:
+    //   SIG_CREATED <type> <pk_algo> <hash_algo> <class> <timestamp> <fpr>
+    // We fill <hash_algo> from libtumpa so PGP/MIME callers can read the
+    // line on status-fd to learn what hash to put in `micalg`. Other
+    // fields stay empty/zero — git only requires the prefix.
+    let hash_id = gpg_hash_algo_id(sign_result.hash_algorithm);
+    writeln!(
+        err,
+        "\n[GNUPG:] SIG_CREATED D 0 {hash_id} 00 0 {}",
+        key_info.fingerprint
+    )?;
 
     Ok(())
 }
@@ -190,5 +239,149 @@ fn backend_secret_kind(backend: &SignBackend) -> SecretKind {
     match backend {
         SignBackend::Card => SecretKind::Pin,
         SignBackend::Software => SecretKind::Passphrase,
+    }
+}
+
+/// Sign data from stdin and write a cleartext-signed message
+/// (`-----BEGIN PGP SIGNED MESSAGE-----`) to stdout.
+///
+/// Software-key only — the underlying libtumpa primitive doesn't yet
+/// support cleartext signing on a card. If the resolved signer has only
+/// card-backed secret material, the call fails with the libtumpa
+/// "card-only keys are not supported" error.
+pub fn clearsign(
+    mut data: impl Read,
+    mut out: impl Write,
+    mut err: impl Write,
+    signer_id: &str,
+    keystore_path: Option<&PathBuf>,
+) -> Result<()> {
+    log::info!("clearsign called for signer_id: {}", signer_id);
+
+    let mut buffer = Vec::new();
+    data.read_to_end(&mut buffer)
+        .context("Failed to read data from stdin")?;
+
+    let keystore = store::open_keystore(keystore_path)?;
+    let (key_data, key_info) = store::resolve_signer(&keystore, signer_id)?;
+    store::ensure_key_usable_for_signing(&key_info)?;
+
+    if !key_info.is_secret {
+        return Err(anyhow!(
+            "cleartext signing requires a software secret key for {}; \
+             card-only keys are not supported — use --detach-sign instead",
+            key_info.fingerprint
+        ));
+    }
+
+    let passphrase: Passphrase = prompt_key_passphrase(&key_info)
+        .map_err(|e| anyhow!("pinentry: {e}"))?;
+
+    let signed = sign_cleartext_with_key(&key_data, &buffer, &passphrase)
+        .map_err(|e| {
+            pinentry::clear_cached_passphrase(&key_info.fingerprint);
+            anyhow!("{e}")
+        })
+        .context("cleartext sign failed")?;
+    pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+
+    writeln!(
+        err,
+        "tcli: Cleartext-signed with software key {}",
+        key_info.fingerprint
+    )?;
+    out.write_all(&signed)
+        .context("Failed to write cleartext-signed message to stdout")?;
+
+    // Cleartext sigs always use SHA256 for our default keys (see the
+    // libtumpa::sign tests). Emit a plausible SIG_CREATED line — the
+    // hash is hard-coded since we don't get it back from the
+    // wecanencrypt cleartext path. PGP/MIME doesn't use cleartext sigs
+    // anyway, so this is mostly informational.
+    writeln!(
+        err,
+        "\n[GNUPG:] SIG_CREATED C 0 8 00 0 {}",
+        key_info.fingerprint
+    )?;
+
+    Ok(())
+}
+
+/// Sign data from stdin and write an inline opaque signed message
+/// (`gpg --sign` shape) to stdout.
+///
+/// Software-key only, same constraint as [`clearsign`]. The output is
+/// an OpenPGP message containing one-pass-signature + literal +
+/// signature packets; the recipient runs `tclig --decrypt --verify` to
+/// recover the original bytes plus signer identity.
+pub fn sign_inline(
+    mut data: impl Read,
+    mut out: impl Write,
+    mut err: impl Write,
+    signer_id: &str,
+    keystore_path: Option<&PathBuf>,
+) -> Result<()> {
+    log::info!("sign_inline called for signer_id: {}", signer_id);
+
+    let mut buffer = Vec::new();
+    data.read_to_end(&mut buffer)
+        .context("Failed to read data from stdin")?;
+
+    let keystore = store::open_keystore(keystore_path)?;
+    let (key_data, key_info) = store::resolve_signer(&keystore, signer_id)?;
+    store::ensure_key_usable_for_signing(&key_info)?;
+
+    if !key_info.is_secret {
+        return Err(anyhow!(
+            "inline signing requires a software secret key for {}; \
+             card-only keys are not supported — use --detach-sign instead",
+            key_info.fingerprint
+        ));
+    }
+
+    let passphrase: Passphrase = prompt_key_passphrase(&key_info)
+        .map_err(|e| anyhow!("pinentry: {e}"))?;
+
+    let signed = wecanencrypt::sign_bytes(&key_data, &buffer, passphrase.as_str())
+        .map_err(|e| {
+            pinentry::clear_cached_passphrase(&key_info.fingerprint);
+            anyhow!("{e}")
+        })
+        .context("inline sign failed")?;
+    pinentry::cache_passphrase(&key_info.fingerprint, &passphrase);
+
+    writeln!(
+        err,
+        "tcli: Inline-signed with software key {}",
+        key_info.fingerprint
+    )?;
+    out.write_all(&signed)
+        .context("Failed to write inline-signed message to stdout")?;
+    writeln!(
+        err,
+        "\n[GNUPG:] SIG_CREATED S 0 8 00 0 {}",
+        key_info.fingerprint
+    )?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SIG_CREATED status lines must use GnuPG's RFC 4880 §9.4 hash IDs.
+    /// PGP/MIME callers parse `<hash_algo>` to derive the `micalg`
+    /// parameter; a wrong number here means clients reject the
+    /// `multipart/signed` mail as malformed.
+    #[test]
+    fn gpg_hash_algo_id_matches_rfc4880() {
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha256), 8);
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha384), 9);
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha512), 10);
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha224), 11);
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Md5), 1);
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha1), 2);
+        assert_eq!(gpg_hash_algo_id(HashAlgorithm::Ripemd160), 3);
     }
 }
