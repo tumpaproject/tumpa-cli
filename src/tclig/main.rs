@@ -15,14 +15,36 @@ fn main() {
     let keystore_path = args.keystore.clone();
 
     let res = match Mode::try_from(args) {
-        Ok(Mode::Sign { signer_id, armor }) => gpg::sign::sign(
-            stdin(),
-            stdout(),
-            stderr(),
-            &signer_id,
+        Ok(Mode::Sign {
+            signer_id,
             armor,
-            keystore_path.as_ref(),
-        ),
+            digest_algo,
+            shape,
+        }) => match shape {
+            SignShape::Detached => gpg::sign::sign(
+                stdin(),
+                stdout(),
+                stderr(),
+                &signer_id,
+                armor,
+                digest_algo.as_deref(),
+                keystore_path.as_ref(),
+            ),
+            SignShape::Cleartext => gpg::sign::clearsign(
+                stdin(),
+                stdout(),
+                stderr(),
+                &signer_id,
+                keystore_path.as_ref(),
+            ),
+            SignShape::InlineOpaque => gpg::sign::sign_inline(
+                stdin(),
+                stdout(),
+                stderr(),
+                &signer_id,
+                keystore_path.as_ref(),
+            ),
+        },
         Ok(Mode::Verify { signature_file }) => gpg::verify::verify(
             stdin(),
             stdout(),
@@ -35,15 +57,30 @@ fn main() {
             output,
             input,
             armor,
+            signer_id,
         }) => gpg::encrypt::encrypt(
             input.as_ref(),
             &output,
             &recipients,
             armor,
+            signer_id.as_deref(),
             keystore_path.as_ref(),
         ),
-        Ok(Mode::Decrypt { input, output }) => {
-            gpg::decrypt::decrypt(&input, output.as_ref(), keystore_path.as_ref())
+        Ok(Mode::Decrypt {
+            input,
+            output,
+            verify,
+        }) => {
+            if verify {
+                gpg::decrypt::decrypt_and_verify(
+                    &input,
+                    output.as_ref(),
+                    keystore_path.as_ref(),
+                    stderr(),
+                )
+            } else {
+                gpg::decrypt::decrypt(&input, output.as_ref(), keystore_path.as_ref())
+            }
         }
         Ok(Mode::DecryptListOnly { input }) => {
             gpg::decrypt::decrypt_list_only(&input, keystore_path.as_ref())
