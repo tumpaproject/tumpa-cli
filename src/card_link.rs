@@ -9,12 +9,13 @@
 //! to find the card holding a given key, so without them `ssh-add -L`
 //! returns no card-backed identities even when the card is plugged in.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use libtumpa::card::link::{self, CardKeyDetection};
 use wecanencrypt::card::{get_card_details, CardInfo, KeySlot};
+use wecanencrypt::keystore::StoredCardKey;
 
 use crate::store;
 
@@ -29,6 +30,78 @@ fn slot_str(slot: KeySlot) -> &'static str {
         KeySlot::Encryption => "encryption",
         KeySlot::Authentication => "authentication",
     }
+}
+
+/// Canonical print order for slot labels: signature, encryption,
+/// authentication. Matches `tcli card status` and the OpenPGP card
+/// data-object order.
+fn slot_rank(slot: &str) -> u8 {
+    match slot {
+        "signature" => 0,
+        "encryption" => 1,
+        "authentication" => 2,
+        _ => 99,
+    }
+}
+
+/// Single-letter slot tag used in the `[S E A]` summary on `tcli describe`.
+fn slot_tag(slot: &str) -> &'static str {
+    match slot {
+        "signature" => "S",
+        "encryption" => "E",
+        "authentication" => "A",
+        _ => "?",
+    }
+}
+
+/// Render the "Cards holding this key" footer for `tcli describe`.
+///
+/// Returns an empty Vec if `assocs` is empty (callers shouldn't print a
+/// header in that case). One key may live on multiple cards (e.g.
+/// signing on YubiKey, auth on Nitrokey, or the same key replicated
+/// across two backups), so cards are grouped per `card_ident` and the
+/// slot tags compressed into a single bracketed list per card.
+///
+/// Indentation matches `print_key_info`'s 5-space label gutter.
+pub fn render_card_links_for_key(assocs: &[StoredCardKey]) -> Vec<String> {
+    if assocs.is_empty() {
+        return Vec::new();
+    }
+
+    // Group by card_ident, preserving the manufacturer/serial of the
+    // first row seen for each card (these are identical across rows
+    // for the same ident — the same card row gets the same metadata
+    // every time `auto_link_after_upload` writes it).
+    let mut by_card: BTreeMap<String, (Option<String>, String, Vec<String>)> = BTreeMap::new();
+    for a in assocs {
+        let entry = by_card.entry(a.card_ident.clone()).or_insert_with(|| {
+            (
+                a.card_manufacturer.clone(),
+                a.card_serial.clone(),
+                Vec::new(),
+            )
+        });
+        if !entry.2.contains(&a.slot) {
+            entry.2.push(a.slot.clone());
+        }
+    }
+
+    let mut out = Vec::with_capacity(by_card.len() + 1);
+    out.push("     Cards:".to_string());
+    for (ident, (mfg, serial, mut slots)) in by_card {
+        slots.sort_by_key(|s| slot_rank(s));
+        let tags = slots
+            .iter()
+            .map(|s| slot_tag(s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mfg_str = mfg.as_deref().unwrap_or("Unknown");
+        out.push(format!(
+            "       {}  {} ({})  [{}]",
+            ident, mfg_str, serial, tags
+        ));
+    }
+    out
 }
 
 pub fn cmd_card_link(
@@ -138,9 +211,21 @@ fn apply_links(
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_detections, slot_str};
+    use super::{filter_detections, render_card_links_for_key, slot_str};
     use libtumpa::card::link::CardKeyDetection;
     use wecanencrypt::card::{CardSummary, KeySlot};
+    use wecanencrypt::keystore::StoredCardKey;
+
+    fn assoc(card_ident: &str, mfg: Option<&str>, serial: &str, slot: &str) -> StoredCardKey {
+        StoredCardKey {
+            card_ident: card_ident.to_string(),
+            card_serial: serial.to_string(),
+            card_manufacturer: mfg.map(str::to_string),
+            slot: slot.to_string(),
+            slot_fingerprint: format!("SLOTFP:{card_ident}:{slot}"),
+            last_seen: "2026-04-29T00:00:00Z".to_string(),
+        }
+    }
 
     fn detection(card_ident: &str, slot: KeySlot, key_fp: &str) -> CardKeyDetection {
         CardKeyDetection {
@@ -197,5 +282,130 @@ mod tests {
         let xs = vec![detection("000F:AAA", KeySlot::Authentication, "FP1")];
         let out = filter_detections(xs, Some("DEAD:BEEF")).unwrap();
         assert!(out.is_empty());
+    }
+
+    // ---- render_card_links_for_key ----
+
+    #[test]
+    fn render_empty_assocs_returns_empty() {
+        assert!(render_card_links_for_key(&[]).is_empty());
+    }
+
+    #[test]
+    fn render_single_card_single_slot() {
+        let xs = vec![assoc(
+            "000F:CB9A5355",
+            Some("Nitrokey GmbH"),
+            "CB9A5355",
+            "authentication",
+        )];
+        let out = render_card_links_for_key(&xs);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "     Cards:");
+        assert_eq!(
+            out[1],
+            "       000F:CB9A5355  Nitrokey GmbH (CB9A5355)  [A]"
+        );
+    }
+
+    #[test]
+    fn render_single_card_three_slots_sorted_canonical() {
+        // Input order is reversed; render must reorder to S E A.
+        let xs = vec![
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "authentication",
+            ),
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "encryption",
+            ),
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "signature",
+            ),
+        ];
+        let out = render_card_links_for_key(&xs);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out[1],
+            "       000F:CB9A5355  Nitrokey GmbH (CB9A5355)  [S E A]"
+        );
+    }
+
+    // Pins option-2 motivation from the design discussion: one key
+    // can live on multiple cards (e.g. signing on YubiKey, auth on
+    // Nitrokey, or the same key replicated across two backups).
+    // Render must group per-card and emit one line per `card_ident`.
+    #[test]
+    fn render_multiple_cards_grouped_by_ident() {
+        let xs = vec![
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "authentication",
+            ),
+            assoc("0006:00000001", Some("Yubico"), "00000001", "signature"),
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "encryption",
+            ),
+        ];
+        let out = render_card_links_for_key(&xs);
+        // header + 2 card lines (Yubico sorts before Nitrokey by
+        // BTreeMap on the card_ident key string).
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], "     Cards:");
+        assert!(
+            out[1].contains("0006:00000001") && out[1].ends_with("[S]"),
+            "got: {}",
+            out[1]
+        );
+        assert!(
+            out[2].contains("000F:CB9A5355") && out[2].ends_with("[E A]"),
+            "got: {}",
+            out[2]
+        );
+    }
+
+    #[test]
+    fn render_unknown_manufacturer_falls_back_to_unknown() {
+        let xs = vec![assoc("FFFF:DEADBEEF", None, "DEADBEEF", "signature")];
+        let out = render_card_links_for_key(&xs);
+        assert_eq!(out[1], "       FFFF:DEADBEEF  Unknown (DEADBEEF)  [S]");
+    }
+
+    #[test]
+    fn render_dedupes_duplicate_slot_rows_per_card() {
+        // Defensive: if two rows ever share (card_ident, slot) the
+        // tag list still has each letter once.
+        let xs = vec![
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "authentication",
+            ),
+            assoc(
+                "000F:CB9A5355",
+                Some("Nitrokey GmbH"),
+                "CB9A5355",
+                "authentication",
+            ),
+        ];
+        let out = render_card_links_for_key(&xs);
+        // Check the bracketed tag specifically, not the whole line —
+        // serial "CB9A5355" already contains 'A'.
+        assert!(out[1].ends_with("[A]"), "got: {}", out[1]);
+        assert!(!out[1].contains("[A A]"));
     }
 }

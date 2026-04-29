@@ -389,6 +389,16 @@ pub fn cmd_info(key_id: &str, keystore_path: Option<&PathBuf>) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
     let (key_data, key_info) = store::resolve_signer(&keystore, key_id)?;
     print_key_info(&key_data, &key_info);
+
+    // Append "Cards:" footer with every card linked to this cert. Empty
+    // and silently skipped when the key isn't on any card. Read-only:
+    // looks at `card_keys` rows, never probes PCSC.
+    let assocs = libtumpa::card::link::card_associations(&keystore, &key_info.fingerprint)
+        .unwrap_or_default();
+    for line in crate::card_link::render_card_links_for_key(&assocs) {
+        println!("{line}");
+    }
+
     Ok(())
 }
 

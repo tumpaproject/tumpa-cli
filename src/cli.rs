@@ -114,7 +114,7 @@ pub enum Command {
         binary: bool,
     },
 
-    /// Create an inline (cleartext) signature.
+    /// Create an inline (cleartext) signature. Software keys only.
     SignInline {
         /// Input file. Use `-` for stdin (then `-o`/`--output` is required).
         #[clap(value_name = "FILE")]

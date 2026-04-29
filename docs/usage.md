@@ -1293,6 +1293,35 @@ Card PINs are prompted via pinentry, the same way as software key
 passphrases. Set `TUMPA_PASSPHRASE` for non-interactive card PIN
 entry (e.g., in CI).
 
+### Seeing which cards hold a key
+
+`tcli describe <FINGERPRINT>` appends a `Cards:` block when one or
+more cards are linked to the cert. One key may live on multiple cards
+at once (e.g. a backup card, or signing on YubiKey + auth on Nitrokey
+in the same cert), so cards are grouped per ident with a compact
+`[S E A]` slot tag (signature, encryption, authentication):
+
+```
+sec  ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD  ed25519  [sign, certify]
+     Created:  2024-01-01 12:00:00 UTC
+     Expires:  2026-01-01 12:00:00 UTC
+     UIDs:
+       [primary] Alice <alice@example.com>
+     Subkeys:
+       12121212...  cv25519       [encryption]
+                 Created:  2024-01-01 12:00:00 UTC
+       EFEFEFEF...  ed25519       [authentication]
+                 Created:  2024-01-01 12:00:00 UTC
+     Cards:
+       000F:CB9A5355  Nitrokey GmbH (CB9A5355)  [S E A]
+       0006:00000001  Yubico (00000001)         [S]
+```
+
+The block is sourced from the `card_keys` table — read-only, no PCSC
+probe, no PIN prompt. If you don't see a `Cards:` block when you
+expect one, the link is missing; run [`tcli card
+link`](#linking-a-card-to-a-keystore-key) to repair it.
+
 ### Linking a card to a keystore key
 
 When you upload a key to a card, tumpa records a row in the keystore's
