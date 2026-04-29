@@ -149,6 +149,10 @@ pub enum Command {
     #[clap(subcommand)]
     Card(CardCommand),
 
+    /// Manage the running agent's in-memory credential cache.
+    #[clap(subcommand)]
+    Cache(CacheCommand),
+
     /// Print an agent socket path. Default `gpg`; pass `ssh` for the SSH socket.
     Socket {
         /// Which socket to print.
@@ -247,6 +251,20 @@ pub enum CardCommand {
         /// Skip confirmation prompt.
         #[clap(short = 'y', long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CacheCommand {
+    /// Drop cached credentials from the running agent.
+    ///
+    /// With no argument, every entry is cleared. With a fingerprint
+    /// (40 or 16 hex chars), only that key's cached passphrase and PIN
+    /// are dropped. The agent must be running.
+    Clear {
+        /// Optional fingerprint or key ID. Omit to clear every entry.
+        #[clap(value_name = "FINGERPRINT_OR_KEYID")]
+        target: Option<String>,
     },
 }
 
@@ -351,6 +369,9 @@ pub enum Mode {
         input: PathBuf,
         signature: Option<PathBuf>,
         with_key_file: Option<PathBuf>,
+    },
+    CacheClear {
+        target: Option<String>,
     },
     None,
 }
@@ -471,6 +492,8 @@ fn mode_from_subcommand(cmd: Command) -> Result<Mode, String> {
 
         Command::Card(card) => mode_from_card(card),
 
+        Command::Cache(cache) => mode_from_cache(cache),
+
         Command::Socket { kind } => Ok(Mode::ShowSocket {
             ssh: kind == SocketKind::Ssh,
         }),
@@ -541,6 +564,12 @@ fn mode_from_card(cmd: CardCommand) -> Result<Mode, String> {
             let _ = yes;
             Ok(Mode::ResetCard { card_ident })
         }
+    }
+}
+
+fn mode_from_cache(cmd: CacheCommand) -> Result<Mode, String> {
+    match cmd {
+        CacheCommand::Clear { target } => Ok(Mode::CacheClear { target }),
     }
 }
 
@@ -856,6 +885,33 @@ mod tests {
             parse(&["completions", "zsh"]),
             Ok(Mode::Completions { .. })
         ));
+    }
+
+    // ----- cache -----
+
+    #[test]
+    fn cache_clear_no_args_clears_all() {
+        match parse(&["cache", "clear"]).unwrap() {
+            Mode::CacheClear { target } => assert!(target.is_none()),
+            other => panic!(
+                "expected CacheClear, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn cache_clear_with_fingerprint() {
+        match parse(&["cache", "clear", "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD"]).unwrap() {
+            Mode::CacheClear { target } => assert_eq!(
+                target.as_deref(),
+                Some("ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD")
+            ),
+            other => panic!(
+                "expected CacheClear, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 
     // ----- pre-0.4 flag forms are gone -----

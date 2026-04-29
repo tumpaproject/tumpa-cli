@@ -11,6 +11,9 @@
 //!
 //! Client → Agent:  CLEAR_PASSPHRASE <cache-key>\n
 //! Agent → Client:  OK\n
+//!
+//! Client → Agent:  CLEAR_ALL\n
+//! Agent → Client:  OK\n
 //! ```
 
 use anyhow::{Context, Result};
@@ -49,6 +52,7 @@ pub enum Request {
     Clear {
         cache_key: String,
     },
+    ClearAll,
 }
 
 /// A response from the agent to a client.
@@ -94,6 +98,10 @@ pub fn parse_request(line: &str) -> Option<Request> {
                 cache_key: cache_key.to_string(),
             });
         }
+    }
+
+    if line == "CLEAR_ALL" {
+        return Some(Request::ClearAll);
     }
 
     None
@@ -174,5 +182,17 @@ mod tests {
     fn parse_request_rejects_invalid_namespaced_cache_keys() {
         assert!(parse_request("GET_PASSPHRASE other:0123456789ABCDEF\n").is_none());
         assert!(parse_request("GET_PASSPHRASE pin:not-hex\n").is_none());
+    }
+
+    #[test]
+    fn parse_request_accepts_clear_all() {
+        assert!(matches!(parse_request("CLEAR_ALL\n"), Some(Request::ClearAll)));
+        assert!(matches!(parse_request("CLEAR_ALL"), Some(Request::ClearAll)));
+    }
+
+    #[test]
+    fn parse_request_clear_all_does_not_swallow_garbage_suffix() {
+        // "CLEAR_ALL extra" is not a valid request — the verb takes no argument.
+        assert!(parse_request("CLEAR_ALL extra\n").is_none());
     }
 }

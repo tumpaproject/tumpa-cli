@@ -1024,6 +1024,25 @@ tcli agent --cache-ttl 3600   # 1 hour (default: 1800 = 30 min)
 Cached passphrases expire after the TTL. A background task sweeps
 expired entries every 60 seconds.
 
+### Clearing cached credentials
+
+Drop entries from the running agent without restarting it:
+
+```
+tcli cache clear                # clears every cached passphrase and PIN
+tcli cache clear <FINGERPRINT>  # clears the cached secrets for one key
+```
+
+With no argument, every entry is wiped. With a 40- or 16-hex
+fingerprint, the cached passphrase **and** card PIN tied to that key
+are dropped (so the next signing or decryption operation will re-prompt
+via pinentry). The agent must be running — `tcli cache clear` errors
+out with `Agent socket … does not exist. Start it with \`tcli agent\``
+if it isn't.
+
+Common uses: rotating a key's passphrase, recovering after a wrong PIN,
+or forcing a re-prompt before handing the laptop to someone else.
+
 ### Starting the agent automatically
 
 #### macOS (Launch Agent)
