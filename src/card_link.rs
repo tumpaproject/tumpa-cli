@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use libtumpa::card::link::{self, CardKeyDetection};
 use wecanencrypt::card::{get_card_details, CardInfo, KeySlot};
 use wecanencrypt::keystore::StoredCardKey;
@@ -112,7 +112,6 @@ pub fn cmd_card_link(
     let keystore = store::open_keystore(keystore_path)?;
 
     let detections = link::auto_detect(&keystore)
-        .map_err(|e| anyhow!("{e}"))
         .context("failed to auto-detect card↔key matches")?;
 
     let detections = filter_detections(detections, filter_card_ident)?;
@@ -129,13 +128,18 @@ pub fn cmd_card_link(
         return Ok(());
     }
 
-    print_detections(&detections, dry_run);
-
     if dry_run {
+        // Dry-run prints "Would link: ..." up front and writes nothing.
+        print_detections(&detections, true);
         return Ok(());
     }
 
+    // Write first, then announce. Printing "Linked: ..." up front and
+    // failing partway through `apply_links` would tell the user every
+    // row was written when only a prefix actually was; the post-write
+    // print + summary are honest about what's persisted.
     apply_links(&keystore, &detections)?;
+    print_detections(&detections, false);
     eprintln!(
         "Wrote {} card↔key link{} to the keystore.",
         detections.len(),
@@ -181,7 +185,6 @@ fn apply_links(keystore: &wecanencrypt::KeyStore, detections: &[CardKeyDetection
     for d in detections {
         if !info_cache.contains_key(&d.card_ident) {
             let info = get_card_details(Some(&d.card_ident))
-                .map_err(|e| anyhow!("{e}"))
                 .with_context(|| format!("failed to read card {}", d.card_ident))?;
             info_cache.insert(d.card_ident.clone(), info);
         }
@@ -193,7 +196,6 @@ fn apply_links(keystore: &wecanencrypt::KeyStore, detections: &[CardKeyDetection
             slot_str(d.slot),
             &d.slot_fingerprint,
         )
-        .map_err(|e| anyhow!("{e}"))
         .with_context(|| {
             format!(
                 "failed to write link for card {} slot {} → key {}",

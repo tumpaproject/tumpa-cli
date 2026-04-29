@@ -390,11 +390,20 @@ pub fn cmd_info(key_id: &str, keystore_path: Option<&PathBuf>) -> Result<()> {
     let (key_data, key_info) = store::resolve_signer(&keystore, key_id)?;
     print_key_info(&key_data, &key_info);
 
-    // Append "Cards:" footer with every card linked to this cert. Empty
-    // and silently skipped when the key isn't on any card. Read-only:
-    // looks at `card_keys` rows, never probes PCSC.
+    // Append "Cards:" footer with every card linked to this cert. The
+    // renderer returns an empty Vec (silent skip) when the key isn't
+    // on any card. Read-only: looks at `card_keys` rows, never probes
+    // PCSC. A DB-level failure here (locked SQLite, schema mismatch)
+    // is propagated rather than swallowed — `tcli describe` returning
+    // a misleading "no cards" footer would hide a real keystore
+    // problem.
     let assocs = libtumpa::card::link::card_associations(&keystore, &key_info.fingerprint)
-        .unwrap_or_default();
+        .with_context(|| {
+            format!(
+                "failed to load card associations for key {}",
+                key_info.fingerprint
+            )
+        })?;
     for line in crate::card_link::render_card_links_for_key(&assocs) {
         println!("{line}");
     }
