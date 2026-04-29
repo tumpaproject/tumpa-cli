@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod cache_cmd;
 pub mod cli;
 pub mod gpg;
 pub mod keystore;

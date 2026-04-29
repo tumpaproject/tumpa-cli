@@ -207,6 +207,14 @@ async fn handle_client(
                     cache.remove(&cache_key);
                     protocol::Response::Ok
                 }
+                protocol::Request::ClearAll => {
+                    let mut cache = cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+                    // sweep(0) drops every entry: cutoff = now, no entry's
+                    // stored_at can be strictly greater than now.
+                    let removed = cache.sweep(0);
+                    log::info!("Cache cleared by client: {} entries removed", removed);
+                    protocol::Response::Ok
+                }
             }
         } else {
             protocol::Response::NotFound
