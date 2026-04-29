@@ -173,10 +173,7 @@ fn print_detections(detections: &[CardKeyDetection], dry_run: bool) {
     }
 }
 
-fn apply_links(
-    keystore: &wecanencrypt::KeyStore,
-    detections: &[CardKeyDetection],
-) -> Result<()> {
+fn apply_links(keystore: &wecanencrypt::KeyStore, detections: &[CardKeyDetection]) -> Result<()> {
     // `link::link` wants `&CardInfo`; `auto_detect` only attached the
     // lighter `CardSummary` to each row. Re-fetch CardInfo once per
     // unique ident — typically one PCSC round-trip in practice.

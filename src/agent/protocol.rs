@@ -186,8 +186,14 @@ mod tests {
 
     #[test]
     fn parse_request_accepts_clear_all() {
-        assert!(matches!(parse_request("CLEAR_ALL\n"), Some(Request::ClearAll)));
-        assert!(matches!(parse_request("CLEAR_ALL"), Some(Request::ClearAll)));
+        assert!(matches!(
+            parse_request("CLEAR_ALL\n"),
+            Some(Request::ClearAll)
+        ));
+        assert!(matches!(
+            parse_request("CLEAR_ALL"),
+            Some(Request::ClearAll)
+        ));
     }
 
     #[test]

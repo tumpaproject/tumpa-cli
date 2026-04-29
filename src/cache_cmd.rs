@@ -116,8 +116,12 @@ mod tests {
 
     #[test]
     fn fingerprint_validator_accepts_both_cases_and_lengths() {
-        assert!(is_valid_fingerprint("ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD"));
-        assert!(is_valid_fingerprint("abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"));
+        assert!(is_valid_fingerprint(
+            "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD"
+        ));
+        assert!(is_valid_fingerprint(
+            "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcd"
+        ));
         assert!(is_valid_fingerprint("ABCDABCDABCDABCD"));
         assert!(is_valid_fingerprint("abcdabcdabcdabcd"));
     }
