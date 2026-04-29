@@ -452,8 +452,7 @@ mod tests {
         // signature was produced by Alice. This is the property that
         // distinguishes sign+encrypt from encrypt-only.
         let ciphertext = std::fs::read(&out_path).unwrap();
-        let bob_passphrase: libtumpa::Passphrase =
-            zeroize::Zeroizing::new("pw".to_string());
+        let bob_passphrase: libtumpa::Passphrase = zeroize::Zeroizing::new("pw".to_string());
         let store = wecanencrypt::KeyStore::open(&ks_path).unwrap();
         let result = libtumpa::decrypt::decrypt_and_verify_with_key(
             &store,
@@ -464,8 +463,7 @@ mod tests {
         .expect("decrypt+verify should succeed for sign+encrypt output");
 
         assert_eq!(
-            &*result.plaintext,
-            b"hello over signed channel",
+            &*result.plaintext, b"hello over signed channel",
             "round-tripped plaintext mismatch"
         );
         match result.outcome {

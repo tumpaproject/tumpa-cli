@@ -1293,6 +1293,81 @@ Card PINs are prompted via pinentry, the same way as software key
 passphrases. Set `TUMPA_PASSPHRASE` for non-interactive card PIN
 entry (e.g., in CI).
 
+### Seeing which cards hold a key
+
+`tcli describe <FINGERPRINT>` appends a `Cards:` block when one or
+more cards are linked to the cert. One key may live on multiple cards
+at once (e.g. a backup card, or signing on YubiKey + auth on Nitrokey
+in the same cert), so cards are grouped per ident with a compact
+`[S E A]` slot tag (signature, encryption, authentication):
+
+```
+sec  ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD  ed25519  [sign, certify]
+     Created:  2024-01-01 12:00:00 UTC
+     Expires:  2026-01-01 12:00:00 UTC
+     UIDs:
+       [primary] Alice <alice@example.com>
+     Subkeys:
+       12121212...  cv25519       [encryption]
+                 Created:  2024-01-01 12:00:00 UTC
+       EFEFEFEF...  ed25519       [authentication]
+                 Created:  2024-01-01 12:00:00 UTC
+     Cards:
+       000F:CB9A5355  Nitrokey GmbH (CB9A5355)  [S E A]
+       0006:00000001  Yubico (00000001)         [S]
+```
+
+The block is sourced from the `card_keys` table — read-only, no PCSC
+probe, no PIN prompt. If you don't see a `Cards:` block when you
+expect one, the link is missing; run [`tcli card
+link`](#linking-a-card-to-a-keystore-key) to repair it.
+
+### Linking a card to a keystore key
+
+When you upload a key to a card, tumpa records a row in the keystore's
+`card_keys` table mapping each card slot's fingerprint to the
+corresponding key in `~/.tumpa/keys.db`. The SSH agent uses these rows
+to find which card holds the authentication subkey of a given key, so
+**without the link `tcli ssh-agent` advertises no card-backed
+identities** — `ssh-add -L` prints nothing even with the card plugged
+in.
+
+If the link is missing (uploaded with an older tumpa build, or the key
+landed on the card via `gpg --edit-key … keytocard`), repair it from
+the CLI:
+
+```
+tcli card link             # link every match across every connected card
+tcli card link --dry-run   # show what would be written, touch nothing
+```
+
+The command is idempotent (re-running rewrites the same rows), reads
+all connected cards via PCSC, and matches every slot fingerprint
+against every primary and subkey fingerprint in the keystore
+(case-insensitive). It does not prompt for a PIN and does not write
+any APDU to the card.
+
+If multiple cards are connected and you only want to link one of
+them:
+
+```
+tcli card link --card-ident 000F:CB9A5355
+```
+
+The `IDENT` is the value shown by `tcli card list`.
+
+To verify the link worked:
+
+```
+sqlite3 ~/.tumpa/keys.db \
+    "SELECT fingerprint, card_ident, slot FROM card_keys"
+```
+
+You should see one row per provisioned slot (`signature`,
+`encryption`, `authentication`). After this, `tcli ssh-agent` (or
+`tcli agent --ssh`) lists the card's authentication key in
+`ssh-add -L` and accepts SSH auth challenges via the card.
+
 ### Listing connected cards
 
 `tcli` enumerates every OpenPGP card visible to PCSC with:
@@ -1464,6 +1539,23 @@ The encrypted message is addressed to a key you don't have the secret
 for. Check `tcli list` -- keys marked `sec` can decrypt with
 software keys, and keys marked `pub` can decrypt if the corresponding
 OpenPGP card is connected. Make sure `pcscd` is running if using a card.
+
+### `ssh-add -L` shows no card identities even with the card plugged in
+
+If `tcli` / `tclig` / `tpass` work but the SSH side advertises nothing,
+the most common causes are (in order):
+
+1. `SSH_AUTH_SOCK` is unset or points at the system ssh-agent. Run
+   `echo "$SSH_AUTH_SOCK"` and compare against `tcli socket ssh`.
+2. The agent isn't serving SSH. `tcli agent` alone binds the GPG
+   cache only — use `tcli agent --ssh` (or the systemd
+   `tumpa-agent.service` / `tumpa-ssh-agent.service` units).
+3. The card has the auth subkey but the keystore doesn't know which
+   key it belongs to. Run `tcli card link` (see [Linking a card to a
+   keystore key](#linking-a-card-to-a-keystore-key)) to write the
+   missing `card_keys` rows.
+4. The keystore has no auth-capable subkey at all. `tcli describe
+   <FP>` should list a subkey with `[A]` capability.
 
 ### "Failed to enumerate cards" or card errors
 

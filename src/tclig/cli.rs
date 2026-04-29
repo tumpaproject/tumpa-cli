@@ -268,11 +268,9 @@ impl TryFrom<Args> for Mode {
             // sign+encrypt would change the output format the
             // user explicitly asked for.
             if value.clearsign {
-                return Err(
-                    "--clearsign cannot be combined with --encrypt; \
+                return Err("--clearsign cannot be combined with --encrypt; \
                      use --sign for sign-then-encrypt"
-                        .into(),
-                );
+                    .into());
             }
             // --digest-algo only locks the digest for the detached
             // signing path; in --encrypt mode there is no detached
@@ -281,11 +279,9 @@ impl TryFrom<Args> for Mode {
             // callers that include it as a default — better to fail
             // loudly so the caller drops the flag.
             if value.digest_algo.is_some() {
-                return Err(
-                    "--digest-algo is not supported with --encrypt; \
+                return Err("--digest-algo is not supported with --encrypt; \
                      it only locks the digest for detached signatures (-b)"
-                        .into(),
-                );
+                    .into());
             }
             let output = value.output.ok_or("Encryption requires -o/--output")?;
             let input = value.input_files.first().map(PathBuf::from);
@@ -337,11 +333,9 @@ impl TryFrom<Args> for Mode {
         // turning on --decrypt would risk confusion with --verify
         // (the detached path), so we reject loudly instead.
         if value.verify_decrypt {
-            return Err(
-                "--verify-decrypt requires --decrypt; \
+            return Err("--verify-decrypt requires --decrypt; \
                  use --verify for detached-signature verification"
-                    .into(),
-            );
+                .into());
         }
 
         // --verify
@@ -374,9 +368,7 @@ impl TryFrom<Args> for Mode {
             // be a silent no-op, which is exactly the trap a GPG
             // drop-in must avoid.
             if value.digest_algo.is_some() && shape != SignShape::Detached {
-                return Err(
-                    "--digest-algo is only supported for detached signatures (-b)".into(),
-                );
+                return Err("--digest-algo is only supported for detached signatures (-b)".into());
             }
             return Ok(Mode::Sign {
                 signer_id,
@@ -634,9 +626,7 @@ mod tests {
         .unwrap();
         match m {
             Mode::Sign {
-                shape,
-                digest_algo,
-                ..
+                shape, digest_algo, ..
             } => {
                 assert_eq!(shape, SignShape::Detached);
                 assert_eq!(digest_algo.as_deref(), Some("SHA512"));

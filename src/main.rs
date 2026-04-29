@@ -9,7 +9,7 @@ use std::io::stdout;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-use tumpa_cli::{cache_cmd, keystore, pinentry, sign_cmd, ssh, store, verify_cmd};
+use tumpa_cli::{cache_cmd, card_link, keystore, pinentry, sign_cmd, ssh, store, verify_cmd};
 
 use cli::*;
 
@@ -88,6 +88,10 @@ fn main() {
         #[cfg(feature = "experimental")]
         Ok(Mode::ResetCard { card_ident }) => upload_card::cmd_reset_card(card_ident.as_deref()),
         Ok(Mode::ListCards) => tumpa_cli::list_cards::cmd_list_cards(),
+        Ok(Mode::CardLink {
+            dry_run,
+            card_ident,
+        }) => card_link::cmd_card_link(dry_run, card_ident.as_deref(), keystore_path.as_ref()),
         Ok(Mode::ShowSocket { ssh }) => {
             if ssh {
                 match tumpa_cli::agent::default_ssh_socket_path() {
