@@ -252,6 +252,21 @@ pub enum CardCommand {
         #[clap(short = 'y', long)]
         yes: bool,
     },
+
+    /// Link cards already provisioned with keys whose certs are in the keystore.
+    ///
+    /// Walks every connected card and writes a `card_keys` row for each
+    /// slot whose fingerprint matches a key in the keystore. Required for
+    /// the SSH agent to find card-backed authentication keys.
+    Link {
+        /// Print the matches that would be written and exit; touch nothing.
+        #[clap(long)]
+        dry_run: bool,
+
+        /// Restrict linking to one card. Accepts the IDENT shown by `tcli card list`.
+        #[clap(long, value_name = "IDENT")]
+        card_ident: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -372,6 +387,10 @@ pub enum Mode {
     },
     CacheClear {
         target: Option<String>,
+    },
+    CardLink {
+        dry_run: bool,
+        card_ident: Option<String>,
     },
     None,
 }
@@ -526,6 +545,13 @@ fn mode_from_card(cmd: CardCommand) -> Result<Mode, String> {
     match cmd {
         CardCommand::Status => Ok(Mode::CardStatus),
         CardCommand::List => Ok(Mode::ListCards),
+        CardCommand::Link {
+            dry_run,
+            card_ident,
+        } => Ok(Mode::CardLink {
+            dry_run,
+            card_ident,
+        }),
 
         #[cfg(feature = "experimental")]
         CardCommand::Upload {
@@ -803,6 +829,68 @@ mod tests {
     #[test]
     fn card_list_subcommand() {
         assert!(matches!(parse(&["card", "list"]), Ok(Mode::ListCards)));
+    }
+
+    #[test]
+    fn card_link_subcommand_defaults() {
+        match parse(&["card", "link"]).unwrap() {
+            Mode::CardLink {
+                dry_run,
+                card_ident,
+            } => {
+                assert!(!dry_run);
+                assert!(card_ident.is_none());
+            }
+            other => panic!(
+                "expected CardLink, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn card_link_subcommand_dry_run() {
+        match parse(&["card", "link", "--dry-run"]).unwrap() {
+            Mode::CardLink { dry_run, .. } => assert!(dry_run),
+            other => panic!(
+                "expected CardLink, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn card_link_subcommand_filter_card_ident() {
+        match parse(&["card", "link", "--card-ident", "000F:CB9A5355"]).unwrap() {
+            Mode::CardLink {
+                dry_run,
+                card_ident,
+            } => {
+                assert!(!dry_run);
+                assert_eq!(card_ident.as_deref(), Some("000F:CB9A5355"));
+            }
+            other => panic!(
+                "expected CardLink, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn card_link_subcommand_dry_run_with_card_ident() {
+        match parse(&["card", "link", "--dry-run", "--card-ident", "0006:0001"]).unwrap() {
+            Mode::CardLink {
+                dry_run,
+                card_ident,
+            } => {
+                assert!(dry_run);
+                assert_eq!(card_ident.as_deref(), Some("0006:0001"));
+            }
+            other => panic!(
+                "expected CardLink, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 
     #[test]

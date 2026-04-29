@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod cache_cmd;
+pub mod card_link;
 pub mod cli;
 pub mod gpg;
 pub mod keystore;

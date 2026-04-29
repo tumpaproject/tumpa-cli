@@ -1293,6 +1293,52 @@ Card PINs are prompted via pinentry, the same way as software key
 passphrases. Set `TUMPA_PASSPHRASE` for non-interactive card PIN
 entry (e.g., in CI).
 
+### Linking a card to a keystore key
+
+When you upload a key to a card, tumpa records a row in the keystore's
+`card_keys` table mapping each card slot's fingerprint to the
+corresponding key in `~/.tumpa/keys.db`. The SSH agent uses these rows
+to find which card holds the authentication subkey of a given key, so
+**without the link `tcli ssh-agent` advertises no card-backed
+identities** — `ssh-add -L` prints nothing even with the card plugged
+in.
+
+If the link is missing (uploaded with an older tumpa build, or the key
+landed on the card via `gpg --edit-key … keytocard`), repair it from
+the CLI:
+
+```
+tcli card link             # link every match across every connected card
+tcli card link --dry-run   # show what would be written, touch nothing
+```
+
+The command is idempotent (re-running rewrites the same rows), reads
+all connected cards via PCSC, and matches every slot fingerprint
+against every primary and subkey fingerprint in the keystore
+(case-insensitive). It does not prompt for a PIN and does not write
+any APDU to the card.
+
+If multiple cards are connected and you only want to link one of
+them:
+
+```
+tcli card link --card-ident 000F:CB9A5355
+```
+
+The `IDENT` is the value shown by `tcli card list`.
+
+To verify the link worked:
+
+```
+sqlite3 ~/.tumpa/keys.db \
+    "SELECT fingerprint, card_ident, slot FROM card_keys"
+```
+
+You should see one row per provisioned slot (`signature`,
+`encryption`, `authentication`). After this, `tcli ssh-agent` (or
+`tcli agent --ssh`) lists the card's authentication key in
+`ssh-add -L` and accepts SSH auth challenges via the card.
+
 ### Listing connected cards
 
 `tcli` enumerates every OpenPGP card visible to PCSC with:
@@ -1464,6 +1510,23 @@ The encrypted message is addressed to a key you don't have the secret
 for. Check `tcli list` -- keys marked `sec` can decrypt with
 software keys, and keys marked `pub` can decrypt if the corresponding
 OpenPGP card is connected. Make sure `pcscd` is running if using a card.
+
+### `ssh-add -L` shows no card identities even with the card plugged in
+
+If `tcli` / `tclig` / `tpass` work but the SSH side advertises nothing,
+the most common causes are (in order):
+
+1. `SSH_AUTH_SOCK` is unset or points at the system ssh-agent. Run
+   `echo "$SSH_AUTH_SOCK"` and compare against `tcli socket ssh`.
+2. The agent isn't serving SSH. `tcli agent` alone binds the GPG
+   cache only — use `tcli agent --ssh` (or the systemd
+   `tumpa-agent.service` / `tumpa-ssh-agent.service` units).
+3. The card has the auth subkey but the keystore doesn't know which
+   key it belongs to. Run `tcli card link` (see [Linking a card to a
+   keystore key](#linking-a-card-to-a-keystore-key)) to write the
+   missing `card_keys` rows.
+4. The keystore has no auth-capable subkey at all. `tcli describe
+   <FP>` should list a subkey with `[A]` capability.
 
 ### "Failed to enumerate cards" or card errors
 
