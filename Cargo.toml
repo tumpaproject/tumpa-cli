@@ -49,7 +49,7 @@ experimental = []
 # prefix + (X25519, X25519) match arm needed by Nitrokey 3
 # (opcard-rs >= 1.5) ECC card uploads.
 wecanencrypt = { version = "0.14.2", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.3.0", features = ["card", "network"] }
+libtumpa = { version = "0.3.1", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).
