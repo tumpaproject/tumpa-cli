@@ -37,7 +37,9 @@ pub fn cmd_cache_clear(target: Option<&str>) -> Result<()> {
             eprintln!("Cleared all cached credentials.");
         }
         Some(fp) => {
-            let fp = fp.trim();
+            // Validate the raw input — do NOT trim. A trailing newline or
+            // space here would otherwise be silently accepted, which the
+            // validator's `is_ascii_hexdigit()` check is meant to reject.
             if !is_valid_fingerprint(fp) {
                 bail!(
                     "{:?} is not a valid fingerprint (expected 40 or 16 hex characters).",
@@ -90,7 +92,8 @@ fn send_line(socket_path: &Path, request: &str) -> Result<()> {
         .context("Failed to send request to agent")?;
 
     let mut response = String::new();
-    BufReader::new(&stream)
+    let mut reader = BufReader::new(&stream);
+    reader
         .read_line(&mut response)
         .context("Failed to read response from agent")?;
 
@@ -157,5 +160,24 @@ mod tests {
         assert_eq!(keys[0], "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD");
         assert!(keys[1].starts_with("pin:ABCD"));
         assert!(keys[2].starts_with("passphrase:ABCD"));
+    }
+
+    // Pins PR #25 review feedback: cmd_cache_clear must reject whitespace-
+    // padded argv, not silently strip it. Whitespace-padded fingerprints
+    // would otherwise reach the agent's wire and could split into
+    // multiple line-protocol verbs if a `\n` slipped through.
+    #[test]
+    fn whitespace_padded_input_fails_validation() {
+        // Trailing/leading space and trailing newline are all rejected.
+        assert!(!is_valid_fingerprint(
+            " ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD"
+        ));
+        assert!(!is_valid_fingerprint(
+            "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD "
+        ));
+        assert!(!is_valid_fingerprint(
+            "ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD\n"
+        ));
+        assert!(!is_valid_fingerprint("\tABCDABCDABCDABCD"));
     }
 }
