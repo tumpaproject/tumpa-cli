@@ -29,7 +29,9 @@ use libtumpa::sign::{
 use libtumpa::{Passphrase, Pin};
 
 use crate::cli::is_stdio;
-use crate::gpg::sign::{prompt_card_pin, prompt_key_passphrase};
+use crate::gpg::sign::{
+    prompt_card_pin, prompt_key_passphrase, verify_card_pin, verify_software_passphrase,
+};
 use crate::pinentry;
 use crate::store;
 
@@ -57,6 +59,8 @@ pub fn cmd_sign(
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            verify_card_pin(card_ident, &pin, &key_info.fingerprint)
+                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
             *last_secret.borrow_mut() = Some(pin);
             Ok(Secret::Pin(pin_bytes))
@@ -64,6 +68,8 @@ pub fn cmd_sign(
         SecretRequest::KeyPassphrase { key_info } => {
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
+                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
             *last_secret.borrow_mut() = Some(pass.clone());
             Ok(Secret::Passphrase(pass))
         }
@@ -141,6 +147,8 @@ pub fn cmd_sign_inline(
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            verify_card_pin(card_ident, &pin, &key_info.fingerprint)
+                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
             *last_secret.borrow_mut() = Some(pin);
             Ok(Secret::Pin(pin_bytes))
@@ -148,6 +156,8 @@ pub fn cmd_sign_inline(
         SecretRequest::KeyPassphrase { key_info } => {
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
+                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
             *last_secret.borrow_mut() = Some(pass.clone());
             Ok(Secret::Passphrase(pass))
         }

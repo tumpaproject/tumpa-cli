@@ -12,6 +12,7 @@ use libtumpa::sign::{
 };
 use libtumpa::{HashAlgorithm, Passphrase, Pin};
 
+use crate::card_touch::{self, Op as TouchOp};
 use crate::pinentry;
 use crate::store;
 
@@ -101,11 +102,16 @@ pub fn sign(
                     key_info,
                 } => {
                     *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+                    card_touch::maybe_notify_touch(TouchOp::Sign, Some(card_ident));
                     let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                         .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-                    // Pin is `Zeroizing<Vec<u8>>`; the source bytes get copied
-                    // into a zeroizing Vec, then `pin` (the `Zeroizing<String>`)
-                    // moves into `last_secret`.
+                    // Pre-op verify: a single VERIFY APDU validates the
+                    // PIN against the card before libtumpa starts the
+                    // signing transaction. Costs one round-trip but
+                    // surfaces "wrong PIN" cleanly without conflating
+                    // it with PCSC / signing-key errors.
+                    verify_card_pin(card_ident, &pin, &key_info.fingerprint)
+                        .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
                     let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
                     *last_secret.borrow_mut() = Some(pin);
                     Ok(Secret::Pin(pin_bytes))
@@ -113,8 +119,11 @@ pub fn sign(
                 SecretRequest::KeyPassphrase { key_info } => {
                     let pass: Passphrase = prompt_key_passphrase(key_info)
                         .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-                    // `Passphrase` is `Zeroizing<String>`; cloning produces
-                    // another zeroizing copy (no plaintext leak).
+                    // Pre-op verify for software keys: try to unlock
+                    // the secret-key packet with the passphrase. Same
+                    // motivation as the card-PIN case above.
+                    verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
+                        .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
                     *last_secret.borrow_mut() = Some(pass.clone());
                     Ok(Secret::Passphrase(pass))
                 }
@@ -253,6 +262,48 @@ fn primary_uid(key_info: &wecanencrypt::KeyInfo) -> &str {
         .unwrap_or(&key_info.fingerprint)
 }
 
+/// Run the bare `wecanencrypt::card::verify_user_pin` APDU to check
+/// that the PIN string is correct against the connected card BEFORE
+/// libtumpa spends a sign or decrypt round-trip on it.
+///
+/// On Err, clears the agent's cached PIN for `fingerprint` so a stale
+/// (or freshly-typed-but-wrong) value doesn't replay on the next op.
+/// On Ok, the PIN is known correct — caller may proceed and (after
+/// the real op succeeds) cache it via [`pinentry::cache_pin`].
+pub(crate) fn verify_card_pin(
+    card_ident: &str,
+    pin: &Zeroizing<String>,
+    fingerprint: &str,
+) -> Result<()> {
+    match wecanencrypt::card::verify_user_pin(pin.as_bytes(), Some(card_ident)) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            pinentry::clear_cached_pin(fingerprint);
+            Err(anyhow!("Card PIN verification failed: {e}"))
+        }
+    }
+}
+
+/// Software-key counterpart of [`verify_card_pin`].
+///
+/// Calls `wecanencrypt::verify_software_passphrase`, which tries to
+/// unlock the primary secret-key packet without performing any crypto
+/// op. On Err, clears the agent's cached passphrase for
+/// `fingerprint`.
+pub(crate) fn verify_software_passphrase(
+    key_data: &[u8],
+    pass: &Zeroizing<String>,
+    fingerprint: &str,
+) -> Result<()> {
+    match wecanencrypt::verify_software_passphrase(key_data, pass.as_str()) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            pinentry::clear_cached_passphrase(fingerprint);
+            Err(anyhow!("Passphrase verification failed: {e}"))
+        }
+    }
+}
+
 enum SecretKind {
     Pin,
     Passphrase,
@@ -297,8 +348,11 @@ pub fn clearsign(
             key_info,
         } => {
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+            card_touch::maybe_notify_touch(TouchOp::Sign, Some(card_ident));
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            verify_card_pin(card_ident, &pin, &key_info.fingerprint)
+                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
             *last_secret.borrow_mut() = Some(pin);
             Ok(Secret::Pin(pin_bytes))
@@ -306,6 +360,8 @@ pub fn clearsign(
         SecretRequest::KeyPassphrase { key_info } => {
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
+            verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
+                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
             *last_secret.borrow_mut() = Some(pass.clone());
             Ok(Secret::Passphrase(pass))
         }
@@ -403,6 +459,7 @@ pub fn sign_inline(
 
     let passphrase: Passphrase =
         prompt_key_passphrase(&key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
+    verify_software_passphrase(&key_data, &passphrase, &key_info.fingerprint)?;
 
     let signed = wecanencrypt::sign_bytes(&key_data, &buffer, passphrase.as_str())
         .map_err(|e| {
