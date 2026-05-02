@@ -1,12 +1,30 @@
-use std::io::{BufRead, BufReader, Write};
+//! Client-side passphrase / PIN acquisition.
+//!
+//! Orchestrates the fallback chain:
+//!
+//!   1. Tumpa agent (`GET_OR_PROMPT`, falling back to `GET_PASSPHRASE`)
+//!   2. Env vars (`TUMPA_ADMIN_PIN` for admin prompts; `TUMPA_PASSPHRASE` otherwise)
+//!   3. Local pinentry (`assuan::run_pinentry`)
+//!   4. Terminal `rpassword` prompt
+//!
+//! The Assuan/pinentry plumbing is shared with the agent's
+//! prompt-on-miss path via the [`assuan`] submodule.
+
+pub mod assuan;
+
+use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
 use crate::agent;
+use assuan::PromptOutcome;
+
+// Re-exports for callers that previously imported these from the
+// flat-file `pinentry.rs`. Avoids touching every call site.
+pub use assuan::{pinentry_candidates, resolve_pinentry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CacheSlot {
@@ -14,23 +32,27 @@ enum CacheSlot {
     Passphrase,
 }
 
-/// Get a passphrase or PIN via the pinentry program.
+/// Get a passphrase or PIN.
 ///
 /// Acquisition order:
-/// 1. Agent cache (if tcli agent is running, `cache_key` is `Some`, and
-///    `prompt` is not `"Admin PIN"`)
-/// 2. `TUMPA_ADMIN_PIN` env var — only when `prompt` is `"Admin PIN"`
+/// 1. Agent `GET_OR_PROMPT` (cache + agent-side pinentry, when the
+///    prompt is not `"Admin PIN"` and `cache_key` is `Some`).
+/// 2. Agent `GET_PASSPHRASE` (legacy cache-only call) — still tried as
+///    a fallback for older agents that don't yet implement
+///    `GET_OR_PROMPT`.
+/// 3. `TUMPA_ADMIN_PIN` env var — only when `prompt` is `"Admin PIN"`
 ///    (case-insensitive); skipped for any other prompt.
-/// 3. `TUMPA_PASSPHRASE` env var
-/// 4. pinentry program
-/// 5. Terminal prompt
+/// 4. `TUMPA_PASSPHRASE` env var.
+/// 5. Local pinentry (`assuan::run_pinentry`).
+/// 6. Terminal prompt.
 ///
-/// `cache_key` is the key fingerprint used for **reading** the agent
-/// cache. A returned value is **never written** to the cache by this
-/// function — the caller must call [`cache_passphrase`] after a
-/// successful sign/decrypt and [`clear_cached_passphrase`] after a
-/// failed one. Caching unverified values would burn card PIN attempts
-/// when the user typed the wrong PIN once.
+/// `cache_key` is the key fingerprint used for the agent cache. A
+/// returned value is **never written** to the cache by this function —
+/// the caller must call [`cache_passphrase`] / [`cache_pin`] after a
+/// successful sign/decrypt and [`clear_cached_passphrase`] /
+/// [`clear_cached_pin`] after a failed one. Caching unverified values
+/// would burn card PIN attempts when the user typed the wrong PIN
+/// once.
 pub fn get_passphrase(
     description: &str,
     prompt: &str,
@@ -39,14 +61,23 @@ pub fn get_passphrase(
     let allow_agent_cache = should_use_agent_cache(prompt);
     let cache_slot = cache_slot_for_prompt(prompt);
 
-    // 1. Check agent cache for user PIN/passphrase prompts only.
-    // Admin PIN must not share the generic fingerprint cache key.
+    // 1. Try GET_OR_PROMPT — the agent may have it cached, prompt the
+    //    user via its own pinentry, or report PINENTRY_UNAVAILABLE so
+    //    we know to fall through.
     if allow_agent_cache {
         if let (Some(key), Some(slot)) = (cache_key, cache_slot) {
             let namespaced_key = cache_key_for_slot(key, slot);
-            if let Some(pass) = try_agent_get(&namespaced_key) {
-                log::debug!("Using passphrase from agent cache");
-                return Ok(pass);
+            match try_agent_get_or_prompt(&namespaced_key, description, prompt) {
+                AgentPromptOutcome::Got(pass) => {
+                    log::debug!("Got passphrase from agent (GET_OR_PROMPT)");
+                    return Ok(pass);
+                }
+                AgentPromptOutcome::Cancelled => {
+                    anyhow::bail!("pinentry cancelled by user");
+                }
+                AgentPromptOutcome::Unavailable | AgentPromptOutcome::NoAgent => {
+                    // Fall through to the rest of the chain.
+                }
             }
         }
     }
@@ -68,16 +99,39 @@ pub fn get_passphrase(
         return Ok(Zeroizing::new(pass));
     }
 
-    // 3. Try pinentry
-    match try_pinentry(description, prompt) {
-        Ok(pass) => return Ok(pass),
-        Err(e) => {
-            log::debug!("pinentry failed: {}, falling back to terminal", e);
+    // 3. Local pinentry (shared assuan helpers).
+    match assuan::run_pinentry(description, prompt, None) {
+        PromptOutcome::Got(pass) => return Ok(pass),
+        PromptOutcome::Cancelled => anyhow::bail!("pinentry cancelled by user"),
+        PromptOutcome::NoCandidate => {
+            log::debug!("no pinentry program found, falling back to terminal");
+        }
+        PromptOutcome::Err { message, tried } => {
+            log::debug!(
+                "all pinentry candidates failed: {} (tried {})",
+                message,
+                tried.join(", ")
+            );
         }
     }
 
-    // 4. Fall back to terminal prompt
+    // 4. Fall back to terminal prompt.
     rpassword_prompt(prompt)
+}
+
+/// Outcome of the agent's `GET_OR_PROMPT` round-trip.
+enum AgentPromptOutcome {
+    /// The agent returned a value (cached or freshly-prompted).
+    Got(Zeroizing<String>),
+    /// The user cancelled the agent's pinentry dialog. Do NOT fall
+    /// back to env vars / local pinentry / terminal — the user
+    /// declined.
+    Cancelled,
+    /// The agent has no usable pinentry, or returned ERR. Fall back to
+    /// the rest of the chain.
+    Unavailable,
+    /// No agent socket reachable.
+    NoAgent,
 }
 
 fn should_use_agent_cache(prompt: &str) -> bool {
@@ -108,7 +162,8 @@ pub fn cache_pin(fingerprint: &str, pin: &Zeroizing<String>) {
 /// Store a passphrase in the running tumpa agent's cache.
 ///
 /// Call this only **after** the value has been confirmed correct by a
-/// successful sign or decrypt. Silent no-op if no agent is running.
+/// successful sign or decrypt (or by an explicit verify step). Silent
+/// no-op if no agent is running.
 pub fn cache_passphrase(fingerprint: &str, passphrase: &Zeroizing<String>) {
     try_agent_put(
         &cache_key_for_slot(fingerprint, CacheSlot::Passphrase),
@@ -134,27 +189,57 @@ pub fn clear_all_cached_secrets(fingerprint: &str) {
     clear_cached_passphrase(fingerprint);
 }
 
-/// Try to get a cached passphrase from the agent.
-/// Returns None if agent is not running or key not cached.
-fn try_agent_get(fingerprint: &str) -> Option<Zeroizing<String>> {
+/// Open a connection to the agent socket with a short read timeout.
+fn agent_connect() -> Option<UnixStream> {
     let socket_path = agent::default_socket_path().ok()?;
-    let mut stream = UnixStream::connect(&socket_path).ok()?;
-
-    // Set a short timeout to avoid hanging if agent is unresponsive
+    let stream = UnixStream::connect(&socket_path).ok()?;
+    // Pinentry interactions can take as long as the user takes to
+    // type. The read timeout below applies to the FIRST byte; once
+    // pinentry replies the rest is immediate. We use a long timeout
+    // (10 minutes) to accommodate manual PIN entry; on cache hit the
+    // agent replies in milliseconds.
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .set_read_timeout(Some(std::time::Duration::from_secs(600)))
         .ok()?;
+    Some(stream)
+}
 
-    let request = format!("GET_PASSPHRASE {}\n", fingerprint);
-    stream.write_all(request.as_bytes()).ok()?;
+/// Try `GET_OR_PROMPT` against the agent.
+fn try_agent_get_or_prompt(
+    cache_key: &str,
+    description: &str,
+    prompt: &str,
+) -> AgentPromptOutcome {
+    let mut stream = match agent_connect() {
+        Some(s) => s,
+        None => return AgentPromptOutcome::NoAgent,
+    };
+
+    let b64_desc = agent::protocol::encode_utf8(description);
+    let b64_prompt = agent::protocol::encode_utf8(prompt);
+    let request = format!("GET_OR_PROMPT {} {} {}\n", cache_key, b64_desc, b64_prompt);
+    if stream.write_all(request.as_bytes()).is_err() {
+        return AgentPromptOutcome::NoAgent;
+    }
 
     let mut response = String::new();
     let mut reader = std::io::BufReader::new(&stream);
-    reader.read_line(&mut response).ok()?;
+    if reader.read_line(&mut response).is_err() {
+        return AgentPromptOutcome::NoAgent;
+    }
 
     match agent::protocol::parse_response(&response) {
-        Some(agent::protocol::Response::Passphrase(pass)) => Some(pass),
-        _ => None,
+        Some(agent::protocol::Response::Passphrase(pass)) => AgentPromptOutcome::Got(pass),
+        Some(agent::protocol::Response::Cancelled) => AgentPromptOutcome::Cancelled,
+        Some(agent::protocol::Response::PinentryUnavailable) => AgentPromptOutcome::Unavailable,
+        Some(agent::protocol::Response::Err(msg)) => {
+            log::debug!("agent GET_OR_PROMPT err: {}", msg);
+            AgentPromptOutcome::Unavailable
+        }
+        // NOT_FOUND from an old agent (pre-GET_OR_PROMPT) → treat as
+        // unavailable so the client falls through to local pinentry.
+        Some(agent::protocol::Response::NotFound) => AgentPromptOutcome::Unavailable,
+        _ => AgentPromptOutcome::Unavailable,
     }
 }
 
@@ -220,185 +305,6 @@ fn try_agent_clear_at_path(socket_path: &Path, fingerprint: &str) {
     let mut response = String::new();
     let mut reader = std::io::BufReader::new(&stream);
     let _ = reader.read_line(&mut response);
-}
-
-/// Candidate pinentry programs, in preference order.
-///
-/// If `PINENTRY_PROGRAM` is set, only that program is tried. Otherwise:
-/// - On macOS, `pinentry-mac` (GUI, works without a TTY) is preferred,
-///   then bare `pinentry`. Homebrew absolute paths are appended so an
-///   agent spawned by launchd with a reduced PATH still finds the
-///   binary.
-/// - Elsewhere, `pinentry` is the only default.
-pub fn pinentry_candidates() -> Vec<String> {
-    if let Ok(explicit) = std::env::var("PINENTRY_PROGRAM") {
-        return vec![explicit];
-    }
-    if cfg!(target_os = "macos") {
-        vec![
-            "pinentry-mac".to_string(),
-            "/opt/homebrew/bin/pinentry-mac".to_string(),
-            "/usr/local/bin/pinentry-mac".to_string(),
-            "pinentry".to_string(),
-        ]
-    } else {
-        vec!["pinentry".to_string()]
-    }
-}
-
-/// Resolve the first available pinentry candidate to an absolute path.
-///
-/// Absolute paths are checked with `metadata()`; bare names are resolved
-/// by walking `PATH`. Returns `None` if nothing resolves — callers should
-/// still attempt the candidates (the runtime PATH may differ from the
-/// PATH seen here) but the absence is worth logging at agent startup.
-pub fn resolve_pinentry() -> Option<(String, PathBuf)> {
-    for name in pinentry_candidates() {
-        if let Some(path) = which_on_path(&name) {
-            return Some((name, path));
-        }
-    }
-    None
-}
-
-fn which_on_path(name: &str) -> Option<PathBuf> {
-    let p = Path::new(name);
-    if p.is_absolute() {
-        return if p.is_file() {
-            Some(p.to_path_buf())
-        } else {
-            None
-        };
-    }
-    let path_env = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_env) {
-        let cand = dir.join(name);
-        if cand.is_file() {
-            return Some(cand);
-        }
-    }
-    None
-}
-
-/// Try to get passphrase via pinentry Assuan protocol.
-///
-/// Iterates `pinentry_candidates()` in order. A candidate that isn't on
-/// PATH (spawn failure) falls through to the next; a protocol/runtime
-/// error from a spawned candidate is logged and also falls through, so
-/// a broken `pinentry` (e.g. curses with no TTY) does not mask a
-/// working `pinentry-mac`. User cancellation is preserved and does not
-/// trigger further fallbacks.
-fn try_pinentry(description: &str, prompt: &str) -> Result<Zeroizing<String>> {
-    let candidates = pinentry_candidates();
-    let mut last_err: Option<anyhow::Error> = None;
-
-    for program in &candidates {
-        match try_pinentry_with(program, description, prompt) {
-            Ok(Some(pass)) => return Ok(pass),
-            Ok(None) => log::debug!("{} not on PATH, trying next pinentry", program),
-            Err(e) => {
-                if is_user_cancel(&e) {
-                    return Err(e);
-                }
-                log::debug!("{} failed ({:#}), trying next pinentry", program, e);
-                last_err = Some(e);
-            }
-        }
-    }
-
-    if let Some(e) = last_err {
-        Err(e).context(format!(
-            "all pinentry candidates failed (tried: {})",
-            candidates.join(", ")
-        ))
-    } else {
-        anyhow::bail!(
-            "no pinentry program found (tried: {})",
-            candidates.join(", ")
-        );
-    }
-}
-
-fn is_user_cancel(e: &anyhow::Error) -> bool {
-    let s = format!("{:#}", e);
-    s.contains("cancelled by user")
-}
-
-/// Run the Assuan conversation with a specific pinentry program.
-///
-/// Returns `Ok(None)` if the program itself cannot be spawned (e.g. not
-/// on `PATH`), so the caller can try the next candidate. Returns
-/// `Err(..)` for protocol errors or user cancellation — those must not
-/// cascade to the next candidate.
-fn try_pinentry_with(
-    program: &str,
-    description: &str,
-    prompt: &str,
-) -> Result<Option<Zeroizing<String>>> {
-    let mut child = match Command::new(program)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return Ok(None),
-    };
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("Failed to open pinentry stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("Failed to open pinentry stdout")?;
-    let mut reader = BufReader::new(stdout);
-
-    // Read the greeting
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    if !line.starts_with("OK") {
-        anyhow::bail!("pinentry greeting failed: {}", line.trim());
-    }
-
-    // Set the description
-    let desc_escaped = description.replace('%', "%25").replace('\n', "%0A");
-    writeln!(stdin, "SETDESC {}", desc_escaped)?;
-    line.clear();
-    reader.read_line(&mut line)?;
-
-    // Set the prompt
-    writeln!(stdin, "SETPROMPT {}", prompt)?;
-    line.clear();
-    reader.read_line(&mut line)?;
-
-    // Get the PIN
-    writeln!(stdin, "GETPIN")?;
-    line.clear();
-    reader.read_line(&mut line)?;
-
-    let passphrase = if let Some(data) = line.strip_prefix("D ") {
-        let pass = Zeroizing::new(data.trim_end().to_string());
-        // Read the OK after D line
-        line.clear();
-        reader.read_line(&mut line)?;
-        pass
-    } else if line.starts_with("ERR") {
-        // User cancelled
-        writeln!(stdin, "BYE")?;
-        let _ = child.wait();
-        anyhow::bail!("pinentry cancelled by user");
-    } else {
-        writeln!(stdin, "BYE")?;
-        let _ = child.wait();
-        anyhow::bail!("unexpected pinentry response: {}", line.trim());
-    };
-
-    writeln!(stdin, "BYE")?;
-    let _ = child.wait();
-
-    Ok(Some(passphrase))
 }
 
 /// Fallback: prompt on terminal via rpassword-style read.

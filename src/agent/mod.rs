@@ -1,3 +1,4 @@
+pub mod pinentry;
 pub mod protocol;
 
 use std::path::PathBuf;
@@ -8,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
 use crate::cache::CredentialCache;
+use pinentry::{is_desktop_session, PromptDeduper, SharedOutcome};
 
 /// Default agent socket path: ~/.tumpa/agent.sock
 pub fn default_socket_path() -> Result<PathBuf> {
@@ -124,6 +126,21 @@ pub async fn run_agent(
     eprintln!("Agent listening on {:?}", socket_path);
     eprintln!("Cache TTL: {} seconds", cache_ttl);
 
+    // Probe pinentry availability and headless state at startup.
+    // Logging only — per-request behaviour is decided in handle_client.
+    match crate::pinentry::resolve_pinentry() {
+        Some((name, path)) => eprintln!("Pinentry: {} at {}", name, path.display()),
+        None => eprintln!(
+            "Pinentry: not found (tried: {})",
+            crate::pinentry::pinentry_candidates().join(", ")
+        ),
+    }
+    if !is_desktop_session() {
+        eprintln!("Pinentry: headless session — agent will return PINENTRY_UNAVAILABLE");
+    }
+
+    let deduper = Arc::new(PromptDeduper::new());
+
     // Start background cache sweep task
     let sweep_cache = cache.clone();
     tokio::spawn(async move {
@@ -161,9 +178,11 @@ pub async fn run_agent(
         match listener.accept().await {
             Ok((stream, _)) => {
                 let client_cache = gpg_cache.clone();
+                let client_deduper = deduper.clone();
                 let ttl = cache_ttl;
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(stream, client_cache, ttl).await {
+                    if let Err(e) = handle_client(stream, client_cache, client_deduper, ttl).await
+                    {
                         log::debug!("Client error: {}", e);
                     }
                 });
@@ -178,6 +197,7 @@ pub async fn run_agent(
 async fn handle_client(
     stream: tokio::net::UnixStream,
     cache: Arc<Mutex<CredentialCache>>,
+    deduper: Arc<PromptDeduper>,
     _ttl: u64,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -214,6 +234,39 @@ async fn handle_client(
                     let removed = cache.sweep(0);
                     log::info!("Cache cleared by client: {} entries removed", removed);
                     protocol::Response::Ok
+                }
+                protocol::Request::GetOrPrompt {
+                    cache_key,
+                    description,
+                    prompt,
+                    keyinfo,
+                } => {
+                    // 1. Cache hit short-circuits — no pinentry, no
+                    //    deduper involvement.
+                    let cached = {
+                        let cache = cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+                        cache.get(&cache_key).cloned()
+                    };
+                    if let Some(pass) = cached {
+                        protocol::Response::Passphrase(pass)
+                    } else if !is_desktop_session() {
+                        // 2. Headless: no pinentry possible, tell the
+                        //    client to use its own fallback path.
+                        protocol::Response::PinentryUnavailable
+                    } else {
+                        // 3. Desktop session, cache miss: ask the
+                        //    deduper to prompt (or join an in-flight
+                        //    prompt for the same key).
+                        let outcome = deduper
+                            .prompt(&cache_key, description, prompt, keyinfo)
+                            .await;
+                        match outcome {
+                            SharedOutcome::Got(pass) => protocol::Response::Passphrase(pass),
+                            SharedOutcome::Cancelled => protocol::Response::Cancelled,
+                            SharedOutcome::Unavailable => protocol::Response::PinentryUnavailable,
+                            SharedOutcome::Err(msg) => protocol::Response::Err(msg),
+                        }
+                    }
                 }
             }
         } else {

@@ -1,6 +1,6 @@
 [package]
 name = "tumpa-cli"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 description = "OpenPGP operations and SSH agent backed by tumpa keystore."
 license = "GPL-3.0-or-later"
@@ -48,8 +48,8 @@ experimental = []
 # Keep this on a wecanencrypt release that ships the Curve25519 `0x40`
 # prefix + (X25519, X25519) match arm needed by Nitrokey 3
 # (opcard-rs >= 1.5) ECC card uploads.
-wecanencrypt = { version = "0.14.2", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.3.1", path = "../libtumpa", features = ["card", "network"] }
+wecanencrypt = { version = "0.15.0", features = ["keystore", "card-pcsc", "network"] }
+libtumpa = { version = "0.3.2", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).
