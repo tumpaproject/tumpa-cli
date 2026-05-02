@@ -65,14 +65,6 @@ dirs = "6"
 zeroize = { version = "1", features = ["derive"] }
 rpassword = "7"
 libc = "0.2"
-# Direct PCSC APDU sender for the touch-notification path's UIF
-# fallback. Some YubiKey firmware (4.3.x and earlier) supports per-slot
-# UIF but does NOT embed the UIF tags in the Application Related Data
-# DO; openpgp-card-rs only walks ARD, so its `user_interaction_flag`
-# returns `None` for every slot on those cards. talktosc lets us send
-# `GET DATA 0xD6/0xD7/0xD8` directly and read the policy bytes the
-# card actually has.
-talktosc = "0.3.0"
 
 # SSH agent
 ssh-agent-lib = "0.5"
@@ -87,6 +79,19 @@ p521 = "0.13"
 # compare it against `Utc::now()`. Promoted from dev-deps so production
 # code can call `Utc::now()`.
 chrono = "0.4"
+
+# macOS-only: talktosc is the direct PCSC APDU sender used by
+# `card_touch::read_uif_via_talktosc`. That helper is only reachable
+# from `maybe_notify_touch`, which is itself gated on macOS — so
+# pulling talktosc on Linux/BSD would build a PCSC stack we never
+# call. Some YubiKey firmware (4.3.x and earlier) supports per-slot
+# UIF but does NOT embed the UIF tags in the Application Related
+# Data DO; openpgp-card-rs only walks ARD, so its
+# `user_interaction_flag` returns `None` on those cards. talktosc
+# lets us send `GET DATA 0xD6/0xD7/0xD8` directly and read the
+# policy bytes the card actually has.
+[target.'cfg(target_os = "macos")'.dependencies]
+talktosc = "0.3.0"
 
 [dev-dependencies]
 tempfile = "3"

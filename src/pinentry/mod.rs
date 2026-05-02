@@ -2,7 +2,7 @@
 //!
 //! Orchestrates the fallback chain:
 //!
-//!   1. Tumpa agent (`GET_OR_PROMPT`, falling back to `GET_PASSPHRASE`)
+//!   1. Tumpa agent `GET_OR_PROMPT` (cache + agent-side pinentry)
 //!   2. Env vars (`TUMPA_ADMIN_PIN` for admin prompts; `TUMPA_PASSPHRASE` otherwise)
 //!   3. Local pinentry (`assuan::run_pinentry`)
 //!   4. Terminal `rpassword` prompt
@@ -36,15 +36,15 @@ enum CacheSlot {
 ///
 /// Acquisition order:
 /// 1. Agent `GET_OR_PROMPT` (cache + agent-side pinentry, when the
-///    prompt is not `"Admin PIN"` and `cache_key` is `Some`).
-/// 2. Agent `GET_PASSPHRASE` (legacy cache-only call) — still tried as
-///    a fallback for older agents that don't yet implement
-///    `GET_OR_PROMPT`.
-/// 3. `TUMPA_ADMIN_PIN` env var — only when `prompt` is `"Admin PIN"`
+///    prompt is not `"Admin PIN"` and `cache_key` is `Some`). A
+///    `NOT_FOUND` reply from a pre-`GET_OR_PROMPT` agent is treated
+///    the same as `PINENTRY_UNAVAILABLE`: fall through to the rest of
+///    the chain.
+/// 2. `TUMPA_ADMIN_PIN` env var — only when `prompt` is `"Admin PIN"`
 ///    (case-insensitive); skipped for any other prompt.
-/// 4. `TUMPA_PASSPHRASE` env var.
-/// 5. Local pinentry (`assuan::run_pinentry`).
-/// 6. Terminal prompt.
+/// 3. `TUMPA_PASSPHRASE` env var.
+/// 4. Local pinentry (`assuan::run_pinentry`).
+/// 5. Terminal prompt.
 ///
 /// `cache_key` is the key fingerprint used for the agent cache. A
 /// returned value is **never written** to the cache by this function —
@@ -60,25 +60,18 @@ pub fn get_passphrase(
 ) -> Result<Zeroizing<String>> {
     let allow_agent_cache = should_use_agent_cache(prompt);
     let cache_slot = cache_slot_for_prompt(prompt);
+    let namespaced_key = match (cache_key, cache_slot) {
+        (Some(k), Some(s)) if allow_agent_cache => Some(cache_key_for_slot(k, s)),
+        _ => None,
+    };
 
-    // 1. Try GET_OR_PROMPT — the agent may have it cached, prompt the
-    //    user via its own pinentry, or report PINENTRY_UNAVAILABLE so
-    //    we know to fall through.
-    if allow_agent_cache {
-        if let (Some(key), Some(slot)) = (cache_key, cache_slot) {
-            let namespaced_key = cache_key_for_slot(key, slot);
-            match try_agent_get_or_prompt(&namespaced_key, description, prompt) {
-                AgentPromptOutcome::Got(pass) => {
-                    log::debug!("Got passphrase from agent (GET_OR_PROMPT)");
-                    return Ok(pass);
-                }
-                AgentPromptOutcome::Cancelled => {
-                    anyhow::bail!("pinentry cancelled by user");
-                }
-                AgentPromptOutcome::Unavailable | AgentPromptOutcome::NoAgent => {
-                    // Fall through to the rest of the chain.
-                }
-            }
+    // 1. Agent cache (no prompting). A cache hit is always preferred:
+    //    by definition the value was confirmed correct on a previous
+    //    op, so it beats whatever the env or pinentry would offer.
+    if let Some(ref key) = namespaced_key {
+        if let Some(pass) = try_agent_get(key) {
+            log::debug!("Using passphrase from agent cache");
+            return Ok(pass);
         }
     }
 
@@ -93,13 +86,36 @@ pub fn get_passphrase(
     }
 
     // 2b. Fall back to the generic passphrase env var for user
-    // passphrases and user PINs.
+    // passphrases and user PINs. Env wins over the agent's
+    // *interactive* prompt (step 3) so non-interactive runs
+    // (tests, CI, scripted automation) never get blocked behind a
+    // pinentry-mac dialog the harness can't dismiss.
     if let Ok(pass) = std::env::var("TUMPA_PASSPHRASE") {
         log::debug!("Using passphrase from TUMPA_PASSPHRASE env var");
         return Ok(Zeroizing::new(pass));
     }
 
-    // 3. Local pinentry (shared assuan helpers).
+    // 3. Agent-driven pinentry. Cache was already checked at step 1
+    //    so this round-trip exists for the prompt path; the agent
+    //    will either pop pinentry-mac (desktop session) or report
+    //    PINENTRY_UNAVAILABLE (headless / no pinentry binary) and
+    //    we fall through.
+    if let Some(ref key) = namespaced_key {
+        match try_agent_get_or_prompt(key, description, prompt) {
+            AgentPromptOutcome::Got(pass) => {
+                log::debug!("Got passphrase from agent (GET_OR_PROMPT)");
+                return Ok(pass);
+            }
+            AgentPromptOutcome::Cancelled => {
+                anyhow::bail!("pinentry cancelled by user");
+            }
+            AgentPromptOutcome::Unavailable | AgentPromptOutcome::NoAgent => {
+                // Fall through.
+            }
+        }
+    }
+
+    // 4. Local pinentry (shared assuan helpers).
     match assuan::run_pinentry(description, prompt, None) {
         PromptOutcome::Got(pass) => return Ok(pass),
         PromptOutcome::Cancelled => anyhow::bail!("pinentry cancelled by user"),
@@ -115,7 +131,7 @@ pub fn get_passphrase(
         }
     }
 
-    // 4. Fall back to terminal prompt.
+    // 5. Fall back to terminal prompt.
     rpassword_prompt(prompt)
 }
 
@@ -189,19 +205,47 @@ pub fn clear_all_cached_secrets(fingerprint: &str) {
     clear_cached_passphrase(fingerprint);
 }
 
-/// Open a connection to the agent socket with a short read timeout.
+/// Open a connection to the agent socket with a 10-minute read timeout.
+///
+/// The timeout has to cover the full pinentry round-trip — the agent
+/// only replies once the user finishes typing — so a short cache-style
+/// timeout would spuriously kill interactive prompts. On a cache hit
+/// the agent answers in milliseconds, so the long ceiling only
+/// matters when humans are involved.
 fn agent_connect() -> Option<UnixStream> {
     let socket_path = agent::default_socket_path().ok()?;
     let stream = UnixStream::connect(&socket_path).ok()?;
-    // Pinentry interactions can take as long as the user takes to
-    // type. The read timeout below applies to the FIRST byte; once
-    // pinentry replies the rest is immediate. We use a long timeout
-    // (10 minutes) to accommodate manual PIN entry; on cache hit the
-    // agent replies in milliseconds.
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(600)))
         .ok()?;
     Some(stream)
+}
+
+/// Try a cache-only `GET_PASSPHRASE` against the agent.
+///
+/// Used by step 1 of `get_passphrase` so a cache hit can short-circuit
+/// the env-var / pinentry chain. Returns `None` when the agent is
+/// unreachable, the key is not cached, or the response is unparseable.
+/// The read timeout here is short (2s) since we never block on user
+/// input on this path — that's the job of [`try_agent_get_or_prompt`].
+fn try_agent_get(cache_key: &str) -> Option<Zeroizing<String>> {
+    let socket_path = agent::default_socket_path().ok()?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket_path).ok()?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok()?;
+
+    let request = format!("GET_PASSPHRASE {}\n", cache_key);
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = String::new();
+    let mut reader = std::io::BufReader::new(&stream);
+    reader.read_line(&mut response).ok()?;
+
+    match agent::protocol::parse_response(&response) {
+        Some(agent::protocol::Response::Passphrase(p)) => Some(p),
+        _ => None,
+    }
 }
 
 /// Try `GET_OR_PROMPT` against the agent.

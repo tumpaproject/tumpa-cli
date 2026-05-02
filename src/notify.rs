@@ -24,6 +24,7 @@ pub enum TouchOp {
     Auth,
 }
 
+#[cfg(target_os = "macos")]
 impl TouchOp {
     fn verb(self) -> &'static str {
         match self {

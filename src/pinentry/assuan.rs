@@ -245,13 +245,26 @@ fn drive_assuan(
         line.clear();
         let _ = reader.read_line(&mut line);
         CandidateResult::Got(pass)
-    } else if line.starts_with("ERR") {
-        // Distinguish user cancel from other ERRs by GnuPG error code.
-        // Pinentry signals cancellation with code 83886179 (GPG_ERR_CANCELED)
-        // or code 99 in some forks. We treat any ERR after GETPIN as
-        // user cancel — by the time we send GETPIN the conversation is
-        // healthy, so the only realistic ERRs are user-initiated.
-        CandidateResult::Cancelled
+    } else if let Some(rest) = line.strip_prefix("ERR ") {
+        // Pinentry distinguishes user cancellation from real errors
+        // via the GPG error code: GPG_ERR_CANCELED (=83886179) when
+        // libgcrypt's `gpg-error` is in use, or the bare `99`
+        // returned by some pinentry forks. Anything else is a real
+        // protocol/runtime failure that callers may want to surface
+        // (or fall back to the next candidate for); flattening it to
+        // `Cancelled` would suppress the diagnostic and block the
+        // tolerant-loop fallback. The first whitespace-delimited
+        // token after `ERR ` is the numeric code.
+        match parse_gpg_err_code(rest) {
+            Some(code) if is_cancel_code(code) => CandidateResult::Cancelled,
+            _ => {
+                let _ = writeln!(stdin, "BYE");
+                return CandidateResult::ProtocolErr(format!(
+                    "pinentry error: {}",
+                    rest.trim()
+                ));
+            }
+        }
     } else if line.starts_with("OK") {
         // Empty input → treat as cancel.
         CandidateResult::Cancelled
@@ -268,6 +281,24 @@ fn assuan_escape(s: &str) -> String {
     s.replace('%', "%25").replace('\n', "%0A").replace('\r', "%0D")
 }
 
+/// Extract the numeric error code from an Assuan `ERR ...` line tail.
+///
+/// Format is `ERR <code> [description]`. We parse the first
+/// whitespace-delimited token as a `u32`. Returns `None` for
+/// non-numeric / missing codes — callers should treat that as a
+/// protocol error rather than guessing the user's intent.
+fn parse_gpg_err_code(rest: &str) -> Option<u32> {
+    rest.split_whitespace().next()?.parse::<u32>().ok()
+}
+
+/// Known pinentry cancel codes:
+/// - `83886179` (`0x05000063`) — `GPG_ERR_CANCELED` per gpg-error.
+/// - `99` — bare cancel code emitted by some pinentry forks that
+///   don't compose against gpg-error's source-id encoding.
+fn is_cancel_code(code: u32) -> bool {
+    code == 83886179 || code == 99
+}
+
 #[cfg(test)]
 mod tests {
     use super::{assuan_escape, pinentry_candidates};
@@ -281,8 +312,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_gpg_err_code_reads_first_token() {
+        use super::parse_gpg_err_code;
+        assert_eq!(parse_gpg_err_code("83886179"), Some(83886179));
+        assert_eq!(
+            parse_gpg_err_code("83886179 Operation cancelled <Pinentry>"),
+            Some(83886179)
+        );
+        assert_eq!(parse_gpg_err_code("99"), Some(99));
+        assert_eq!(parse_gpg_err_code(""), None);
+        assert_eq!(parse_gpg_err_code("not-a-number text"), None);
+    }
+
+    #[test]
+    fn is_cancel_code_matches_known_values() {
+        use super::is_cancel_code;
+        // GPG_ERR_CANCELED with the gpg-error source-id encoding,
+        // and the bare 99 some pinentry forks emit.
+        assert!(is_cancel_code(83886179));
+        assert!(is_cancel_code(99));
+        // Other GPG error codes (e.g. GPG_ERR_BAD_PIN, source-encoded
+        // as 83886187) must NOT be silently treated as cancellation,
+        // otherwise `run_pinentry` would skip the tolerant-loop
+        // fallback and the caller would see a Cancelled instead of
+        // a re-prompt.
+        assert!(!is_cancel_code(83886187));
+        assert!(!is_cancel_code(0));
+    }
+
+    #[test]
     fn candidates_respect_explicit_program() {
-        // Save and restore env to avoid leaking into other tests.
+        // Process-wide env vars are global state; serialise across
+        // every test in this module that touches `PINENTRY_PROGRAM`
+        // so parallel test runs don't see each other's writes. The
+        // mutex is local to this test module — same shape as the
+        // DISPLAY/WAYLAND lock in `agent::pinentry::tests`.
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("PINENTRY_PROGRAM").ok();
         std::env::set_var("PINENTRY_PROGRAM", "/opt/custom/pinentry");
         let cands = pinentry_candidates();

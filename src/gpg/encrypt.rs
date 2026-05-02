@@ -15,7 +15,9 @@ use libtumpa::{Passphrase, Pin};
 use zeroize::Zeroizing;
 
 use crate::card_touch::{self, Op as TouchOp};
-use crate::gpg::sign::{prompt_card_pin, prompt_key_passphrase};
+use crate::gpg::sign::{
+    prompt_card_pin, prompt_key_passphrase, verify_card_pin, verify_software_passphrase,
+};
 use crate::pinentry;
 use crate::store;
 
@@ -145,23 +147,34 @@ fn sign_and_encrypt_dispatch(
             card_touch::maybe_notify_touch(TouchOp::Sign, Some(&card_ident));
             let pin: Zeroizing<String> =
                 prompt_card_pin(&card_ident, &key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
-            let pin_obj: Pin = Zeroizing::new(pin.as_bytes().to_vec());
-            match wecanencrypt::card::sign_and_encrypt_to_multiple_on_card(
-                &key_data,
-                pin_obj.as_slice(),
-                Some(&card_ident),
-                recipient_keys,
-                plaintext,
-                armor,
-            ) {
-                Ok(ct) => {
-                    pinentry::cache_pin(&key_info.fingerprint, &pin);
-                    return Ok(ct);
+            // Pre-op verify catches a wrong PIN cleanly before we
+            // spend a real sign-then-encrypt round-trip. On failure
+            // we capture into `card_attempt` so the existing
+            // software-fallback path runs (parallel to the
+            // sign_and_encrypt_on_card Err arm just below);
+            // verify_card_pin already clears the cached PIN.
+            match verify_card_pin(&card_ident, &pin, &key_info.fingerprint) {
+                Ok(()) => {
+                    let pin_obj: Pin = Zeroizing::new(pin.as_bytes().to_vec());
+                    match wecanencrypt::card::sign_and_encrypt_to_multiple_on_card(
+                        &key_data,
+                        pin_obj.as_slice(),
+                        Some(&card_ident),
+                        recipient_keys,
+                        plaintext,
+                        armor,
+                    ) {
+                        Ok(ct) => {
+                            pinentry::cache_pin(&key_info.fingerprint, &pin);
+                            return Ok(ct);
+                        }
+                        Err(e) => {
+                            pinentry::clear_cached_pin(&key_info.fingerprint);
+                            Some(anyhow!("card sign+encrypt failed: {e}"))
+                        }
+                    }
                 }
-                Err(e) => {
-                    pinentry::clear_cached_pin(&key_info.fingerprint);
-                    Some(anyhow!("card sign+encrypt failed: {e}"))
-                }
+                Err(e) => Some(e),
             }
         }
         Ok(None) => None,
@@ -191,6 +204,17 @@ fn sign_and_encrypt_dispatch(
 
     let passphrase: Passphrase =
         prompt_key_passphrase(&key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
+    // Pre-op verify (software-key counterpart of the card branch
+    // above): unlock the secret-key packet so a wrong passphrase
+    // surfaces before we start the sign-then-encrypt op. If the
+    // card had also failed, fold its error into the message so the
+    // user sees the full picture rather than just "passphrase wrong".
+    if let Err(e) = verify_software_passphrase(&key_data, &passphrase, &key_info.fingerprint) {
+        return Err(match card_attempt {
+            Some(card_err) => anyhow!("software fallback failed: {e}; {card_err}"),
+            None => e,
+        });
+    }
 
     let ciphertext = wecanencrypt::sign_and_encrypt_to_multiple(
         &key_data,

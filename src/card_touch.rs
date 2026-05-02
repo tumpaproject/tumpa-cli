@@ -11,7 +11,9 @@ use crate::notify::{self, TouchOp};
 
 pub use crate::notify::TouchOp as Op;
 
-/// Touch-policy decision. Public for unit testing.
+/// Touch-policy decision. Crate-visible so the unit tests in this
+/// module (and other tumpa-cli internals) can match on it without
+/// going through the full `maybe_notify_touch` side-effect path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decision {
     /// Slot is `On` or `Fixed`: card will refuse the op until the user
@@ -52,6 +54,11 @@ impl Decision {
 ///     failed). With a warn-level log.
 ///   - all three slots `None` (after fallback) → `NotRequired`
 ///     (older card with no UIF support — silent skip is correct).
+/// macOS-only: the only caller is the macOS-gated
+/// `maybe_notify_touch`, and the talktosc fallback path it depends on
+/// would otherwise force the PCSC stack to build on Linux/BSD for
+/// dead code.
+#[cfg(target_os = "macos")]
 pub(crate) fn decide(op: TouchOp, card_ident: Option<&str>) -> Decision {
     let modes = match wecanencrypt::card::get_touch_modes(card_ident) {
         Ok((None, None, None)) => {
@@ -127,6 +134,10 @@ fn touch_mode_from_policy_byte(byte: u8) -> Option<wecanencrypt::card::TouchMode
 ///
 /// Best-effort by design: errors are logged at warn / debug level
 /// and the caller falls through to its own None-handling.
+///
+/// macOS-only: gated alongside `decide` and the `talktosc` Cargo
+/// dependency.
+#[cfg(target_os = "macos")]
 fn read_uif_via_talktosc(
     card_ident: &str,
 ) -> Option<(
@@ -237,6 +248,11 @@ pub(crate) fn decide_from_modes(
 /// touch policy is queried for the exact card; pass `None` to fall back to
 /// the first enumerated card. On any failure, this is a silent no-op —
 /// notifications are best-effort UX.
+///
+/// macOS-only: the underlying `notify::touch_prompt` is itself a
+/// no-op on every other platform, and the UIF / card-detail queries
+/// would cost extra PCSC traffic with no user-visible benefit.
+#[cfg(target_os = "macos")]
 pub fn maybe_notify_touch(op: Op, card_ident: Option<&str>) {
     if !decide(op, card_ident).should_notify() {
         return;
@@ -253,6 +269,10 @@ pub fn maybe_notify_touch(op: Op, card_ident: Option<&str>) {
 
     notify::touch_prompt(op, serial.as_deref());
 }
+
+/// Non-macOS stub. See the macOS variant for rationale.
+#[cfg(not(target_os = "macos"))]
+pub fn maybe_notify_touch(_op: Op, _card_ident: Option<&str>) {}
 
 #[cfg(test)]
 mod tests {

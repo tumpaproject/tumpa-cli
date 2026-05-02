@@ -135,15 +135,19 @@ pub fn parse_request(line: &str) -> Option<Request> {
     }
 
     if let Some(rest) = line.strip_prefix("GET_OR_PROMPT ") {
-        let parts: Vec<&str> = rest.split(' ').collect();
+        // `split_whitespace` collapses runs of spaces / tabs and skips
+        // empty fields, so the parser tolerates senders that emit
+        // double-spaces (or other inter-token whitespace) without
+        // rejecting otherwise-valid requests.
+        let parts: Vec<&str> = rest.split_whitespace().collect();
         // Three required (cache_key, desc, prompt) + optional keyinfo.
         if parts.len() != 3 && parts.len() != 4 {
             return None;
         }
-        let cache_key = parts[0].trim();
-        let b64_desc = parts[1].trim();
-        let b64_prompt = parts[2].trim();
-        let b64_keyinfo = parts.get(3).map(|s| s.trim());
+        let cache_key = parts[0];
+        let b64_desc = parts[1];
+        let b64_prompt = parts[2];
+        let b64_keyinfo = parts.get(3).copied();
 
         if !is_valid_cache_key(cache_key) {
             return None;
