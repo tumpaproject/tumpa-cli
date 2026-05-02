@@ -425,91 +425,12 @@ pub fn cmd_desc(path: &Path) -> Result<()> {
 }
 
 /// Print detailed key information.
+///
+/// The actual rendering lives in `libtumpa::describe::format_key_info`
+/// so the macOS Mail extension's "key details" sheet stays byte-for-byte
+/// identical with `tcli describe` output.
 fn print_key_info(key_data: &[u8], key_info: &wecanencrypt::KeyInfo) {
-    let key_type = if key_info.is_secret { "sec" } else { "pub" };
-    let time_fmt = "%Y-%m-%d %H:%M:%S UTC";
-
-    // Get primary key algorithm details
-    let primary_algo = wecanencrypt::get_key_cipher_details(key_data)
-        .ok()
-        .and_then(|details| details.into_iter().next())
-        .map(|d| format_algo(&d.algorithm, d.bit_length))
-        .unwrap_or_default();
-
-    // Primary key capabilities
-    let mut primary_caps = Vec::new();
-    if key_info.can_primary_sign {
-        primary_caps.push("sign");
-    }
-    primary_caps.push("certify"); // primary can always certify
-
-    println!(
-        "{}  {}  {}  [{}]",
-        key_type,
-        key_info.fingerprint,
-        primary_algo,
-        primary_caps.join(", ")
-    );
-    println!("     Created:  {}", key_info.creation_time.format(time_fmt));
-    if let Some(ref exp) = key_info.expiration_time {
-        println!("     Expires:  {}", exp.format(time_fmt));
-    } else {
-        println!("     Expires:  never");
-    }
-
-    if key_info.is_revoked {
-        if let Some(ref rev_time) = key_info.revocation_time {
-            println!("     Revoked:  {}", rev_time.format(time_fmt));
-        } else {
-            println!("     Revoked:  yes");
-        }
-    }
-
-    // UIDs (primary first)
-    let mut uids: Vec<_> = key_info.user_ids.iter().filter(|u| !u.revoked).collect();
-    uids.sort_by_key(|u| std::cmp::Reverse(u.is_primary));
-
-    if !uids.is_empty() {
-        println!("     UIDs:");
-        for uid in &uids {
-            let prefix = if uid.is_primary {
-                "[primary] "
-            } else {
-                "          "
-            };
-            println!("       {}{}", prefix, uid.value);
-        }
-    }
-
-    // Subkeys
-    if !key_info.subkeys.is_empty() {
-        println!("     Subkeys:");
-        for sk in &key_info.subkeys {
-            let revoked = if sk.is_revoked { " [REVOKED]" } else { "" };
-            let algo = format_algo(&sk.algorithm, sk.bit_length);
-            let expiry = sk
-                .expiration_time
-                .map(|t| format!("\n                 Expires:  {}", t.format(time_fmt)))
-                .unwrap_or_default();
-            println!(
-                "       {}  {}  [{}]{}",
-                sk.fingerprint, algo, sk.key_type, revoked
-            );
-            println!(
-                "                 Created:  {}{}",
-                sk.creation_time.format(time_fmt),
-                expiry
-            );
-        }
-    }
-}
-
-fn format_algo(algorithm: &str, bit_length: usize) -> String {
-    if bit_length > 0 {
-        format!("{}{}", algorithm, bit_length)
-    } else {
-        algorithm.to_string()
-    }
+    print!("{}", libtumpa::describe::format_key_info(key_data, key_info));
 }
 
 /// Delete a key from the keystore.
