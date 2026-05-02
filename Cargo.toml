@@ -49,7 +49,7 @@ experimental = []
 # prefix + (X25519, X25519) match arm needed by Nitrokey 3
 # (opcard-rs >= 1.5) ECC card uploads.
 wecanencrypt = { version = "0.14.2", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.3.1", features = ["card", "network"] }
+libtumpa = { version = "0.3.1", path = "../libtumpa", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).
@@ -65,6 +65,14 @@ dirs = "6"
 zeroize = { version = "1", features = ["derive"] }
 rpassword = "7"
 libc = "0.2"
+# Direct PCSC APDU sender for the touch-notification path's UIF
+# fallback. Some YubiKey firmware (4.3.x and earlier) supports per-slot
+# UIF but does NOT embed the UIF tags in the Application Related Data
+# DO; openpgp-card-rs only walks ARD, so its `user_interaction_flag`
+# returns `None` for every slot on those cards. talktosc lets us send
+# `GET DATA 0xD6/0xD7/0xD8` directly and read the policy bytes the
+# card actually has.
+talktosc = "0.3.0"
 
 # SSH agent
 ssh-agent-lib = "0.5"

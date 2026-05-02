@@ -14,6 +14,7 @@ use libtumpa::store as ltstore;
 use libtumpa::{Passphrase, Pin};
 use zeroize::Zeroizing;
 
+use crate::card_touch::{self, Op as TouchOp};
 use crate::gpg::sign::{prompt_card_pin, prompt_key_passphrase};
 use crate::pinentry;
 use crate::store;
@@ -141,6 +142,7 @@ fn sign_and_encrypt_dispatch(
     let card_attempt = match libtumpa::encrypt::find_signing_card_for_encrypt(&key_data) {
         Ok(Some(m)) => {
             let card_ident = m.card.ident.clone();
+            card_touch::maybe_notify_touch(TouchOp::Sign, Some(&card_ident));
             let pin: Zeroizing<String> =
                 prompt_card_pin(&card_ident, &key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
             let pin_obj: Pin = Zeroizing::new(pin.as_bytes().to_vec());

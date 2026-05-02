@@ -10,6 +10,7 @@ use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, Signature};
 
 use crate::cache::CredentialCache;
+use crate::card_touch::{self, Op as TouchOp};
 use crate::pinentry;
 use crate::store;
 
@@ -324,6 +325,8 @@ impl TumpaBackend {
         request: &SignRequest,
     ) -> Result<Signature, AgentError> {
         log::info!("Signing with card {}", card_ident);
+
+        card_touch::maybe_notify_touch(TouchOp::Auth, Some(card_ident));
 
         const MAX_PIN_RETRIES: u32 = 3;
         let sign_data = prepare_sign_data(request).ok_or(AgentError::Failure)?;

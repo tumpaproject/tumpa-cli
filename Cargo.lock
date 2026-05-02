@@ -1714,9 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "libtumpa"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ca7bd258eb2c6146e922140225870daad831747c8ee71337c7a2e7928645c4a"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3131,6 +3129,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talktosc"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb789439e6d5af0dd326583abe6e13493925bd22fb14c8ebf9ea1f9bd901f511"
+dependencies = [
+ "pcsc",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3388,6 +3396,7 @@ dependencies = [
  "sha2",
  "ssh-agent-lib",
  "ssh-key",
+ "talktosc",
  "tempfile",
  "tokio",
  "wecanencrypt",

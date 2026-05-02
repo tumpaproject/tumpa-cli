@@ -12,6 +12,7 @@ use libtumpa::sign::{
 };
 use libtumpa::{HashAlgorithm, Passphrase, Pin};
 
+use crate::card_touch::{self, Op as TouchOp};
 use crate::pinentry;
 use crate::store;
 
@@ -101,6 +102,7 @@ pub fn sign(
                     key_info,
                 } => {
                     *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+                    card_touch::maybe_notify_touch(TouchOp::Sign, Some(card_ident));
                     let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                         .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
                     // Pin is `Zeroizing<Vec<u8>>`; the source bytes get copied
@@ -297,6 +299,7 @@ pub fn clearsign(
             key_info,
         } => {
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
+            card_touch::maybe_notify_touch(TouchOp::Sign, Some(card_ident));
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());

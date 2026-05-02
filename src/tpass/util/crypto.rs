@@ -11,6 +11,7 @@ use libtumpa::decrypt as ltd;
 use libtumpa::{Passphrase, Pin};
 use zeroize::Zeroizing;
 
+use tumpa_cli::card_touch::{self, Op as TouchOp};
 use tumpa_cli::{pinentry, store};
 
 /// Encrypt plaintext bytes to multiple recipients, writing to output file.
@@ -93,6 +94,7 @@ fn try_decrypt_on_card(
     }
     desc.push_str(&format!("\n\nDecrypting for: {}", uid));
 
+    card_touch::maybe_notify_touch(TouchOp::Decrypt, Some(&card.card.ident));
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
