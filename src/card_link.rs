@@ -111,8 +111,8 @@ pub fn cmd_card_link(
 ) -> Result<()> {
     let keystore = store::open_keystore(keystore_path)?;
 
-    let detections = link::auto_detect(&keystore)
-        .context("failed to auto-detect card↔key matches")?;
+    let detections =
+        link::auto_detect(&keystore).context("failed to auto-detect card↔key matches")?;
 
     let detections = filter_detections(detections, filter_card_ident)?;
 

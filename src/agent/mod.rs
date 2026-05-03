@@ -181,8 +181,7 @@ pub async fn run_agent(
                 let client_deduper = deduper.clone();
                 let ttl = cache_ttl;
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(stream, client_cache, client_deduper, ttl).await
-                    {
+                    if let Err(e) = handle_client(stream, client_cache, client_deduper, ttl).await {
                         log::debug!("Client error: {}", e);
                     }
                 });

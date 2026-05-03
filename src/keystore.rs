@@ -430,7 +430,10 @@ pub fn cmd_desc(path: &Path) -> Result<()> {
 /// so the macOS Mail extension's "key details" sheet stays byte-for-byte
 /// identical with `tcli describe` output.
 fn print_key_info(key_data: &[u8], key_info: &wecanencrypt::KeyInfo) {
-    print!("{}", libtumpa::describe::format_key_info(key_data, key_info));
+    print!(
+        "{}",
+        libtumpa::describe::format_key_info(key_data, key_info)
+    );
 }
 
 /// Delete a key from the keystore.

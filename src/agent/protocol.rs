@@ -250,9 +250,7 @@ pub fn encode_utf8(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        encode_utf8, format_response, parse_request, parse_response, Request, Response,
-    };
+    use super::{encode_utf8, format_response, parse_request, parse_response, Request, Response};
     use zeroize::Zeroizing;
 
     #[test]

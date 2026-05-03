@@ -36,10 +36,7 @@ pub enum PromptOutcome {
     /// At least one candidate spawned but the Assuan conversation
     /// failed (protocol error, unexpected response, broken pipe).
     /// `tried` lists the candidate names attempted, for diagnostics.
-    Err {
-        message: String,
-        tried: Vec<String>,
-    },
+    Err { message: String, tried: Vec<String> },
 }
 
 /// Candidate pinentry programs, in preference order.
@@ -259,10 +256,7 @@ fn drive_assuan(
             Some(code) if is_cancel_code(code) => CandidateResult::Cancelled,
             _ => {
                 let _ = writeln!(stdin, "BYE");
-                return CandidateResult::ProtocolErr(format!(
-                    "pinentry error: {}",
-                    rest.trim()
-                ));
+                return CandidateResult::ProtocolErr(format!("pinentry error: {}", rest.trim()));
             }
         }
     } else if line.starts_with("OK") {
@@ -278,7 +272,9 @@ fn drive_assuan(
 }
 
 fn assuan_escape(s: &str) -> String {
-    s.replace('%', "%25").replace('\n', "%0A").replace('\r', "%0D")
+    s.replace('%', "%25")
+        .replace('\n', "%0A")
+        .replace('\r', "%0D")
 }
 
 /// Extract the numeric error code from an Assuan `ERR ...` line tail.

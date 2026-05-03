@@ -114,10 +114,8 @@ impl PromptDeduper {
         let desc = description;
         let prom = prompt_text;
         let ki = keyinfo;
-        let outcome_blocking = tokio::task::spawn_blocking(move || {
-            run_pinentry(&desc, &prom, ki.as_deref())
-        })
-        .await;
+        let outcome_blocking =
+            tokio::task::spawn_blocking(move || run_pinentry(&desc, &prom, ki.as_deref())).await;
 
         let outcome = match outcome_blocking {
             Ok(o) => map_outcome(o),

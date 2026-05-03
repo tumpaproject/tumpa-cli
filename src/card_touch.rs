@@ -340,8 +340,14 @@ mod tests {
             decide_from_modes(TouchOp::Decrypt, modes),
             Decision::NotRequired
         );
-        assert_eq!(decide_from_modes(TouchOp::Sign, modes), Decision::NotRequired);
-        assert_eq!(decide_from_modes(TouchOp::Auth, modes), Decision::NotRequired);
+        assert_eq!(
+            decide_from_modes(TouchOp::Sign, modes),
+            Decision::NotRequired
+        );
+        assert_eq!(
+            decide_from_modes(TouchOp::Auth, modes),
+            Decision::NotRequired
+        );
     }
 
     /// Pin the OpenPGP card UIF policy byte → wecanencrypt::TouchMode
@@ -352,19 +358,10 @@ mod tests {
     /// breaks loudly instead of silently misclassifying.
     #[test]
     fn touch_mode_from_policy_byte_pins_spec_values() {
-        assert_eq!(
-            touch_mode_from_policy_byte(0x00),
-            Some(TouchMode::Off)
-        );
+        assert_eq!(touch_mode_from_policy_byte(0x00), Some(TouchMode::Off));
         assert_eq!(touch_mode_from_policy_byte(0x01), Some(TouchMode::On));
-        assert_eq!(
-            touch_mode_from_policy_byte(0x02),
-            Some(TouchMode::Fixed)
-        );
-        assert_eq!(
-            touch_mode_from_policy_byte(0x03),
-            Some(TouchMode::Cached)
-        );
+        assert_eq!(touch_mode_from_policy_byte(0x02), Some(TouchMode::Fixed));
+        assert_eq!(touch_mode_from_policy_byte(0x03), Some(TouchMode::Cached));
         assert_eq!(
             touch_mode_from_policy_byte(0x04),
             Some(TouchMode::CachedFixed)

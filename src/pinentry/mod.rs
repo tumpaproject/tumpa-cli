@@ -249,11 +249,7 @@ fn try_agent_get(cache_key: &str) -> Option<Zeroizing<String>> {
 }
 
 /// Try `GET_OR_PROMPT` against the agent.
-fn try_agent_get_or_prompt(
-    cache_key: &str,
-    description: &str,
-    prompt: &str,
-) -> AgentPromptOutcome {
+fn try_agent_get_or_prompt(cache_key: &str, description: &str, prompt: &str) -> AgentPromptOutcome {
     let mut stream = match agent_connect() {
         Some(s) => s,
         None => return AgentPromptOutcome::NoAgent,
