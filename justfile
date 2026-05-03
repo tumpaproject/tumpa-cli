@@ -51,3 +51,46 @@ check: build lint test
 docker-test-git-sign:
     docker build -t tumpa-cli-fedora43 -f docker/Dockerfile .
     docker run --rm -v "$(pwd):/src:Z" tumpa-cli-fedora43
+
+# --- macOS LaunchAgent helpers (Tumpa user-domain agent) ---
+# These manage the per-user Aqua-session LaunchAgent installed by the
+# Homebrew tap's `setup-tumpa-agent` script (label
+# `in.kushaldas.tumpa.agent`).
+LAUNCHD_LABEL := "in.kushaldas.tumpa.agent"
+LAUNCHD_PLIST := "$HOME/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist"
+
+# Show launchd status of the Tumpa user agent (macOS only).
+mac-agent-status:
+    @launchctl print "gui/$(id -u)/{{LAUNCHD_LABEL}}" 2>/dev/null \
+        | grep -E '^\s+(state|pid|sessiontype|program)' \
+        || echo "{{LAUNCHD_LABEL}} is not loaded"
+
+# Stop the launchd-managed Tumpa agent until next login or mac-agent-start.
+mac-agent-stop:
+    launchctl bootout "gui/$(id -u)/{{LAUNCHD_LABEL}}"
+
+# Start the launchd-managed Tumpa agent (plist must already be installed).
+mac-agent-start:
+    launchctl bootstrap "gui/$(id -u)" "{{LAUNCHD_PLIST}}"
+
+# Bootout + bootstrap; picks up plist edits.
+mac-agent-restart:
+    -launchctl bootout "gui/$(id -u)/{{LAUNCHD_LABEL}}" 2>/dev/null
+    launchctl bootstrap "gui/$(id -u)" "{{LAUNCHD_PLIST}}"
+
+# Force-restart the agent, bypassing launchd's spawn throttle (use when `mac-agent-restart` leaves state = not running).
+mac-agent-kickstart:
+    launchctl kickstart -kp "gui/$(id -u)/{{LAUNCHD_LABEL}}"
+
+# Persistently disable across reboots.
+mac-agent-disable:
+    launchctl disable "gui/$(id -u)/{{LAUNCHD_LABEL}}"
+
+# Re-enable a previously disabled agent.
+mac-agent-enable:
+    launchctl enable "gui/$(id -u)/{{LAUNCHD_LABEL}}"
+
+# Bootout the agent and remove its plist from ~/Library/LaunchAgents/.
+mac-agent-uninstall:
+    -launchctl bootout "gui/$(id -u)/{{LAUNCHD_LABEL}}" 2>/dev/null
+    rm -f "{{LAUNCHD_PLIST}}"

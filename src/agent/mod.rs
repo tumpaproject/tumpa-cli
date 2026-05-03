@@ -205,21 +205,7 @@ async fn handle_client(
     let mut line = String::new();
 
     while reader.read_line(&mut line).await? > 0 {
-        let trimmed_for_log = line.trim_end_matches(['\n', '\r']);
-        let preview: String = trimmed_for_log.chars().take(80).collect();
-        log::info!(
-            "agent rx: bytes={} verb_preview={:?}{}",
-            trimmed_for_log.len(),
-            preview,
-            if trimmed_for_log.len() > 80 { " …" } else { "" }
-        );
-
-        let parsed = protocol::parse_request(&line);
-        if parsed.is_none() {
-            log::info!("agent rx: parse_request returned None → NOT_FOUND");
-        }
-
-        let response = if let Some(request) = parsed {
+        let response = if let Some(request) = protocol::parse_request(&line) {
             match request {
                 protocol::Request::Get { cache_key } => {
                     let cache = cache.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
@@ -255,11 +241,6 @@ async fn handle_client(
                     prompt,
                     keyinfo,
                 } => {
-                    log::info!(
-                        "GET_OR_PROMPT cache_key={:?} key_len={}",
-                        cache_key,
-                        cache_key.len()
-                    );
                     // 1. Cache hit short-circuits — no pinentry, no
                     //    deduper involvement.
                     let cached = {
@@ -267,18 +248,12 @@ async fn handle_client(
                         cache.get(&cache_key).cloned()
                     };
                     if let Some(pass) = cached {
-                        log::info!("GET_OR_PROMPT cache HIT for {:?}", cache_key);
                         protocol::Response::Passphrase(pass)
                     } else if !is_desktop_session() {
-                        log::info!(
-                            "GET_OR_PROMPT cache MISS, !desktop → PINENTRY_UNAVAILABLE for {:?}",
-                            cache_key
-                        );
                         // 2. Headless: no pinentry possible, tell the
                         //    client to use its own fallback path.
                         protocol::Response::PinentryUnavailable
                     } else {
-                        log::info!("GET_OR_PROMPT cache MISS, prompting via deduper for {:?}", cache_key);
                         // 3. Desktop session, cache miss: ask the
                         //    deduper to prompt (or join an in-flight
                         //    prompt for the same key).
