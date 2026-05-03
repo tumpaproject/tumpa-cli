@@ -2,10 +2,17 @@
 //!
 //! Orchestrates the fallback chain:
 //!
-//!   1. Tumpa agent `GET_OR_PROMPT` (cache + agent-side pinentry)
+//!   1. Agent cache via `GET_PASSPHRASE` (cache-only, no prompting)
 //!   2. Env vars (`TUMPA_ADMIN_PIN` for admin prompts; `TUMPA_PASSPHRASE` otherwise)
-//!   3. Local pinentry (`assuan::run_pinentry`)
-//!   4. Terminal `rpassword` prompt
+//!   3. Agent-driven pinentry via `GET_OR_PROMPT` (cache miss → agent pops `pinentry-mac` etc.)
+//!   4. Local pinentry (`assuan::run_pinentry`)
+//!   5. Terminal `rpassword` prompt
+//!
+//! Env vars sit between the cache and the agent's interactive prompt
+//! on purpose: a non-interactive run (tests, CI, scripted automation)
+//! sets `TUMPA_PASSPHRASE` and must never be blocked behind a pinentry
+//! dialog the harness can't dismiss, but a warm cache is still the
+//! best answer when we have one.
 //!
 //! The Assuan/pinentry plumbing is shared with the agent's
 //! prompt-on-miss path via the [`assuan`] submodule.
@@ -35,16 +42,26 @@ enum CacheSlot {
 /// Get a passphrase or PIN.
 ///
 /// Acquisition order:
-/// 1. Agent `GET_OR_PROMPT` (cache + agent-side pinentry, when the
-///    prompt is not `"Admin PIN"` and `cache_key` is `Some`). A
-///    `NOT_FOUND` reply from a pre-`GET_OR_PROMPT` agent is treated
-///    the same as `PINENTRY_UNAVAILABLE`: fall through to the rest of
-///    the chain.
+/// 1. Agent cache via `GET_PASSPHRASE` — cache-only, no prompting,
+///    skipped for `"Admin PIN"` prompts and when `cache_key` is `None`.
+///    A hit always wins: the value was confirmed correct on a prior op,
+///    so it beats whatever env or pinentry would offer.
 /// 2. `TUMPA_ADMIN_PIN` env var — only when `prompt` is `"Admin PIN"`
 ///    (case-insensitive); skipped for any other prompt.
-/// 3. `TUMPA_PASSPHRASE` env var.
-/// 4. Local pinentry (`assuan::run_pinentry`).
-/// 5. Terminal prompt.
+/// 3. `TUMPA_PASSPHRASE` env var. Wins over the agent's *interactive*
+///    prompt (step 4) so non-interactive runs (tests, CI, scripted
+///    automation) never get blocked behind a pinentry-mac dialog the
+///    harness can't dismiss.
+/// 4. Agent-driven pinentry via `GET_OR_PROMPT` — agent pops its own
+///    pinentry (e.g. `pinentry-mac`) and returns the user's input.
+///    `Cancelled` from the agent does **not** fall through; the user
+///    declined and we propagate the cancellation. `PINENTRY_UNAVAILABLE`
+///    (headless box, no pinentry binary) and `NOT_FOUND` (pre-
+///    `GET_OR_PROMPT` agent that doesn't recognize the verb) both
+///    fall through to step 5.
+/// 5. Local pinentry (`assuan::run_pinentry`) — same Assuan helpers
+///    the agent uses, run in-process when no agent is available.
+/// 6. Terminal prompt via `rpassword`.
 ///
 /// `cache_key` is the key fingerprint used for the agent cache. A
 /// returned value is **never written** to the cache by this function —

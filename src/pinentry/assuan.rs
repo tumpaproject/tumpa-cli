@@ -118,7 +118,7 @@ pub fn run_pinentry(description: &str, prompt: &str, keyinfo: Option<&str>) -> P
             CandidateResult::Got(p) => return PromptOutcome::Got(p),
             CandidateResult::Cancelled => return PromptOutcome::Cancelled,
             CandidateResult::SpawnFailed => {
-                log::debug!("{} not on PATH, trying next pinentry", program);
+                log::debug!("could not spawn {}, trying next pinentry", program);
             }
             CandidateResult::ProtocolErr(msg) => {
                 log::debug!("{} failed ({}), trying next pinentry", program, msg);
@@ -157,7 +157,18 @@ fn try_one(
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return CandidateResult::SpawnFailed,
+        // NotFound = binary isn't on PATH; that's the expected
+        // "try the next candidate" path and not worth surfacing.
+        // Anything else (permission denied, exec format error, …)
+        // is an actionable failure: keep the OS error message so
+        // the user can see *why* their pinentry didn't work
+        // instead of a misleading "not on PATH" log line.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CandidateResult::SpawnFailed;
+        }
+        Err(e) => {
+            return CandidateResult::ProtocolErr(format!("spawn failed: {}", e));
+        }
     };
 
     let stdin = match child.stdin.take() {
