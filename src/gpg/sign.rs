@@ -12,6 +12,7 @@ use libtumpa::sign::{
 };
 use libtumpa::{HashAlgorithm, Passphrase, Pin};
 
+use super::primary_uid;
 use crate::card_touch::{self, Op as TouchOp};
 use crate::pinentry;
 use crate::store;
@@ -245,21 +246,6 @@ pub(crate) fn prompt_card_pin(
 pub(crate) fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<Zeroizing<String>> {
     let desc = format!("Enter passphrase for key {}", primary_uid(key_info));
     pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))
-}
-
-/// Get the primary UID string from a certificate, falling back to the first
-/// UID or the fingerprint.
-///
-/// Prefers the UID marked `is_primary` (RFC 9580 primary UID flag), then
-/// the first non-revoked UID, then the fingerprint.
-fn primary_uid(key_info: &wecanencrypt::KeyInfo) -> &str {
-    key_info
-        .user_ids
-        .iter()
-        .find(|u| u.is_primary && !u.revoked)
-        .or_else(|| key_info.user_ids.iter().find(|u| !u.revoked))
-        .map(|u| u.value.as_str())
-        .unwrap_or(&key_info.fingerprint)
 }
 
 /// Run the bare `wecanencrypt::card::verify_user_pin` APDU to check

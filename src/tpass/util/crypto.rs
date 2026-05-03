@@ -12,6 +12,7 @@ use libtumpa::{Passphrase, Pin};
 use zeroize::Zeroizing;
 
 use tumpa_cli::card_touch::{self, Op as TouchOp};
+use tumpa_cli::gpg::primary_uid;
 use tumpa_cli::{pinentry, store};
 
 /// Encrypt plaintext bytes to multiple recipients, writing to output file.
@@ -73,12 +74,7 @@ fn try_decrypt_on_card(
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .ok_or_else(|| anyhow::anyhow!("No card with matching decryption key found"))?;
 
-    let uid = card
-        .key_info
-        .user_ids
-        .first()
-        .map(|u| u.value.as_str())
-        .unwrap_or(&card.key_info.fingerprint);
+    let uid = primary_uid(&card.key_info);
 
     let mut desc = format!(
         "Please unlock the card\n\nNumber: {}",
@@ -129,11 +125,7 @@ fn decrypt_with_software(
 
     let desc = format!(
         "Enter passphrase to decrypt with key {}",
-        key_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&key_info.fingerprint)
+        primary_uid(&key_info)
     );
     // `Passphrase` is `Zeroizing<String>`; pass the value libtumpa
     // expects directly without a plaintext `to_string()` copy.
@@ -219,11 +211,7 @@ pub fn sign_file_detached(
 
         let desc = format!(
             "Enter passphrase to sign with key {}",
-            key_info
-                .user_ids
-                .first()
-                .map(|u| u.value.as_str())
-                .unwrap_or(&key_info.fingerprint)
+            primary_uid(&key_info)
         );
         // `Passphrase` is `Zeroizing<String>`; pass it directly to
         // libtumpa to avoid an extra plaintext `to_string()` copy.

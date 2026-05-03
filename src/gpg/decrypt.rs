@@ -16,6 +16,7 @@ use libtumpa::{Passphrase, Pin};
 use zeroize::Zeroizing;
 
 use crate::card_touch::{self, Op as TouchOp};
+use crate::gpg::primary_uid;
 use crate::gpg::sign::{verify_card_pin, verify_software_passphrase};
 use crate::pinentry;
 use crate::store;
@@ -98,12 +99,7 @@ fn try_decrypt_on_card(
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .ok_or_else(|| anyhow::anyhow!("No card with matching decryption key found"))?;
 
-    let uid = card
-        .key_info
-        .user_ids
-        .first()
-        .map(|u| u.value.as_str())
-        .unwrap_or(&card.key_info.fingerprint);
+    let uid = primary_uid(&card.key_info);
 
     let mut desc = format!(
         "Please unlock the card\n\nNumber: {}",
@@ -156,11 +152,7 @@ fn decrypt_with_software(
 
     let desc = format!(
         "Enter passphrase to decrypt with key {}",
-        key_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&key_info.fingerprint)
+        primary_uid(&key_info)
     );
     // `Passphrase` is `Zeroizing<String>`; pass the value libtumpa
     // expects directly without a plaintext `to_string()` copy.
@@ -269,12 +261,7 @@ fn try_decrypt_and_verify_on_card(
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .ok_or_else(|| anyhow::anyhow!("No card with matching decryption key found"))?;
 
-    let uid = card
-        .key_info
-        .user_ids
-        .first()
-        .map(|u| u.value.as_str())
-        .unwrap_or(&card.key_info.fingerprint);
+    let uid = primary_uid(&card.key_info);
 
     let mut desc = format!(
         "Please unlock the card\n\nNumber: {}",
@@ -334,11 +321,7 @@ fn decrypt_and_verify_with_software(
 
     let desc = format!(
         "Enter passphrase to decrypt with key {}",
-        key_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&key_info.fingerprint)
+        primary_uid(&key_info)
     );
     let passphrase: Passphrase =
         pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
