@@ -94,8 +94,18 @@ sudo systemctl enable --now pcscd.socket
 
 **macOS:**
 
-No extra packages needed. The PC/SC framework (CryptoTokenKit) is
-built in.
+No extra packages needed for PC/SC — the CryptoTokenKit framework
+is built in. The `tumpa-cli` Homebrew formula does pull in two
+runtime helpers automatically:
+
+- `pinentry-mac` — Cocoa pinentry binary, used by the agent to
+  display passphrase / PIN dialogs.
+- `terminal-notifier` — used to post smartcard touch-confirmation
+  banners under Tumpa's own bundle identity (so users see "Tumpa
+  CLI is asking you to touch your card", not "Terminal is asking
+  ..." which appeared when we used `osascript` previously).
+  Without it the banners are silently skipped; the underlying
+  signing / decryption call still works.
 
 ### Shell completions
 
@@ -1045,39 +1055,31 @@ or forcing a re-prompt before handing the laptop to someone else.
 
 ### Starting the agent automatically
 
-#### macOS (Launch Agent)
+#### macOS (LaunchAgent via Homebrew)
 
-Create `~/Library/LaunchAgents/rocks.tumpa.agent.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>rocks.tumpa.agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/USERNAME/.cargo/bin/tcli</string>
-        <string>agent</string>
-        <string>--ssh</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardErrorPath</key>
-    <string>/Users/USERNAME/.tumpa/agent.log</string>
-</dict>
-</plist>
-```
-
-Replace `USERNAME` with your macOS username, then load it:
+If you installed `tumpa-cli` via the Homebrew tap, run the bundled
+helper once:
 
 ```
-launchctl load ~/Library/LaunchAgents/rocks.tumpa.agent.plist
+setup-tumpa-agent
 ```
+
+It does five things:
+
+1. Stops `brew services` for `tumpa-cli` if it is running, and
+   removes any stale `~/Library/LaunchAgents/homebrew.mxcl.tumpa-cli.plist`
+   left over from older formula versions.
+2. Installs `~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist`.
+   The plist is shipped by the formula and pinned with
+   `LimitLoadToSessionType = Aqua` so it loads into the GUI session
+   where `pinentry-mac` can draw its dialog window.
+3. Bootstraps it via `launchctl bootstrap gui/$(id -u)`.
+4. Enables it (defensive — re-enables if a previous
+   `launchctl disable` was issued).
+5. Verifies via `launchctl print`.
+
+The script is idempotent — re-run after `brew upgrade tumpa-cli`
+to pick up plist changes.
 
 Add to your shell profile (`~/.zshrc`):
 
@@ -1086,9 +1088,92 @@ export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
 ```
 
 The agent starts automatically on login, restarts if it crashes, and
-logs to `~/.tumpa/agent.log`.
+logs to `/opt/homebrew/var/log/tumpa-agent.log` (or
+`/usr/local/var/log/tumpa-agent.log` on Intel).
 
-To stop: `launchctl unload ~/Library/LaunchAgents/rocks.tumpa.agent.plist`
+To stop / start / inspect, the recipes in `tumpa-cli`'s own
+`justfile` are convenience wrappers:
+
+```
+just mac-agent-status
+just mac-agent-stop
+just mac-agent-start
+just mac-agent-restart
+just mac-agent-kickstart    # bypass launchd's spawn throttle
+just mac-agent-disable      # persistently disable across reboots
+just mac-agent-enable
+just mac-agent-uninstall    # bootout + rm plist
+```
+
+Plain `launchctl` equivalents:
+
+```bash
+launchctl print gui/$(id -u)/in.kushaldas.tumpa.agent
+launchctl bootout gui/$(id -u)/in.kushaldas.tumpa.agent
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist
+```
+
+> **Why not `brew services start tumpa-cli`?**
+> Homebrew's service mechanism cannot emit
+> `LimitLoadToSessionType = Aqua`, so the agent loads into the
+> Background launchd session — where `pinentry-mac` cannot reach
+> WindowServer. Symptoms: passphrase / smartcard PIN prompts hang,
+> Tumpa Mail's outbound signing fails with "PIN unavailable", and
+> nothing in the logs explains why. The `tumpa-cli` formula
+> deliberately omits a `service do` block; `setup-tumpa-agent` is
+> the supported path.
+
+##### Manual LaunchAgent (cargo install / non-Homebrew)
+
+If you installed `tcli` from source (`cargo install tumpa-cli`) and
+don't have `setup-tumpa-agent`, drop a plist by hand. Replace the
+two `__PATH__` placeholders with absolute paths:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>in.kushaldas.tumpa.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PATH_TO_TCLI__</string>
+        <string>agent</string>
+        <string>--ssh</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__PATH_TO_LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__PATH_TO_LOG__</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
+```
+
+Save it as `~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist`,
+`chmod 644`, then bootstrap:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist
+```
+
+`LimitLoadToSessionType = Aqua` is the critical key — without it,
+`pinentry-mac` cannot draw its dialog and signing prompts will
+appear "unavailable".
 
 #### Linux (systemd user service, recommended)
 
@@ -1590,6 +1675,27 @@ sudo dnf install pinentry-gnome3
 
 # macOS
 brew install pinentry-mac
+# (the `tumpa-cli` formula already pulls this in; only needed
+#  for cargo-installed setups)
+```
+
+On macOS, if the agent prompts hang or report "unavailable", check
+that the LaunchAgent is in the **Aqua** session — not Background.
+Confirm with:
+
+```bash
+launchctl print gui/$(id -u)/in.kushaldas.tumpa.agent | grep sessiontype
+# expect: sessiontype = Aqua
+```
+
+If it says `Background` (or no value), the agent was loaded by
+`brew services` rather than by `setup-tumpa-agent` — pinentry-mac
+cannot reach WindowServer from a Background-session process. Fix
+with:
+
+```bash
+brew services stop tumpa-cli
+setup-tumpa-agent
 ```
 
 Set `PINENTRY_PROGRAM` if the binary has a non-standard name:
