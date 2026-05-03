@@ -7,13 +7,26 @@
 //! PCSC transaction; we open a transient one here, query the User Interaction
 //! Flag, then drop it — there is no overlap, so no PCSC contention.
 
-use crate::notify::{self, TouchOp};
+// `TouchOp` is needed both on macOS (for `decide` / `maybe_notify_touch`)
+// and in the unit tests (for `decide_from_modes`). On non-macOS, non-test
+// builds neither path exists, and Linux CI runs with -D warnings, so
+// importing it unconditionally trips dead-code errors.
+#[cfg(target_os = "macos")]
+use crate::notify;
+#[cfg(any(target_os = "macos", test))]
+use crate::notify::TouchOp;
 
 pub use crate::notify::TouchOp as Op;
 
 /// Touch-policy decision. Crate-visible so the unit tests in this
 /// module (and other tumpa-cli internals) can match on it without
 /// going through the full `maybe_notify_touch` side-effect path.
+///
+/// macOS-or-test only: only the macOS notification path consumes this,
+/// and the unit tests at the bottom of this file exercise it without
+/// hardware. On non-macOS, non-test builds it would be dead code and
+/// Linux CI runs with -D warnings.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decision {
     /// Slot is `On` or `Fixed`: card will refuse the op until the user
@@ -27,6 +40,7 @@ pub(crate) enum Decision {
     NotRequired,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Decision {
     pub(crate) fn should_notify(self) -> bool {
         matches!(self, Decision::Required | Decision::MaybeCached)
@@ -98,7 +112,10 @@ pub(crate) fn decide(op: TouchOp, card_ident: Option<&str>) -> Decision {
 
 /// Map the OpenPGP card's UIF policy byte to wecanencrypt's
 /// `TouchMode`. Pure function, factored out for unit testing — the
-/// rest of the talktosc path needs real hardware.
+/// rest of the talktosc path needs real hardware. Only used by the
+/// macOS-gated `read_uif_via_talktosc` (and by tests via that path);
+/// gated to avoid a dead-code error on non-macOS, non-test builds.
+#[cfg(any(target_os = "macos", test))]
 fn touch_mode_from_policy_byte(byte: u8) -> Option<wecanencrypt::card::TouchMode> {
     use wecanencrypt::card::TouchMode;
     match byte {
@@ -204,7 +221,10 @@ fn read_uif_via_talktosc(
 
 /// Pure decision logic, factored out for unit testing without
 /// hitting real card hardware. Takes the raw `(sig, enc, auth)` tuple
-/// from `wecanencrypt::card::get_touch_modes`.
+/// from `wecanencrypt::card::get_touch_modes`. Only consumed by the
+/// macOS-gated `decide` and by the unit tests; gated to avoid a
+/// dead-code error on non-macOS, non-test builds.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn decide_from_modes(
     op: TouchOp,
     modes: (
