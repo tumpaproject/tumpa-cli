@@ -38,8 +38,16 @@ fn pid_file_path() -> Result<PathBuf> {
     Ok(home.join(".tumpa").join("agent.pid"))
 }
 
-/// Check if a previous agent is still running by reading the PID file.
-/// Returns true if a process with the stored PID is alive.
+/// Check if a previous tcli agent is still running by reading the PID
+/// file.
+///
+/// `kill(pid, 0) == 0` alone is not enough: macOS recycles PIDs quickly
+/// (~30s in heavy churn), and a kill check on a PID that's been reused
+/// by an unrelated process returns success — the previous behavior
+/// silently bailed at startup with "Another agent is already running"
+/// even when the original tcli was long dead. Verify the PID's
+/// executable matches our binary name before treating the file as
+/// authoritative; treat any mismatch (or lookup failure) as stale.
 fn is_agent_running() -> bool {
     let pid_path = match pid_file_path() {
         Ok(p) => p,
@@ -53,8 +61,85 @@ fn is_agent_running() -> bool {
         Ok(p) => p,
         Err(_) => return false,
     };
-    // Check if process is alive (signal 0 = existence check)
-    unsafe { libc::kill(pid, 0) == 0 }
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    // PID exists. Verify it's actually a tcli process — if it's
+    // anything else, the PID file is stale (PID was recycled).
+    match pid_executable_name(pid) {
+        Some(name) if name == "tcli" => true,
+        Some(other) => {
+            log::debug!(
+                "agent.pid points at PID {} which is now {:?}, not tcli; treating as stale",
+                pid,
+                other
+            );
+            false
+        }
+        None => {
+            log::debug!(
+                "agent.pid points at PID {} but its executable is unidentifiable; treating as stale",
+                pid
+            );
+            false
+        }
+    }
+}
+
+/// Look up the file-name of the executable for `pid`.
+///
+/// Returns `None` if the PID is gone, the kernel denies us access, or
+/// we're on a platform without a portable lookup. Callers should treat
+/// `None` as "can't confirm this PID is ours" — i.e. stale.
+#[cfg(target_os = "macos")]
+fn pid_executable_name(pid: i32) -> Option<String> {
+    // libc::proc_pidpath is in the libproc API exposed via libc on
+    // macOS. Buffer size must be at least PROC_PIDPATHINFO_MAXSIZE
+    // (4096) per <sys/proc_info.h>.
+    const MAX_PATH: usize = 4096;
+    let mut buf = vec![0u8; MAX_PATH];
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr() as *mut _, buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    let path = std::str::from_utf8(&buf).ok()?;
+    std::path::Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn pid_executable_name(pid: i32) -> Option<String> {
+    let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).ok()?;
+    exe.file_name().map(|s| s.to_string_lossy().into_owned())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn pid_executable_name(_pid: i32) -> Option<String> {
+    None
+}
+
+/// Are we running under a process supervisor (launchd on macOS,
+/// systemd on Linux)?
+///
+/// When supervised, the PID-file mutex is both unnecessary and
+/// counterproductive: the supervisor guarantees a single live
+/// instance per service label, but the file outlives ungraceful
+/// exits and `is_agent_running()` (even tightened) can't always
+/// disambiguate stale-from-PID-reuse cases — the supervisor handles
+/// it for us. Detection is best-effort:
+///   - macOS launchd: per-user agents are reparented to launchd
+///     (PID 1) immediately after exec.
+///   - systemd: every unit invocation gets `INVOCATION_ID` in the env.
+fn is_supervised() -> bool {
+    if cfg!(target_os = "macos") && unsafe { libc::getppid() } == 1 {
+        return true;
+    }
+    if std::env::var("INVOCATION_ID").is_ok() {
+        return true;
+    }
+    false
 }
 
 fn write_pid_file() -> Result<()> {
@@ -97,16 +182,25 @@ pub async fn run_agent(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Check if another agent is already running
+    // PID-file-based "is another agent running" check is only safe
+    // for self-managed startup (cargo install / running from a shell).
+    // Under launchd / systemd the supervisor enforces single-instance
+    // and the PID file becomes a flake source: stale PIDs that get
+    // reused by unrelated processes trip the liveness check, and the
+    // ungraceful-exit-cleanup gap (no Drop / signal handler runs on
+    // SIGKILL) leaves stale entries behind. Skip the mutex when
+    // supervised; the socket cleanup below handles the residue.
+    let supervised = is_supervised();
+    if !supervised && socket_path.exists() && is_agent_running() {
+        anyhow::bail!(
+            "Another agent is already running (PID file: {:?}). \
+             Stop it first or remove the stale socket.",
+            pid_file_path()?
+        );
+    }
     if socket_path.exists() {
-        if is_agent_running() {
-            anyhow::bail!(
-                "Another agent is already running (PID file: {:?}). \
-                 Stop it first or remove the stale socket.",
-                pid_file_path()?
-            );
-        }
-        // Stale socket from a crashed agent — safe to remove
+        // Stale socket from a previous instance (crashed self-managed
+        // agent, or any prior supervised invocation). Safe to remove.
         std::fs::remove_file(&socket_path)?;
     }
 
