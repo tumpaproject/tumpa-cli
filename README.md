@@ -103,8 +103,20 @@ git config --global commit.gpgsign true
 **macOS (Homebrew)**:
 
 ```
-brew services start tumpa-cli
+setup-tumpa-agent
 ```
+
+This installs `~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist`
+into the Aqua GUI session and bootstraps it. It also stops and removes
+any stale `homebrew.mxcl.tumpa-cli.plist` left over from earlier
+versions that suggested `brew services`.
+
+**Do not run `brew services start tumpa-cli`.** Homebrew's service
+mechanism loads agents into the Background launchd session, which
+cannot reach WindowServer; `pinentry-mac` will fail to draw its
+dialog and signing prompts will appear "unavailable". The
+`setup-tumpa-agent` helper exists specifically to install the agent
+into the right session.
 
 Then add to `~/.zshrc` so SSH clients find the agent:
 
@@ -424,10 +436,10 @@ tcli agent --cache-ttl 3600                 # custom TTL (1 hour)
 
 ### Starting the agent automatically
 
-#### Via homebrew
+#### macOS (Homebrew)
 
 ```
-brew services start tumpa-cli
+setup-tumpa-agent
 ```
 
 Add to `~/.zshrc`:
@@ -435,6 +447,39 @@ Add to `~/.zshrc`:
 ```bash
 export SSH_AUTH_SOCK="$HOME/.tumpa/tcli-ssh.sock"
 ```
+
+`setup-tumpa-agent` is shipped by the `tumpa-cli` formula. It
+installs an Aqua-session LaunchAgent at
+`~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist`,
+bootstraps it via `launchctl bootstrap gui/$(id -u)`, and
+verifies the result. Run it again after a `brew upgrade` to
+pick up plist changes (the script is idempotent — it boots out
+the prior instance and re-bootstraps).
+
+To check status, restart, or remove, the `tumpa-cli` repo's
+justfile exposes recipes:
+
+```
+just mac-agent-status       # show launchd state
+just mac-agent-kickstart    # force-restart, bypass spawn throttle
+just mac-agent-uninstall    # bootout + rm plist
+```
+
+Without those recipes, equivalent `launchctl` invocations are:
+
+```bash
+launchctl print gui/$(id -u)/in.kushaldas.tumpa.agent
+launchctl bootout gui/$(id -u)/in.kushaldas.tumpa.agent
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist
+```
+
+**Why not `brew services start tumpa-cli`?** Homebrew's service
+mechanism cannot emit `LimitLoadToSessionType=Aqua`, so it loads
+the agent into the Background launchd session — where
+`pinentry-mac` cannot reach WindowServer to draw its dialog.
+Symptoms: passphrase / smartcard PIN prompts hang or return
+"unavailable". The `setup-tumpa-agent` helper is the supported
+path on macOS; `brew services` is not.
 
 **Linux (systemd user service)** -- copy the ready-made units from
 `contrib/systemd/` and enable one:

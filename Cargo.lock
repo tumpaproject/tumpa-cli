@@ -1714,9 +1714,9 @@ dependencies = [
 
 [[package]]
 name = "libtumpa"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ca7bd258eb2c6146e922140225870daad831747c8ee71337c7a2e7928645c4a"
+checksum = "1b82b6601e626183aae808e2afed5b10946a5c60c5a7bd8a08950c115349ef99"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3131,6 +3131,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talktosc"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb789439e6d5af0dd326583abe6e13493925bd22fb14c8ebf9ea1f9bd901f511"
+dependencies = [
+ "pcsc",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3367,7 +3377,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tumpa-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3388,6 +3398,7 @@ dependencies = [
  "sha2",
  "ssh-agent-lib",
  "ssh-key",
+ "talktosc",
  "tempfile",
  "tokio",
  "wecanencrypt",
@@ -3599,9 +3610,9 @@ dependencies = [
 
 [[package]]
 name = "wecanencrypt"
-version = "0.14.2"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26be0596802a3fd2fb1d3fb7e03b517f23df5509ae919ed3991c707f6ff9667e"
+checksum = "dc0703345f40fd973402b286882d994199456dfd2251c8d375fe41bd856a92b6"
 dependencies = [
  "aes",
  "aes-kw",

@@ -1,10 +1,12 @@
 pub mod agent;
 pub mod cache_cmd;
 pub mod card_link;
+pub mod card_touch;
 pub mod cli;
 pub mod gpg;
 pub mod keystore;
 pub mod list_cards;
+pub mod notify;
 pub mod pinentry;
 pub mod sign_cmd;
 pub mod ssh;

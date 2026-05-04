@@ -1,6 +1,6 @@
 [package]
 name = "tumpa-cli"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "OpenPGP operations and SSH agent backed by tumpa keystore."
 license = "GPL-3.0-or-later"
@@ -48,8 +48,8 @@ experimental = []
 # Keep this on a wecanencrypt release that ships the Curve25519 `0x40`
 # prefix + (X25519, X25519) match arm needed by Nitrokey 3
 # (opcard-rs >= 1.5) ECC card uploads.
-wecanencrypt = { version = "0.14.2", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.3.1", features = ["card", "network"] }
+wecanencrypt = { version = "0.15.0", features = ["keystore", "card-pcsc", "network"] }
+libtumpa = { version = "0.3.2", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).
@@ -79,6 +79,19 @@ p521 = "0.13"
 # compare it against `Utc::now()`. Promoted from dev-deps so production
 # code can call `Utc::now()`.
 chrono = "0.4"
+
+# macOS-only: talktosc is the direct PCSC APDU sender used by
+# `card_touch::read_uif_via_talktosc`. That helper is only reachable
+# from `maybe_notify_touch`, which is itself gated on macOS — so
+# pulling talktosc on Linux/BSD would build a PCSC stack we never
+# call. Some YubiKey firmware (4.3.x and earlier) supports per-slot
+# UIF but does NOT embed the UIF tags in the Application Related
+# Data DO; openpgp-card-rs only walks ARD, so its
+# `user_interaction_flag` returns `None` on those cards. talktosc
+# lets us send `GET DATA 0xD6/0xD7/0xD8` directly and read the
+# policy bytes the card actually has.
+[target.'cfg(target_os = "macos")'.dependencies]
+talktosc = "0.3.0"
 
 [dev-dependencies]
 tempfile = "3"

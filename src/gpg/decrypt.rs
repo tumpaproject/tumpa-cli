@@ -15,6 +15,9 @@ use libtumpa::verify::sanitize_uid_for_status;
 use libtumpa::{Passphrase, Pin};
 use zeroize::Zeroizing;
 
+use crate::card_touch::{self, Op as TouchOp};
+use crate::gpg::primary_uid;
+use crate::gpg::sign::{verify_card_pin, verify_software_passphrase};
 use crate::pinentry;
 use crate::store;
 
@@ -96,12 +99,7 @@ fn try_decrypt_on_card(
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .ok_or_else(|| anyhow::anyhow!("No card with matching decryption key found"))?;
 
-    let uid = card
-        .key_info
-        .user_ids
-        .first()
-        .map(|u| u.value.as_str())
-        .unwrap_or(&card.key_info.fingerprint);
+    let uid = primary_uid(&card.key_info);
 
     let mut desc = format!(
         "Please unlock the card\n\nNumber: {}",
@@ -117,7 +115,9 @@ fn try_decrypt_on_card(
     }
     desc.push_str(&format!("\n\nDecrypting for: {}", uid));
 
+    card_touch::maybe_notify_touch(TouchOp::Decrypt, Some(&card.card.ident));
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
+    verify_card_pin(&card.card.ident, &pin, &card.key_info.fingerprint)?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
     match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj, Some(&card.card.ident)) {
@@ -152,16 +152,13 @@ fn decrypt_with_software(
 
     let desc = format!(
         "Enter passphrase to decrypt with key {}",
-        key_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&key_info.fingerprint)
+        primary_uid(&key_info)
     );
     // `Passphrase` is `Zeroizing<String>`; pass the value libtumpa
     // expects directly without a plaintext `to_string()` copy.
     let passphrase: Passphrase =
         pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
+    verify_software_passphrase(&key_data, &passphrase, &key_info.fingerprint)?;
 
     match ltd::decrypt_with_key(&key_data, ciphertext, &passphrase) {
         Ok(z) => {
@@ -264,12 +261,7 @@ fn try_decrypt_and_verify_on_card(
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .ok_or_else(|| anyhow::anyhow!("No card with matching decryption key found"))?;
 
-    let uid = card
-        .key_info
-        .user_ids
-        .first()
-        .map(|u| u.value.as_str())
-        .unwrap_or(&card.key_info.fingerprint);
+    let uid = primary_uid(&card.key_info);
 
     let mut desc = format!(
         "Please unlock the card\n\nNumber: {}",
@@ -285,7 +277,9 @@ fn try_decrypt_and_verify_on_card(
     }
     desc.push_str(&format!("\n\nDecrypting for: {}", uid));
 
+    card_touch::maybe_notify_touch(TouchOp::Decrypt, Some(&card.card.ident));
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
+    verify_card_pin(&card.card.ident, &pin, &card.key_info.fingerprint)?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
     match ltd::decrypt_and_verify_on_card(
@@ -327,14 +321,11 @@ fn decrypt_and_verify_with_software(
 
     let desc = format!(
         "Enter passphrase to decrypt with key {}",
-        key_info
-            .user_ids
-            .first()
-            .map(|u| u.value.as_str())
-            .unwrap_or(&key_info.fingerprint)
+        primary_uid(&key_info)
     );
     let passphrase: Passphrase =
         pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))?;
+    verify_software_passphrase(&key_data, &passphrase, &key_info.fingerprint)?;
 
     match ltd::decrypt_and_verify_with_key(keystore, &key_data, ciphertext, &passphrase) {
         Ok(r) => {
