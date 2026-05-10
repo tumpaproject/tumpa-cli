@@ -48,6 +48,14 @@ stored in `~/.tumpa/keys.db`.
 Make sure `~/.cargo/bin/` is in your `PATH`.
 
 
+### On Fedora 44/43
+
+
+```
+sudo dnf copr enable kushal/tumpa
+sudo dnf install rust-tumpa-cli
+```
+
 ### Homebrew
 
 ```
