@@ -87,10 +87,10 @@ chrono = "0.4"
 # `None` for every slot). talktosc lets us send `GET DATA 0xD6/0xD7/0xD8`
 # directly and read the policy bytes the card actually has.
 #
-# Unconditional dep: the touch-banner path now runs on macOS and Linux
-# (Linux added in 0.7), and wecanencrypt's `card-pcsc` feature already
-# pulls the PCSC stack on Linux — so the only added cost on Linux is
-# `talktosc` itself + `thiserror`.
+# Unconditional dep: the touch-banner path runs on both macOS and
+# Linux, and wecanencrypt's `card-pcsc` feature already pulls the
+# PCSC stack on Linux, so the only added cost on Linux is `talktosc`
+# itself + `thiserror`.
 talktosc = "0.3.0"
 
 # Linux-only: notify-rust posts the touch banner via D-Bus

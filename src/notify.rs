@@ -81,29 +81,34 @@ fn last_hex(s: &str, n: usize) -> String {
 ///
 /// Best-effort: any failure is logged but never propagated. On platforms
 /// where there is no notification path (other Unix, Windows), this is a
-/// compile-time no-op.
+/// true compile-time no-op -- the function does not even render strings
+/// or emit a log line; nothing happens at the call site.
 ///
 /// `card_serial` is rendered in the body when present; pass the
 /// user-facing serial from `wecanencrypt::card::get_card_details`
 /// (already a hex string straight from the card).
 pub fn touch_prompt(op: TouchOp, card_serial: Option<&str>) {
-    let (headline, supporting) = render(op, card_serial);
-    log::info!(
-        "touch banner: op={op:?} headline={headline:?} body={supporting:?}"
-    );
+    // Single `info!` line per banner attempt lives here in the
+    // dispatcher; the per-backend post functions log only `debug!` on
+    // success and `warn!` on failure so a successful run produces one
+    // info line per touch-required op, not two.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let (headline, supporting) = render(op, card_serial);
+        log::info!(
+            "touch banner: op={op:?} headline={headline:?} body={supporting:?}"
+        );
 
-    #[cfg(target_os = "macos")]
-    post_macos(&headline, &supporting);
+        #[cfg(target_os = "macos")]
+        post_macos(&headline, &supporting);
 
-    #[cfg(target_os = "linux")]
-    post_linux(&headline, &supporting);
+        #[cfg(target_os = "linux")]
+        post_linux(&headline, &supporting);
+    }
 
-    // Other targets: deliberately no-op. `headline` / `supporting` are
-    // still computed and logged above so the trace is useful when
-    // debugging from a non-macOS, non-Linux dev box.
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (headline, supporting);
+        let _ = (op, card_serial);
     }
 }
 
@@ -135,7 +140,7 @@ fn post_macos(headline: &str, supporting: &str) {
 
     match result {
         Ok(out) if out.status.success() => {
-            log::info!("terminal-notifier posted touch banner ok");
+            log::debug!("terminal-notifier posted touch banner ok");
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -181,7 +186,7 @@ fn post_linux(headline: &str, supporting: &str) {
 
     match result {
         Ok(_handle) => {
-            log::info!("notify-rust posted touch banner ok");
+            log::debug!("notify-rust posted touch banner ok");
         }
         Err(e) => {
             log::warn!(

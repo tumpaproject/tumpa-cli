@@ -244,8 +244,11 @@ pub(crate) fn decide_from_modes(
 ///
 /// Pass the OpenPGP card ident (e.g. `"0006:01234567"`) when known so the
 /// touch policy is queried for the exact card; pass `None` to fall back to
-/// the first enumerated card. On any failure, this is a silent no-op —
-/// notifications are best-effort UX.
+/// the first enumerated card. Best-effort and fail-open: failures inside
+/// the UIF read or the notification post never propagate, and the card
+/// op proceeds unchanged. Not silent though -- error paths and the
+/// defensive-notify branches both leave `warn!` / `info!` traces so the
+/// user can debug "why didn't I get a banner".
 ///
 /// Runs on every target. `notify::touch_prompt` handles the per-OS
 /// dispatch (terminal-notifier on macOS, notify-rust on Linux,
