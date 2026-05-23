@@ -10,8 +10,8 @@
 //! Platform-dispatch for the actual banner-posting lives in `crate::notify`;
 //! this module is platform-agnostic and runs the same UIF-decision logic on
 //! macOS and Linux. On targets where `notify::touch_prompt` is a compile-time
-//! no-op (other Unix, Windows), the decision work still runs but its only
-//! side effect is the log line — harmless.
+//! no-op (other Unix, Windows), only the notification-posting part is elided;
+//! the UIF decision path still runs and may perform card/PCSC I/O (and log).
 
 use crate::notify;
 use crate::notify::TouchOp;

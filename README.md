@@ -68,6 +68,12 @@ brew install tumpa-cli
 cargo install tumpa-cli
 ```
 
+```
+# On Fedora 44/43
+sudo dnf copr enable kushal/tumpa
+sudo dnf install rust-tumpa-cli
+```
+
 Linux also needs PC/SC libraries for card support — see
 [System dependencies](#system-dependencies) below.
 
