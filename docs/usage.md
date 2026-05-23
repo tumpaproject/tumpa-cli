@@ -48,14 +48,6 @@ stored in `~/.tumpa/keys.db`.
 Make sure `~/.cargo/bin/` is in your `PATH`.
 
 
-### On Fedora 44/43
-
-
-```
-sudo dnf copr enable kushal/tumpa
-sudo dnf install rust-tumpa-cli
-```
-
 ### Homebrew
 
 ```
@@ -114,6 +106,21 @@ runtime helpers automatically:
   ..." which appeared when we used `osascript` previously).
   Without it the banners are silently skipped; the underlying
   signing / decryption call still works.
+
+### Linux desktop notifications
+
+On Linux, smartcard touch-confirmation banners are posted directly to
+D-Bus `org.freedesktop.Notifications` via the `notify-rust` crate — no
+extra package install. Any standards-compliant notification daemon
+(gnome-shell, KDE / Plasma, Dunst, mako, xfce4-notifyd) will display
+them. Banners show `app_name = tumpa-cli`, so daemon-side filter rules
+can target that string if you want to mute or restyle them.
+
+The path is best-effort and **fail-open**: on a headless server, in a
+container, or over an SSH session with no notification daemon, the
+banner call returns an error, a `warn!` line is emitted, and the card
+operation proceeds normally. There is no separate "server build" — the
+same binary works in both environments.
 
 ### Shell completions
 

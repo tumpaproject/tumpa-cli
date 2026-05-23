@@ -1,19 +1,19 @@
-//! Decide whether a card op is going to block on a physical touch, and (on
-//! macOS) post a Notification Center banner if so.
+//! Decide whether a card op is going to block on a physical touch, and
+//! post a notification banner if so.
 //!
 //! Called from each card-aware dispatch site (sign / decrypt / sign+encrypt
 //! sign-leg / SSH auth) right after the card has been identified and before
 //! the libtumpa primitive is invoked. The libtumpa primitive opens its own
 //! PCSC transaction; we open a transient one here, query the User Interaction
 //! Flag, then drop it — there is no overlap, so no PCSC contention.
+//!
+//! Platform-dispatch for the actual banner-posting lives in `crate::notify`;
+//! this module is platform-agnostic and runs the same UIF-decision logic on
+//! macOS and Linux. On targets where `notify::touch_prompt` is a compile-time
+//! no-op (other Unix, Windows), only the notification-posting part is elided;
+//! the UIF decision path still runs and may perform card/PCSC I/O (and log).
 
-// `TouchOp` is needed both on macOS (for `decide` / `maybe_notify_touch`)
-// and in the unit tests (for `decide_from_modes`). On non-macOS, non-test
-// builds neither path exists, and Linux CI runs with -D warnings, so
-// importing it unconditionally trips dead-code errors.
-#[cfg(target_os = "macos")]
 use crate::notify;
-#[cfg(any(target_os = "macos", test))]
 use crate::notify::TouchOp;
 
 pub use crate::notify::TouchOp as Op;
@@ -21,12 +21,6 @@ pub use crate::notify::TouchOp as Op;
 /// Touch-policy decision. Crate-visible so the unit tests in this
 /// module (and other tumpa-cli internals) can match on it without
 /// going through the full `maybe_notify_touch` side-effect path.
-///
-/// macOS-or-test only: only the macOS notification path consumes this,
-/// and the unit tests at the bottom of this file exercise it without
-/// hardware. On non-macOS, non-test builds it would be dead code and
-/// Linux CI runs with -D warnings.
-#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decision {
     /// Slot is `On` or `Fixed`: card will refuse the op until the user
@@ -40,7 +34,6 @@ pub(crate) enum Decision {
     NotRequired,
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl Decision {
     pub(crate) fn should_notify(self) -> bool {
         matches!(self, Decision::Required | Decision::MaybeCached)
@@ -68,11 +61,6 @@ impl Decision {
 ///     failed). With a warn-level log.
 ///   - all three slots `None` (after fallback) → `NotRequired`
 ///     (older card with no UIF support — silent skip is correct).
-/// macOS-only: the only caller is the macOS-gated
-/// `maybe_notify_touch`, and the talktosc fallback path it depends on
-/// would otherwise force the PCSC stack to build on Linux/BSD for
-/// dead code.
-#[cfg(target_os = "macos")]
 pub(crate) fn decide(op: TouchOp, card_ident: Option<&str>) -> Decision {
     let modes = match wecanencrypt::card::get_touch_modes(card_ident) {
         Ok((None, None, None)) => {
@@ -112,10 +100,7 @@ pub(crate) fn decide(op: TouchOp, card_ident: Option<&str>) -> Decision {
 
 /// Map the OpenPGP card's UIF policy byte to wecanencrypt's
 /// `TouchMode`. Pure function, factored out for unit testing — the
-/// rest of the talktosc path needs real hardware. Only used by the
-/// macOS-gated `read_uif_via_talktosc` (and by tests via that path);
-/// gated to avoid a dead-code error on non-macOS, non-test builds.
-#[cfg(any(target_os = "macos", test))]
+/// rest of the talktosc path needs real hardware.
 fn touch_mode_from_policy_byte(byte: u8) -> Option<wecanencrypt::card::TouchMode> {
     use wecanencrypt::card::TouchMode;
     match byte {
@@ -151,10 +136,6 @@ fn touch_mode_from_policy_byte(byte: u8) -> Option<wecanencrypt::card::TouchMode
 ///
 /// Best-effort by design: errors are logged at warn / debug level
 /// and the caller falls through to its own None-handling.
-///
-/// macOS-only: gated alongside `decide` and the `talktosc` Cargo
-/// dependency.
-#[cfg(target_os = "macos")]
 fn read_uif_via_talktosc(
     card_ident: &str,
 ) -> Option<(
@@ -221,10 +202,7 @@ fn read_uif_via_talktosc(
 
 /// Pure decision logic, factored out for unit testing without
 /// hitting real card hardware. Takes the raw `(sig, enc, auth)` tuple
-/// from `wecanencrypt::card::get_touch_modes`. Only consumed by the
-/// macOS-gated `decide` and by the unit tests; gated to avoid a
-/// dead-code error on non-macOS, non-test builds.
-#[cfg(any(target_os = "macos", test))]
+/// from `wecanencrypt::card::get_touch_modes`.
 pub(crate) fn decide_from_modes(
     op: TouchOp,
     modes: (
@@ -266,13 +244,19 @@ pub(crate) fn decide_from_modes(
 ///
 /// Pass the OpenPGP card ident (e.g. `"0006:01234567"`) when known so the
 /// touch policy is queried for the exact card; pass `None` to fall back to
-/// the first enumerated card. On any failure, this is a silent no-op —
-/// notifications are best-effort UX.
+/// the first enumerated card. Best-effort and fail-open: failures inside
+/// the UIF read or the notification post never propagate, and the card
+/// op proceeds unchanged. Not silent though -- error paths and the
+/// defensive-notify branches both leave `warn!` / `info!` traces so the
+/// user can debug "why didn't I get a banner".
 ///
-/// macOS-only: the underlying `notify::touch_prompt` is itself a
-/// no-op on every other platform, and the UIF / card-detail queries
-/// would cost extra PCSC traffic with no user-visible benefit.
-#[cfg(target_os = "macos")]
+/// Runs on every target. `notify::touch_prompt` handles the per-OS
+/// dispatch (terminal-notifier on macOS, notify-rust on Linux,
+/// compile-time no-op elsewhere). On targets where the post is a no-op,
+/// the UIF read still happens — its cost is a single transient PCSC
+/// transaction and the result lands in the log, which is the right
+/// trade-off for the headless / SSH case where the user may still want
+/// to debug "why didn't I get a banner".
 pub fn maybe_notify_touch(op: Op, card_ident: Option<&str>) {
     if !decide(op, card_ident).should_notify() {
         return;
@@ -289,10 +273,6 @@ pub fn maybe_notify_touch(op: Op, card_ident: Option<&str>) {
 
     notify::touch_prompt(op, serial.as_deref());
 }
-
-/// Non-macOS stub. See the macOS variant for rationale.
-#[cfg(not(target_os = "macos"))]
-pub fn maybe_notify_touch(_op: Op, _card_ident: Option<&str>) {}
 
 #[cfg(test)]
 mod tests {

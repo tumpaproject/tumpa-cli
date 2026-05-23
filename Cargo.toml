@@ -1,6 +1,6 @@
 [package]
 name = "tumpa-cli"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "OpenPGP operations and SSH agent backed by tumpa keystore."
 license = "GPL-3.0-or-later"
@@ -80,18 +80,28 @@ p521 = "0.13"
 # code can call `Utc::now()`.
 chrono = "0.4"
 
-# macOS-only: talktosc is the direct PCSC APDU sender used by
-# `card_touch::read_uif_via_talktosc`. That helper is only reachable
-# from `maybe_notify_touch`, which is itself gated on macOS — so
-# pulling talktosc on Linux/BSD would build a PCSC stack we never
-# call. Some YubiKey firmware (4.3.x and earlier) supports per-slot
-# UIF but does NOT embed the UIF tags in the Application Related
-# Data DO; openpgp-card-rs only walks ARD, so its
-# `user_interaction_flag` returns `None` on those cards. talktosc
-# lets us send `GET DATA 0xD6/0xD7/0xD8` directly and read the
-# policy bytes the card actually has.
-[target.'cfg(target_os = "macos")'.dependencies]
+# Direct PCSC APDU sender used by `card_touch::read_uif_via_talktosc`,
+# the fallback that catches per-slot UIF on YubiKey firmware 4.3.x and
+# earlier (those cards support UIF DOs but don't embed the tags in
+# Application Related Data, so openpgp-card-rs's ARD-only path returns
+# `None` for every slot). talktosc lets us send `GET DATA 0xD6/0xD7/0xD8`
+# directly and read the policy bytes the card actually has.
+#
+# Unconditional dep: the touch-banner path runs on both macOS and
+# Linux, and wecanencrypt's `card-pcsc` feature already pulls the
+# PCSC stack on Linux, so the only added cost on Linux is `talktosc`
+# itself + `thiserror`.
 talktosc = "0.3.0"
+
+# Linux-only: notify-rust posts the touch banner via D-Bus
+# `org.freedesktop.Notifications`. macOS uses terminal-notifier (see
+# `notify::post_macos`) because notify-rust's macOS backend posts via
+# NSUserNotification, which routes under the calling Terminal's bundle
+# identity (the exact problem the macOS comment in notify.rs documents).
+# Other Unixes / Windows: `notify::touch_prompt` is a compile-time no-op,
+# so no dep is needed.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
 
 [dev-dependencies]
 tempfile = "3"
