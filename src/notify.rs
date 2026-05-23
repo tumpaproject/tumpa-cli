@@ -26,8 +26,9 @@
 //! never propagated — the notify path is purely UX, never load-bearing
 //! for the crypto op.
 
-/// Which slot is about to be exercised — only used to pick the verb in
-/// the notification body.
+/// Which slot is about to be exercised -- only used to pick the verb in
+/// the notification headline (macOS subtitle / Linux summary). The body
+/// holds the card identifier, not the verb.
 #[derive(Debug, Clone, Copy)]
 pub enum TouchOp {
     Sign,
@@ -35,6 +36,13 @@ pub enum TouchOp {
     Auth,
 }
 
+// `verb`, `render`, and `last_hex` are only used from the per-OS post
+// path or from the unit tests. Gating them with the same cfg that
+// guards their call sites keeps non-supported release builds free of
+// `dead_code` warnings under `-D warnings` and keeps the
+// "compile-time no-op" contract honest -- on those targets, nothing
+// here is even compiled.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 impl TouchOp {
     fn verb(self) -> &'static str {
         match self {
@@ -56,6 +64,7 @@ impl TouchOp {
 ///
 /// Factored out so both platform paths produce identical text, and so
 /// the rendering can be unit-tested without any system call.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn render(op: TouchOp, card_serial: Option<&str>) -> (String, String) {
     let headline = format!("Touch your card to {}", op.verb());
     let supporting = match card_serial {
@@ -68,6 +77,7 @@ fn render(op: TouchOp, card_serial: Option<&str>) -> (String, String) {
 /// Trim a long hex serial down to its last `n` characters so the
 /// notification body stays readable. Falls back to the whole string
 /// when it's already short enough.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn last_hex(s: &str, n: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= n {
