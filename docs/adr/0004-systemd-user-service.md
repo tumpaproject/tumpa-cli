@@ -116,14 +116,23 @@ Every unit sets:
 ```
 MemoryDenyWriteExecute=true
 NoNewPrivileges=true
-ProtectControlGroups=true
-ProtectKernelModules=true
-ProtectKernelTunables=true
+# ProtectControlGroups=true     # opt-in; see distro note below
+# ProtectKernelModules=true     # opt-in; see distro note below
+# ProtectKernelTunables=true    # opt-in; see distro note below
 RestrictRealtime=true
 RestrictSUIDSGID=true
 ```
 
-These are cheap and standard. We deliberately do **not** set:
+The three `Protect*` directives rely on unprivileged user namespaces.
+Fedora enables them by default; Debian/Ubuntu restrict them, so user
+units that enable these directives fail with `status=226/NAMESPACE`.
+We ship them commented out so the unit starts on every distro,
+and document opting back in (or flipping
+`kernel.unprivileged_userns_clone=1`) in
+[`contrib/systemd/README.md`](../../contrib/systemd/README.md).
+
+The remaining directives are cheap and portable. We deliberately do
+**not** set:
 
 - `PrivateTmp=true` — pinentry GUIs sometimes look at `$TMPDIR` and a
   private-tmp namespace breaks `pinentry-gtk-2` / `pinentry-qt`

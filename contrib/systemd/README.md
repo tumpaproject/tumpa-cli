@@ -121,6 +121,31 @@ and point it at your binary (`which tcli`).
 `PINENTRY_PROGRAM` isn't set, or its binary doesn't exist. Set it in
 `~/.config/tumpa/env` and restart the service.
 
+## Distro-specific hardening
+
+The shipped units leave three optional hardening directives commented
+out:
+
+```
+# ProtectControlGroups=true
+# ProtectKernelModules=true
+# ProtectKernelTunables=true
+```
+
+They rely on unprivileged user namespaces. **Fedora** enables those by
+default — uncomment all three for stricter sandboxing.
+**Debian/Ubuntu** restrict unprivileged userns by default, so leaving
+them enabled makes `systemctl --user start tumpa-agent.service` fail
+(typical symptom: `code=exited, status=226/NAMESPACE` in the journal).
+Keep the lines commented on those distros, or enable userns first:
+
+```bash
+# Debian/Ubuntu: persist the kernel toggle if you want the extra
+# hardening.
+sudo sysctl -w kernel.unprivileged_userns_clone=1
+echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.conf
+```
+
 ## Uninstall
 
 ```bash
