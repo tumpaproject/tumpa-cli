@@ -91,6 +91,7 @@ decryption to the card.
 
 ```
 tcli describe <FINGERPRINT>   # details for the imported key
+tcli link card                # links the imported public key(2) with the secret key on your Yubikey
 tcli card status              # connected cards, serial, PIN retries
 ```
 
