@@ -112,6 +112,8 @@ git config --global commit.gpgsign true
 ```
 setup-tumpa-agent
 ```
+(You might need to unplug/replug your Yubikey, 
+on order for the tumpa agent to be able to find it)
 
 This installs `~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist`
 into the Aqua GUI session and bootstraps it. It also stops and removes
