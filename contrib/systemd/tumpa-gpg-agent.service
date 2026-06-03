@@ -16,9 +16,13 @@ Restart=on-failure
 RestartSec=2
 MemoryDenyWriteExecute=true
 NoNewPrivileges=true
-ProtectControlGroups=true
-ProtectKernelModules=true
-ProtectKernelTunables=true
+# The three Protect* directives below rely on unprivileged user
+# namespaces. Fedora enables them by default; Debian/Ubuntu restrict
+# them, so the service fails to start there. Uncomment on Fedora (or
+# any system with unprivileged userns enabled) to harden further.
+# ProtectControlGroups=true
+# ProtectKernelModules=true
+# ProtectKernelTunables=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 
