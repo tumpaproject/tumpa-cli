@@ -91,6 +91,7 @@ decryption to the card.
 
 ```
 tcli describe <FINGERPRINT>   # details for the imported key
+tcli link card                # links the imported public key(2) with the secret key on your Yubikey
 tcli card status              # connected cards, serial, PIN retries
 ```
 
@@ -111,6 +112,8 @@ git config --global commit.gpgsign true
 ```
 setup-tumpa-agent
 ```
+(You might need to unplug/replug your Yubikey, 
+on order for the tumpa agent to be able to find it)
 
 This installs `~/Library/LaunchAgents/in.kushaldas.tumpa.agent.plist`
 into the Aqua GUI session and bootstraps it. It also stops and removes
