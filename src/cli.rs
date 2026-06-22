@@ -129,6 +129,49 @@ pub enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Encrypt FILE to one or more recipients (default ASCII-armored).
+    ///
+    /// Default output is `<FILE>.asc` (or `<FILE>.gpg` with --binary).
+    /// Pass `--sign-with` to produce a single sign-then-encrypt message
+    /// (card-first signing, software fallback).
+    Encrypt {
+        /// Input file. Use `-` for stdin (then `-o`/`--output` is required).
+        #[clap(value_name = "FILE")]
+        input: PathBuf,
+
+        /// Recipient: fingerprint, key ID, or exact email. Repeatable.
+        #[clap(
+            short = 'r',
+            long = "recipient",
+            value_name = "FP|KEYID|EMAIL",
+            required = true
+        )]
+        recipients: Vec<String>,
+
+        /// Also sign the message with this key (sign-then-encrypt).
+        #[clap(long, value_name = "FP|KEYID|EMAIL")]
+        sign_with: Option<String>,
+
+        /// Output file. Defaults to `<FILE>.asc` (or `<FILE>.gpg` with --binary).
+        #[clap(short = 'o', long)]
+        output: Option<PathBuf>,
+
+        /// Binary output instead of ASCII-armored.
+        #[clap(long)]
+        binary: bool,
+    },
+
+    /// Decrypt FILE (card first, then software key). Plaintext to stdout.
+    Decrypt {
+        /// Input file. Use `-` for stdin.
+        #[clap(value_name = "FILE")]
+        input: PathBuf,
+
+        /// Output file. Defaults to stdout (mode 0600 when a file).
+        #[clap(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
+
     /// Verify a signature on FILE.
     Verify {
         /// Input file. Use `-` for stdin (requires --signature).
@@ -380,6 +423,17 @@ pub enum Mode {
         with_key: String,
         output: Option<PathBuf>,
     },
+    Encrypt {
+        input: PathBuf,
+        recipients: Vec<String>,
+        sign_with: Option<String>,
+        binary: bool,
+        output: Option<PathBuf>,
+    },
+    Decrypt {
+        input: PathBuf,
+        output: Option<PathBuf>,
+    },
     Verify {
         input: PathBuf,
         signature: Option<PathBuf>,
@@ -490,6 +544,30 @@ fn mode_from_subcommand(cmd: Command) -> Result<Mode, String> {
                 output,
             })
         }
+
+        Command::Encrypt {
+            input,
+            recipients,
+            sign_with,
+            output,
+            binary,
+        } => {
+            if is_stdio(&input) && output.is_none() {
+                return Err(
+                    "encrypt reading from stdin requires -o/--output (no input file to derive a default path from)"
+                        .to_string(),
+                );
+            }
+            Ok(Mode::Encrypt {
+                input,
+                recipients,
+                sign_with,
+                binary,
+                output,
+            })
+        }
+
+        Command::Decrypt { input, output } => Ok(Mode::Decrypt { input, output }),
 
         Command::Verify {
             input,
@@ -817,6 +895,137 @@ mod tests {
     fn verify_stdin_requires_signature_subcommand() {
         let err = parse(&["verify", "-"]).unwrap_err();
         assert!(err.contains("--signature"), "got: {err}");
+    }
+
+    // ----- encrypt / decrypt -----
+
+    #[test]
+    fn encrypt_subcommand_single_recipient_armored_default() {
+        match parse(&["encrypt", "msg.txt", "-r", "alice@example.com"]).unwrap() {
+            Mode::Encrypt {
+                input,
+                recipients,
+                sign_with,
+                binary,
+                output,
+            } => {
+                assert_eq!(input, PathBuf::from("msg.txt"));
+                assert_eq!(recipients, vec!["alice@example.com".to_string()]);
+                assert!(sign_with.is_none());
+                assert!(!binary, "armored is the default");
+                assert!(output.is_none());
+            }
+            other => panic!("expected Encrypt, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn encrypt_subcommand_multiple_recipients_repeatable() {
+        match parse(&[
+            "encrypt",
+            "msg.txt",
+            "-r",
+            "alice@example.com",
+            "--recipient",
+            "bob@example.com",
+        ])
+        .unwrap()
+        {
+            Mode::Encrypt { recipients, .. } => {
+                assert_eq!(
+                    recipients,
+                    vec![
+                        "alice@example.com".to_string(),
+                        "bob@example.com".to_string()
+                    ]
+                );
+            }
+            other => panic!("expected Encrypt, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn encrypt_subcommand_requires_a_recipient() {
+        let err = parse(&["encrypt", "msg.txt"]).unwrap_err();
+        assert!(
+            err.contains("--recipient") || err.contains("required"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_subcommand_sign_with_and_binary_thread_through() {
+        match parse(&[
+            "encrypt",
+            "msg.txt",
+            "-r",
+            "alice@example.com",
+            "--sign-with",
+            "bob@example.com",
+            "--binary",
+            "-o",
+            "out.gpg",
+        ])
+        .unwrap()
+        {
+            Mode::Encrypt {
+                sign_with,
+                binary,
+                output,
+                ..
+            } => {
+                assert_eq!(sign_with.as_deref(), Some("bob@example.com"));
+                assert!(binary);
+                assert_eq!(output.as_deref(), Some(std::path::Path::new("out.gpg")));
+            }
+            other => panic!("expected Encrypt, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn encrypt_stdin_requires_output_subcommand() {
+        let err = parse(&["encrypt", "-", "-r", "alice@example.com"]).unwrap_err();
+        assert!(err.contains("requires -o/--output"), "got: {err}");
+    }
+
+    #[test]
+    fn encrypt_stdin_with_output_is_ok() {
+        match parse(&["encrypt", "-", "-r", "alice@example.com", "-o", "ct.asc"]).unwrap() {
+            Mode::Encrypt { input, output, .. } => {
+                assert_eq!(input, PathBuf::from("-"));
+                assert_eq!(output.as_deref(), Some(std::path::Path::new("ct.asc")));
+            }
+            other => panic!("expected Encrypt, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn decrypt_subcommand_defaults_to_stdout() {
+        match parse(&["decrypt", "msg.asc"]).unwrap() {
+            Mode::Decrypt { input, output } => {
+                assert_eq!(input, PathBuf::from("msg.asc"));
+                assert!(output.is_none(), "no -o means stdout");
+            }
+            other => panic!("expected Decrypt, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn decrypt_subcommand_with_output_file() {
+        match parse(&["decrypt", "msg.asc", "-o", "plain.txt"]).unwrap() {
+            Mode::Decrypt { output, .. } => {
+                assert_eq!(output.as_deref(), Some(std::path::Path::new("plain.txt")));
+            }
+            other => panic!("expected Decrypt, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn decrypt_subcommand_reads_stdin() {
+        match parse(&["decrypt", "-"]).unwrap() {
+            Mode::Decrypt { input, .. } => assert_eq!(input, PathBuf::from("-")),
+            other => panic!("expected Decrypt, got {:?}", std::mem::discriminant(&other)),
+        }
     }
 
     // ----- card / socket / agent / ssh-agent / ssh-export / completions -----

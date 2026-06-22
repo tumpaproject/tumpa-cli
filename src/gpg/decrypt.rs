@@ -34,11 +34,41 @@ fn read_ciphertext(input: &Path) -> Result<Vec<u8>> {
     }
 }
 
+/// Write decrypted plaintext to `output`, or to stdout when `output` is
+/// `None` or the `-` stdio sentinel.
+///
+/// GnuPG treats `-o -` as "write to stdout"; mirroring that here means
+/// `tclig -d -o -` (and `tcli decrypt -o -`) stream to stdout instead of
+/// creating a file literally named `-`. File output is tightened to
+/// `0600` on Unix.
+fn write_plaintext(output: Option<&PathBuf>, plaintext: &[u8]) -> Result<()> {
+    match output {
+        Some(path) if path.as_os_str() != "-" => {
+            std::fs::write(path, plaintext)
+                .context(format!("Failed to write output file {:?}", path))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(path, perms).with_context(|| {
+                    format!("Failed to set permissions on output file {:?}", path)
+                })?;
+            }
+        }
+        _ => {
+            std::io::stdout()
+                .write_all(plaintext)
+                .context("Failed to write to stdout")?;
+        }
+    }
+    Ok(())
+}
+
 /// Decrypt a file.
 ///
 /// Reads ciphertext from `input`, determines which secret key can decrypt
 /// it, prompts for the passphrase, and writes plaintext to `output`
-/// (or stdout if None).
+/// (or stdout if None or `-`).
 pub fn decrypt(
     input: &Path,
     output: Option<&PathBuf>,
@@ -68,23 +98,7 @@ pub fn decrypt(
         }
     };
 
-    match output {
-        Some(path) => {
-            std::fs::write(path, plaintext.as_slice())
-                .context(format!("Failed to write output file {:?}", path))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o600);
-                std::fs::set_permissions(path, perms).ok();
-            }
-        }
-        None => {
-            std::io::stdout()
-                .write_all(plaintext.as_slice())
-                .context("Failed to write to stdout")?;
-        }
-    }
+    write_plaintext(output, plaintext.as_slice())?;
 
     Ok(())
 }
@@ -226,23 +240,7 @@ pub fn decrypt_and_verify(
     // Write plaintext first, then status lines — that way a downstream
     // pipe consumer that closes early on signature status doesn't lose
     // data. (PGP/MIME callers buffer both anyway.)
-    match output {
-        Some(path) => {
-            std::fs::write(path, result.plaintext.as_slice())
-                .context(format!("Failed to write output file {:?}", path))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o600);
-                std::fs::set_permissions(path, perms).ok();
-            }
-        }
-        None => {
-            std::io::stdout()
-                .write_all(result.plaintext.as_slice())
-                .context("Failed to write to stdout")?;
-        }
-    }
+    write_plaintext(output, result.plaintext.as_slice())?;
 
     writeln!(status_out, "[GNUPG:] DECRYPTION_OKAY")?;
     emit_signature_status(&mut status_out, &result.outcome)?;
@@ -623,5 +621,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Serializes the two tests below that change the process-global
+    /// current directory.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A real output path is written verbatim (and, on Unix, gets 0600).
+    #[test]
+    fn write_plaintext_real_path_writes_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("plain.txt");
+        write_plaintext(Some(&out), b"hello").unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"hello");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "decrypt output must be 0600");
+        }
+    }
+
+    /// `-o -` must stream to stdout (GnuPG convention), not create a file
+    /// literally named "-". Regression guard for the `tclig -d -o -`
+    /// path the reviewer flagged. The cwd is swapped to a temp dir so the
+    /// relative "-" check is hermetic.
+    #[test]
+    fn write_plaintext_dash_is_stdout_not_a_file() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let res = write_plaintext(Some(&PathBuf::from("-")), b"hello");
+        std::env::set_current_dir(&prev).unwrap();
+        res.unwrap();
+        assert!(
+            !dir.path().join("-").exists(),
+            "`-` must go to stdout, not a file named -"
+        );
     }
 }

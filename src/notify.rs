@@ -105,9 +105,7 @@ pub fn touch_prompt(op: TouchOp, card_serial: Option<&str>) {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let (headline, supporting) = render(op, card_serial);
-        log::info!(
-            "touch banner: op={op:?} headline={headline:?} body={supporting:?}"
-        );
+        log::info!("touch banner: op={op:?} headline={headline:?} body={supporting:?}");
 
         #[cfg(target_os = "macos")]
         post_macos(&headline, &supporting);

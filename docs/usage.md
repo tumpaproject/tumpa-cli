@@ -774,6 +774,57 @@ Both commands read the same `~/.password-store/` directory and the same
 
 ## Encryption and decryption
 
+There are two ways to encrypt and decrypt from the shell:
+
+- **`tcli encrypt` / `tcli decrypt`** — the human-facing verbs. Armored
+  output by default, a derived sibling output path, and readable
+  status messages. Use these interactively.
+- **`tclig -e` / `tclig -d`** — the GPG drop-in. Same flags `gpg`
+  accepts; binary output by default. Use these in scripts and from
+  programs that already speak `gpg`.
+
+See [ADR 0010](adr/0010-tcli-encrypt-decrypt-subcommands.md) for the
+split rationale.
+
+### Encrypting and decrypting with `tcli`
+
+Encrypt a file to a recipient (default output is `<FILE>.asc`,
+ASCII-armored):
+
+```
+tcli encrypt document.txt -r <FINGERPRINT>
+# wrote document.txt.asc
+```
+
+Multiple recipients (any of them can decrypt), binary output, or a
+custom destination:
+
+```
+tcli encrypt data.txt -r <FP1> -r <FP2> -r <FP3>
+tcli encrypt document.txt -r <FP> --binary           # writes document.txt.gpg
+tcli encrypt document.txt -r <FP> -o shared.asc
+echo "secret" | tcli encrypt - -r <FP> -o secret.asc # stdin needs -o
+```
+
+Sign and encrypt in one message (card-first signing, software
+fallback):
+
+```
+tcli encrypt document.txt -r <RECIPIENT_FP> --sign-with <YOUR_FP>
+```
+
+Decrypt to stdout (default) or to a `0600` file. A connected OpenPGP
+card holding the decryption key is tried first, then a software secret
+key from the keystore:
+
+```
+tcli decrypt secret.asc                 # plaintext to stdout
+tcli decrypt secret.asc -o document.txt # writes a 0600 file
+cat secret.asc | tcli decrypt -         # ciphertext from stdin
+```
+
+### Encrypting and decrypting with `tclig`
+
 `tclig` is the GPG drop-in, so encryption and decryption from the
 shell use the same flags `gpg` accepts.
 
