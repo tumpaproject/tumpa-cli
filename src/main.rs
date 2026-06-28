@@ -9,7 +9,10 @@ use std::io::stdout;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
-use tumpa_cli::{cache_cmd, card_link, keystore, pinentry, sign_cmd, ssh, store, verify_cmd};
+use tumpa_cli::{
+    cache_cmd, card_link, decrypt_cmd, encrypt_cmd, keystore, pinentry, sign_cmd, ssh, store,
+    verify_cmd,
+};
 
 use cli::*;
 
@@ -128,6 +131,23 @@ fn main() {
             with_key,
             output,
         }) => sign_cmd::cmd_sign_inline(&input, &with_key, output.as_ref(), keystore_path.as_ref()),
+        Ok(Mode::Encrypt {
+            input,
+            recipients,
+            sign_with,
+            binary,
+            output,
+        }) => encrypt_cmd::cmd_encrypt(
+            &input,
+            &recipients,
+            sign_with.as_deref(),
+            binary,
+            output.as_ref(),
+            keystore_path.as_ref(),
+        ),
+        Ok(Mode::Decrypt { input, output }) => {
+            decrypt_cmd::cmd_decrypt(&input, output.as_ref(), keystore_path.as_ref())
+        }
         Ok(Mode::CacheClear { target }) => cache_cmd::cmd_cache_clear(target.as_deref()),
         Ok(Mode::Verify {
             input,

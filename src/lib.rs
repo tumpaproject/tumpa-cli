@@ -3,6 +3,8 @@ pub mod cache_cmd;
 pub mod card_link;
 pub mod card_touch;
 pub mod cli;
+pub mod decrypt_cmd;
+pub mod encrypt_cmd;
 pub mod gpg;
 pub mod keystore;
 pub mod list_cards;

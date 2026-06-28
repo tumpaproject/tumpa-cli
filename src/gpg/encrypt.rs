@@ -64,8 +64,43 @@ pub fn encrypt_with_status(
     armor: bool,
     signer_id: Option<&str>,
     keystore_path: Option<&PathBuf>,
-    mut status_out: impl Write,
+    status_out: impl Write,
 ) -> Result<()> {
+    let prepared = prepare_recipients(recipients, keystore_path, status_out)?;
+
+    let plaintext = match input {
+        Some(path) => {
+            std::fs::read(path).context(format!("Failed to read input file {:?}", path))?
+        }
+        None => {
+            let mut buf = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut buf)
+                .context("Failed to read from stdin")?;
+            buf
+        }
+    };
+
+    let ciphertext = encrypt_bytes_prepared(&plaintext, &prepared, armor, signer_id)?;
+
+    std::fs::write(output, &ciphertext)
+        .context(format!("Failed to write output file {:?}", output))?;
+
+    Ok(())
+}
+
+pub struct PreparedRecipients {
+    keystore: wecanencrypt::KeyStore,
+    keys: Vec<Vec<u8>>,
+}
+
+/// Resolve recipients and emit all `INV_RECP` status lines before any
+/// caller reads plaintext from stdin or large files.
+pub fn prepare_recipients(
+    recipients: &[String],
+    keystore_path: Option<&PathBuf>,
+    mut status_out: impl Write,
+) -> Result<PreparedRecipients> {
     let keystore = store::open_keystore(keystore_path)?;
 
     // Resolve all recipients up front so we can emit INV_RECP for each
@@ -96,32 +131,32 @@ pub fn encrypt_with_status(
         anyhow::bail!("no usable key for recipient(s): {}", failed.join(", "));
     }
 
-    let plaintext = match input {
-        Some(path) => {
-            std::fs::read(path).context(format!("Failed to read input file {:?}", path))?
-        }
-        None => {
-            let mut buf = Vec::new();
-            std::io::stdin()
-                .read_to_end(&mut buf)
-                .context("Failed to read from stdin")?;
-            buf
-        }
-    };
+    Ok(PreparedRecipients {
+        keystore,
+        keys: resolved,
+    })
+}
 
-    let key_refs: Vec<&[u8]> = resolved.iter().map(|d| d.as_slice()).collect();
+/// Encrypt already-read plaintext using recipients returned by
+/// [`prepare_recipients`].
+pub fn encrypt_bytes_prepared(
+    plaintext: &[u8],
+    prepared: &PreparedRecipients,
+    armor: bool,
+    signer_id: Option<&str>,
+) -> Result<Vec<u8>> {
+    let keystore = &prepared.keystore;
+
+    let key_refs: Vec<&[u8]> = prepared.keys.iter().map(|d| d.as_slice()).collect();
 
     let ciphertext = match signer_id {
-        Some(id) => sign_and_encrypt_dispatch(&keystore, id, &key_refs, &plaintext, armor)?,
-        None => wecanencrypt::encrypt_bytes_to_multiple(&key_refs, &plaintext, armor)
+        Some(id) => sign_and_encrypt_dispatch(keystore, id, &key_refs, plaintext, armor)?,
+        None => wecanencrypt::encrypt_bytes_to_multiple(&key_refs, plaintext, armor)
             .map_err(|e| anyhow!("{e}"))
             .context("Encryption failed")?,
     };
 
-    std::fs::write(output, &ciphertext)
-        .context(format!("Failed to write output file {:?}", output))?;
-
-    Ok(())
+    Ok(ciphertext)
 }
 
 /// Resolve `signer_id`, dispatch the signing leg to a connected card when
