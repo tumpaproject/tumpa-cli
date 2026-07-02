@@ -57,8 +57,14 @@ pub fn scan(dir: &Path) -> Vec<DiskKey> {
     };
 
     let mut keys = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                log::debug!("Skipping unreadable entry in {}: {}", dir.display(), e);
+                continue;
+            }
+        };
         match load_key(&path) {
             Ok(Some(key)) => {
                 log::debug!("Found SSH key {}", path.display());
@@ -80,8 +86,12 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
 
     let contents = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        // Binary files (host key blobs, etc.) are not OpenSSH keys
-        Err(_) => return Ok(None),
+        // Non-UTF-8 means a binary file (host key blob, etc.), which
+        // is genuinely not an OpenSSH key. Anything else (permission
+        // denied, transient I/O) could be hiding a real key, so bubble
+        // it up for scan() to log.
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+        Err(e) => return Err(e.to_string()),
     };
     if !contents.trim_start().starts_with(OPENSSH_HEADER) {
         return Ok(None);
@@ -266,6 +276,8 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
         )
         .unwrap();
         std::fs::write(dir.path().join("config"), "Host *\n").unwrap();
+        // Binary (non-UTF-8) file: skipped as "not a key", not an error
+        std::fs::write(dir.path().join("blob"), [0x80u8, 0xff, 0x00, 0x01]).unwrap();
         dir
     }
 
