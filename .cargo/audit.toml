@@ -37,4 +37,16 @@ ignore = [
     # tumpa-cli artifact. Remove once tauri-winrt-notification moves
     # to quick-xml >=0.41.
     "RUSTSEC-2026-0194",
+
+    # quick-xml 0.37.x — unbounded namespace-declaration allocation in
+    # NsReader (memory-exhaustion DoS). Fixed in >=0.41.0.
+    #   https://rustsec.org/advisories/RUSTSEC-2026-0195
+    # Same chain and same reasoning as RUSTSEC-2026-0194 above:
+    # notify-rust is a Linux-only dep of tumpa-cli, and
+    # tauri-winrt-notification (which pins quick-xml ^0.37 in its
+    # latest release, 0.7.2; even its unreleased main is only on
+    # ^0.38) is notify-rust's Windows-only backend, so quick-xml is
+    # never compiled into any tumpa-cli artifact. Remove once
+    # tauri-winrt-notification moves to quick-xml >=0.41.
+    "RUSTSEC-2026-0195",
 ]

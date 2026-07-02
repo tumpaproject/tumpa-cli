@@ -1091,6 +1091,36 @@ ssh-add -L    # list available SSH keys
 ssh user@host # authenticate
 ```
 
+### On-disk OpenSSH keys (`~/.ssh`)
+
+The SSH agent also serves plain OpenSSH private keys found in
+`~/.ssh` (e.g. `id_ed25519`, `id_rsa`), so it can fully replace
+`ssh-agent` even for keys that were never imported into the tumpa
+keystore. Nothing needs to be registered — the directory is rescanned
+on every `ssh-add -L`, so a freshly generated key shows up without
+restarting the agent.
+
+- Any file in OpenSSH private key format is picked up; `*.pub`,
+  `known_hosts`, `config`, and other non-key files are ignored.
+- Encrypted keys are listed without prompting (the public half of an
+  OpenSSH key file is stored in cleartext). The passphrase is only
+  requested — via pinentry, up to 3 attempts — when the key is first
+  used, and is then cached in the shared agent cache under the same
+  TTL as GPG passphrases and card PINs.
+- Supported key types: Ed25519, ECDSA P-256/P-384/P-521, and RSA
+  (`rsa-sha2-256` / `rsa-sha2-512`; legacy SHA-1 `ssh-rsa` signatures
+  are refused). FIDO (`sk-*`) and DSA keys are skipped.
+- A disk key whose public key matches an identity already served from
+  a card or the keystore is not listed twice; the card/keystore entry
+  wins.
+
+Set `TUMPA_SSH_DIR` to scan a different directory, or set it to an
+empty string to turn disk key scanning off entirely:
+
+```bash
+TUMPA_SSH_DIR= tcli agent --ssh        # keystore + cards only
+```
+
 ### Cache TTL
 
 ```
@@ -1436,7 +1466,8 @@ first:
    key. If found, prompts for card PIN and decrypts on-card. Otherwise,
    falls back to software key.
 3. **SSH agent:** card-based authentication keys are listed alongside
-   software keys. Card keys are preferred when both are available.
+   software keys and on-disk `~/.ssh` keys. Card keys are preferred
+   when both are available.
 
 ### PIN entry
 
@@ -1671,6 +1702,7 @@ TTL (default 30 minutes). This is especially valuable for:
 |---|---|---|
 | `TUMPA_KEYSTORE` | Path to the tumpa keystore database | `~/.tumpa/keys.db` |
 | `TUMPA_PASSPHRASE` | Passphrase / PIN for non-interactive use | (prompt) |
+| `TUMPA_SSH_DIR` | Directory scanned for OpenSSH private keys (empty = disable) | `~/.ssh` |
 | `PINENTRY_PROGRAM` | Path to the pinentry binary | `pinentry` |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `error` |
 
