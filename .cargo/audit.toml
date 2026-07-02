@@ -25,4 +25,16 @@ ignore = [
     # pgp -> num-bigint-dig / rsa / dsa and ssh-key; a bump depends
     # on the RustCrypto ecosystem completing its rand 0.9 migration.
     "RUSTSEC-2026-0097",
+
+    # quick-xml 0.37.x — quadratic run time when checking a start tag
+    # for duplicate attribute names (parser DoS). Fixed in >=0.41.0.
+    #   https://rustsec.org/advisories/RUSTSEC-2026-0194
+    # Pulled in via notify-rust -> tauri-winrt-notification, which
+    # still pins quick-xml ^0.37 in its latest release (0.7.2). The
+    # code is doubly unreachable in tumpa-cli builds: notify-rust is a
+    # Linux-only dep here, and tauri-winrt-notification is notify-rust's
+    # Windows-only backend, so quick-xml is never compiled into any
+    # tumpa-cli artifact. Remove once tauri-winrt-notification moves
+    # to quick-xml >=0.41.
+    "RUSTSEC-2026-0194",
 ]
