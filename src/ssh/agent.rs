@@ -12,6 +12,7 @@ use ssh_key::{Algorithm, Signature};
 use crate::cache::CredentialCache;
 use crate::card_touch::{self, Op as TouchOp};
 use crate::pinentry;
+use crate::ssh::disk_keys::{self, DiskKey};
 use crate::store;
 
 /// Pre-resolved card SSH identity, cached in memory.
@@ -132,6 +133,18 @@ impl TumpaBackend {
         }
     }
 
+    /// Enumerate OpenSSH private keys on disk (default `~/.ssh`).
+    ///
+    /// Rescans on every call: the scan is a handful of small file
+    /// reads, and it means keys added or removed while the agent runs
+    /// are picked up immediately.
+    fn scan_disk_keys(&self) -> Vec<DiskKey> {
+        match disk_keys::ssh_dir() {
+            Some(dir) => disk_keys::scan(&dir),
+            None => Vec::new(),
+        }
+    }
+
     /// Quick check: has the set of connected cards changed?
     ///
     /// Calls only `list_all_cards()` (1 SELECT) and compares the ident
@@ -221,6 +234,18 @@ impl Session for TumpaBackend {
             }
         }
 
+        // 3. On-disk OpenSSH keys from ~/.ssh (rescanned every call so
+        // newly created keys appear without restarting the agent)
+        for disk_key in self.scan_disk_keys() {
+            if identities.iter().any(|i| i.pubkey == disk_key.public) {
+                continue;
+            }
+            identities.push(Identity {
+                pubkey: disk_key.public.clone(),
+                comment: disk_key.comment.clone(),
+            });
+        }
+
         log::info!("Returning {} identities", identities.len());
         Ok(identities)
     }
@@ -306,6 +331,15 @@ impl Session for TumpaBackend {
                     }
                 }
             }
+        }
+
+        // No keystore match -- try on-disk OpenSSH keys from ~/.ssh
+        if let Some(disk_key) = self
+            .scan_disk_keys()
+            .into_iter()
+            .find(|k| k.public == request.pubkey)
+        {
+            return self.sign_with_disk_key(&disk_key, &request).await;
         }
 
         log::debug!("No matching key found for sign request");
@@ -591,6 +625,118 @@ impl TumpaBackend {
                 Signature::new(sign_data.algorithm, sig_bytes).map_err(AgentError::other)
             }
         }
+    }
+}
+
+impl TumpaBackend {
+    /// Sign an SSH request with an on-disk OpenSSH key (e.g. from ~/.ssh).
+    ///
+    /// The key file is re-read at sign time. Encrypted keys are
+    /// unlocked with the cached passphrase when available; otherwise
+    /// pinentry prompts (up to 3 attempts) and the passphrase is
+    /// cached only after a successful decrypt.
+    async fn sign_with_disk_key(
+        &self,
+        disk_key: &DiskKey,
+        request: &SignRequest,
+    ) -> Result<Signature, AgentError> {
+        log::info!("Signing with on-disk key {}", disk_key.path.display());
+
+        let key = ssh_key::PrivateKey::read_openssh_file(&disk_key.path).map_err(|e| {
+            log::error!("Failed to read {}: {}", disk_key.path.display(), e);
+            AgentError::Failure
+        })?;
+
+        let key = if key.is_encrypted() {
+            self.decrypt_disk_key(disk_key, &key)?
+        } else {
+            key
+        };
+
+        disk_keys::sign(&key, &request.data, request.flags).map_err(|e| {
+            log::error!("Signing with {} failed: {}", disk_key.path.display(), e);
+            AgentError::Failure
+        })
+    }
+
+    /// Decrypt an encrypted on-disk key, prompting via pinentry with
+    /// up to 3 attempts. Mirrors the card PIN retry flow.
+    fn decrypt_disk_key(
+        &self,
+        disk_key: &DiskKey,
+        key: &ssh_key::PrivateKey,
+    ) -> Result<ssh_key::PrivateKey, AgentError> {
+        const MAX_RETRIES: u32 = 3;
+        // Namespaced so an OpenSSH key can never collide with a card
+        // ident or an OpenPGP fingerprint in the shared cache.
+        let cache_key = format!(
+            "ssh-disk:{}",
+            disk_key.public.fingerprint(ssh_key::HashAlg::Sha256)
+        );
+
+        for attempt in 0..MAX_RETRIES {
+            let passphrase = if attempt == 0 {
+                let cached = {
+                    let cache = self.cache.lock().map_err(|_| AgentError::Failure)?;
+                    cache.get(&cache_key).cloned()
+                };
+                match cached {
+                    Some(p) => p,
+                    None => {
+                        let desc = format!(
+                            "Enter passphrase for SSH key\n\n{}",
+                            disk_key.path.display()
+                        );
+                        pinentry::get_passphrase(&desc, "Passphrase", None).map_err(|e| {
+                            log::error!("Failed to get passphrase: {}", e);
+                            AgentError::Failure
+                        })?
+                    }
+                }
+            } else {
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.remove(&cache_key);
+                }
+                let desc = format!(
+                    "Wrong passphrase for {} (attempt {}/{}). Try again",
+                    disk_key.path.display(),
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+                pinentry::get_passphrase(&desc, "Passphrase", None).map_err(|e| {
+                    log::error!("Failed to get passphrase: {}", e);
+                    AgentError::Failure
+                })?
+            };
+
+            match key.decrypt(passphrase.as_bytes()) {
+                Ok(decrypted) => {
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.store(&cache_key, passphrase);
+                    }
+                    return Ok(decrypted);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Decrypt attempt {}/{} for {} failed: {}",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        disk_key.path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.remove(&cache_key);
+        }
+        log::error!(
+            "Failed to decrypt {} after {} attempts",
+            disk_key.path.display(),
+            MAX_RETRIES
+        );
+        Err(AgentError::Failure)
     }
 }
 

@@ -51,7 +51,7 @@ experimental = []
 # encrypt / decrypt surface backs the human-facing `tcli encrypt` /
 # `tcli decrypt` subcommands (see ADR 0010).
 wecanencrypt = { version = "0.16.2", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.4.2", features = ["card", "network"] }
+libtumpa = { version = "0.4.3", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).
@@ -70,7 +70,14 @@ libc = "0.2"
 
 # SSH agent
 ssh-agent-lib = "0.5"
-ssh-key = { version = "0.6", features = ["p256", "p384", "p521"] }
+# ed25519/rsa enable signing for on-disk ~/.ssh keys; encryption enables
+# decrypting passphrase-protected OpenSSH private keys.
+ssh-key = { version = "0.6", features = ["p256", "p384", "p521", "ed25519", "rsa", "encryption"] }
+# Direct rsa dep so disk-key signing can honor the agent's
+# rsa-sha2-256 flag -- ssh-key's built-in RSA Signer is SHA-512 only.
+# Must stay on the same 0.9.x line as ssh-key's rsa dependency.
+rsa = "0.9"
+signature = "2"
 tokio = { version = "1", features = ["full"] }
 sha2 = "0.10"
 p256 = "0.13"

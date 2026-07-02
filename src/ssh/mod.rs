@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod disk_keys;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
