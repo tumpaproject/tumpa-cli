@@ -1,4 +1,12 @@
 pub mod agent;
+pub mod disk_keys;
+
+/// SSH agent protocol signature flags (draft-miller-ssh-agent 5.3):
+/// the RSA hash algorithm the client asked for. Shared by the card
+/// sign path (`agent::prepare_sign_data`) and the disk key sign path
+/// (`disk_keys::sign`) so the two can never diverge.
+pub const SSH_AGENT_RSA_SHA2_256: u32 = 2;
+pub const SSH_AGENT_RSA_SHA2_512: u32 = 4;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

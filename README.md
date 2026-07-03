@@ -9,8 +9,8 @@ At a glance, tumpa-cli works as a drop-in for:
 - **Git** — commit and tag signing + verification via `gpg.program`
 - **pass** — [password-store](https://www.passwordstore.org/) replacement,
   either through a native `tpass` binary or by pointing `pass` at `tclig`
-- **SSH** — OpenSSH-compatible agent serving keystore keys and OpenPGP
-  card auth subkeys
+- **SSH** — OpenSSH-compatible agent serving keystore keys, OpenPGP
+  card auth subkeys, and plain OpenSSH keys from `~/.ssh`
 - **Browserpass** — [Browserpass](https://github.com/browserpass/browserpass-extension)
   browser extension via the `gpg2` → `tclig` symlink
 - **PassFF** — [PassFF](https://github.com/passff/passff) Firefox extension,
@@ -47,7 +47,7 @@ For detailed usage instructions, see the
 - **OpenPGP card support** -- cards are tried first for signing, decryption, and SSH auth. Tested against **YubiKey 4/5** (RSA 2048/4096, NIST P-256/P-384; Curve25519 on firmware ≥ 5.2.3) and **Nitrokey 3** (RSA and `Cv25519Modern` — Ed25519 + X25519 per RFC 9580). Nitrokey rejects legacy `Cv25519` (EdDSALegacy + ECDH/Curve25519) along with `Ed448` and `X448` keys at upload time
 - **Unified agent** -- caches passphrases for GPG operations + optional SSH agent
 - **Key management** -- import, export, search, delete, and fetch keys via WKD
-- **SSH agent** -- serve authentication subkeys from the keystore and connected cards
+- **SSH agent** -- serve authentication subkeys from the keystore and connected cards, plus plain OpenSSH private keys from `~/.ssh` (passphrases prompted via pinentry and cached)
 - **Passphrase handling** -- agent cache, pinentry, `TUMPA_PASSPHRASE` env var, or terminal prompt
 - **Compatible with [multiverse/bump-tag](https://github.com/SUNET/multiverse)** -- produces the `[GNUPG:]` status lines git expects
 

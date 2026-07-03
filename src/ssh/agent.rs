@@ -12,6 +12,7 @@ use ssh_key::{Algorithm, Signature};
 use crate::cache::CredentialCache;
 use crate::card_touch::{self, Op as TouchOp};
 use crate::pinentry;
+use crate::ssh::disk_keys::{self, DiskKey};
 use crate::store;
 
 /// Pre-resolved card SSH identity, cached in memory.
@@ -132,6 +133,25 @@ impl TumpaBackend {
         }
     }
 
+    /// Enumerate OpenSSH private keys on disk (default `~/.ssh`).
+    ///
+    /// Rescans on every call: the scan is a handful of small file
+    /// reads, and it means keys added or removed while the agent runs
+    /// are picked up immediately. The synchronous filesystem walk runs
+    /// on the blocking pool so it cannot stall other sessions sharing
+    /// the async worker threads.
+    async fn scan_disk_keys(&self) -> Vec<DiskKey> {
+        let Some(dir) = disk_keys::ssh_dir() else {
+            return Vec::new();
+        };
+        tokio::task::spawn_blocking(move || disk_keys::scan(&dir))
+            .await
+            .unwrap_or_else(|e| {
+                log::error!("Disk key scan task failed: {}", e);
+                Vec::new()
+            })
+    }
+
     /// Quick check: has the set of connected cards changed?
     ///
     /// Calls only `list_all_cards()` (1 SELECT) and compares the ident
@@ -221,6 +241,18 @@ impl Session for TumpaBackend {
             }
         }
 
+        // 3. On-disk OpenSSH keys from ~/.ssh (rescanned every call so
+        // newly created keys appear without restarting the agent)
+        for disk_key in self.scan_disk_keys().await {
+            if identities.iter().any(|i| i.pubkey == disk_key.public) {
+                continue;
+            }
+            identities.push(Identity {
+                pubkey: disk_key.public.clone(),
+                comment: disk_key.comment.clone(),
+            });
+        }
+
         log::info!("Returning {} identities", identities.len());
         Ok(identities)
     }
@@ -306,6 +338,16 @@ impl Session for TumpaBackend {
                     }
                 }
             }
+        }
+
+        // No keystore match -- try on-disk OpenSSH keys from ~/.ssh
+        if let Some(disk_key) = self
+            .scan_disk_keys()
+            .await
+            .into_iter()
+            .find(|k| k.public == request.pubkey)
+        {
+            return self.sign_with_disk_key(&disk_key, &request).await;
         }
 
         log::debug!("No matching key found for sign request");
@@ -594,6 +636,154 @@ impl TumpaBackend {
     }
 }
 
+impl TumpaBackend {
+    /// Sign an SSH request with an on-disk OpenSSH key (e.g. from ~/.ssh).
+    ///
+    /// The key file is re-read at sign time, with the same
+    /// regular-file and size guards as scanning (the file can change
+    /// between scan and sign). Encrypted keys are unlocked with the
+    /// cached passphrase when available; otherwise pinentry prompts
+    /// (up to 3 attempts) and the passphrase is cached only after a
+    /// successful decrypt.
+    async fn sign_with_disk_key(
+        &self,
+        disk_key: &DiskKey,
+        request: &SignRequest,
+    ) -> Result<Signature, AgentError> {
+        log::info!("Signing with on-disk key {}", disk_key.path.display());
+
+        // File I/O on the blocking pool, like scan_disk_keys()
+        let path = disk_key.path.clone();
+        let key = tokio::task::spawn_blocking(move || disk_keys::read_private_key(&path))
+            .await
+            .map_err(|e| {
+                log::error!("Disk key read task failed: {}", e);
+                AgentError::Failure
+            })?
+            .map_err(|e| {
+                log::error!("Failed to read {}: {}", disk_key.path.display(), e);
+                AgentError::Failure
+            })?;
+
+        // The file can change between scan and sign; a swapped key
+        // must fail fast here, not after prompting for a passphrase
+        // or handing the client a signature it will reject. The
+        // public half of an encrypted key is cleartext, so the check
+        // works before any decrypt.
+        if key.public_key().key_data() != &request.pubkey {
+            log::error!(
+                "{} no longer matches the requested public key",
+                disk_key.path.display()
+            );
+            return Err(AgentError::Failure);
+        }
+
+        let key = if key.is_encrypted() {
+            // Blocking pool again: pinentry waits on the user and the
+            // OpenSSH passphrase KDF is bcrypt, neither of which
+            // belongs on an async worker thread.
+            let cache = Arc::clone(&self.cache);
+            let disk_key = disk_key.clone();
+            tokio::task::spawn_blocking(move || Self::decrypt_disk_key(&cache, &disk_key, &key))
+                .await
+                .map_err(|e| {
+                    log::error!("Disk key decrypt task failed: {}", e);
+                    AgentError::Failure
+                })??
+        } else {
+            key
+        };
+
+        disk_keys::sign(&key, &request.data, request.flags).map_err(|e| {
+            log::error!("Signing with {} failed: {}", disk_key.path.display(), e);
+            AgentError::Failure
+        })
+    }
+
+    /// Decrypt an encrypted on-disk key, prompting via pinentry with
+    /// up to 3 attempts. Mirrors the card PIN retry flow.
+    ///
+    /// An associated function rather than a method so the caller can
+    /// move it onto the blocking pool without capturing `self`.
+    fn decrypt_disk_key(
+        cache: &Mutex<CredentialCache>,
+        disk_key: &DiskKey,
+        key: &ssh_key::PrivateKey,
+    ) -> Result<ssh_key::PrivateKey, AgentError> {
+        const MAX_RETRIES: u32 = 3;
+        // Namespaced so an OpenSSH key can never collide with a card
+        // ident or an OpenPGP fingerprint in the shared cache.
+        let cache_key = format!(
+            "ssh-disk:{}",
+            disk_key.public.fingerprint(ssh_key::HashAlg::Sha256)
+        );
+
+        for attempt in 0..MAX_RETRIES {
+            let passphrase = if attempt == 0 {
+                let cached = {
+                    let cache = cache.lock().map_err(|_| AgentError::Failure)?;
+                    cache.get(&cache_key).cloned()
+                };
+                match cached {
+                    Some(p) => p,
+                    None => {
+                        let desc = format!(
+                            "Enter passphrase for SSH key\n\n{}",
+                            disk_key.path.display()
+                        );
+                        pinentry::get_passphrase(&desc, "Passphrase", None).map_err(|e| {
+                            log::error!("Failed to get passphrase: {}", e);
+                            AgentError::Failure
+                        })?
+                    }
+                }
+            } else {
+                if let Ok(mut cache) = cache.lock() {
+                    cache.remove(&cache_key);
+                }
+                let desc = format!(
+                    "Wrong passphrase for {} (attempt {}/{}). Try again",
+                    disk_key.path.display(),
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+                pinentry::get_passphrase(&desc, "Passphrase", None).map_err(|e| {
+                    log::error!("Failed to get passphrase: {}", e);
+                    AgentError::Failure
+                })?
+            };
+
+            match key.decrypt(passphrase.as_bytes()) {
+                Ok(decrypted) => {
+                    if let Ok(mut cache) = cache.lock() {
+                        cache.store(&cache_key, passphrase);
+                    }
+                    return Ok(decrypted);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Decrypt attempt {}/{} for {} failed: {}",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        disk_key.path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        if let Ok(mut cache) = cache.lock() {
+            cache.remove(&cache_key);
+        }
+        log::error!(
+            "Failed to decrypt {} after {} attempts",
+            disk_key.path.display(),
+            MAX_RETRIES
+        );
+        Err(AgentError::Failure)
+    }
+}
+
 /// Prepared data for an SSH signing operation.
 struct SignData {
     algorithm: Algorithm,
@@ -602,8 +792,7 @@ struct SignData {
 }
 
 fn prepare_sign_data(request: &SignRequest) -> Option<SignData> {
-    const SSH_AGENT_RSA_SHA2_256: u32 = 2;
-    const SSH_AGENT_RSA_SHA2_512: u32 = 4;
+    use super::{SSH_AGENT_RSA_SHA2_256, SSH_AGENT_RSA_SHA2_512};
 
     match &request.pubkey {
         KeyData::Ed25519(_) => Some(SignData {
