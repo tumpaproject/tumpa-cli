@@ -631,10 +631,12 @@ impl TumpaBackend {
 impl TumpaBackend {
     /// Sign an SSH request with an on-disk OpenSSH key (e.g. from ~/.ssh).
     ///
-    /// The key file is re-read at sign time. Encrypted keys are
-    /// unlocked with the cached passphrase when available; otherwise
-    /// pinentry prompts (up to 3 attempts) and the passphrase is
-    /// cached only after a successful decrypt.
+    /// The key file is re-read at sign time, with the same
+    /// regular-file and size guards as scanning (the file can change
+    /// between scan and sign). Encrypted keys are unlocked with the
+    /// cached passphrase when available; otherwise pinentry prompts
+    /// (up to 3 attempts) and the passphrase is cached only after a
+    /// successful decrypt.
     async fn sign_with_disk_key(
         &self,
         disk_key: &DiskKey,
@@ -642,7 +644,7 @@ impl TumpaBackend {
     ) -> Result<Signature, AgentError> {
         log::info!("Signing with on-disk key {}", disk_key.path.display());
 
-        let key = ssh_key::PrivateKey::read_openssh_file(&disk_key.path).map_err(|e| {
+        let key = disk_keys::read_private_key(&disk_key.path).map_err(|e| {
             log::error!("Failed to read {}: {}", disk_key.path.display(), e);
             AgentError::Failure
         })?;

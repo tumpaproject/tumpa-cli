@@ -11,6 +11,7 @@ use signature::{SignatureEncoding, Signer};
 use ssh_key::private::KeypairData;
 use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, HashAlg, PrivateKey, Signature};
+use zeroize::Zeroizing;
 
 /// Files larger than this are never key files; skipping them keeps a
 /// stray `known_hosts.old` or packet capture from being read fully.
@@ -84,8 +85,10 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
         return Ok(None);
     }
 
+    // Zeroizing: an unencrypted file holds private key material, and
+    // this buffer must not outlive the parse.
     let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
+        Ok(c) => Zeroizing::new(c),
         // Non-UTF-8 means a binary file (host key blob, etc.), which
         // is genuinely not an OpenSSH key. Anything else (permission
         // denied, transient I/O) could be hiding a real key, so bubble
@@ -97,7 +100,7 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
         return Ok(None);
     }
 
-    let key = PrivateKey::from_openssh(&contents).map_err(|e| e.to_string())?;
+    let key = PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())?;
     let public = key.public_key().key_data().clone();
 
     // Only key types the agent can actually sign with. This excludes
@@ -130,9 +133,39 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
     }))
 }
 
+/// Read and parse an OpenSSH private key file, enforcing the same
+/// regular-file and size guards as scanning.
+///
+/// Used at sign time as well: the file can change between scan and
+/// sign, so a replaced socket/FIFO or oversized file must be rejected
+/// again here, not just during discovery.
+pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    if meta.len() > MAX_KEY_FILE_SIZE {
+        return Err(format!(
+            "file is larger than {} bytes, refusing to read as a key",
+            MAX_KEY_FILE_SIZE
+        ));
+    }
+    let contents = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| e.to_string())?);
+    PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())
+}
+
 /// Read the comment from the sibling `<key>.pub` file, if any.
 fn pub_file_comment(path: &Path) -> Option<String> {
-    let pub_path = PathBuf::from(format!("{}.pub", path.display()));
+    // Append via OsString: going through `path.display()` is lossy
+    // for non-UTF-8 paths and would look up the wrong file.
+    let mut pub_os = path.as_os_str().to_os_string();
+    pub_os.push(".pub");
+    let pub_path = PathBuf::from(pub_os);
+
+    let meta = std::fs::metadata(&pub_path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_KEY_FILE_SIZE {
+        return None;
+    }
     let line = std::fs::read_to_string(pub_path).ok()?;
     let public = ssh_key::PublicKey::from_openssh(line.trim()).ok()?;
     let comment = public.comment().trim();
@@ -301,6 +334,24 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
     #[test]
     fn scan_missing_dir_is_empty() {
         assert!(scan(Path::new("/nonexistent-tumpa-test-dir")).is_empty());
+    }
+
+    #[test]
+    fn read_private_key_enforces_guards() {
+        let dir = write_test_dir();
+
+        let key = read_private_key(&dir.path().join("id_ecdsa")).unwrap();
+        assert_eq!(key.comment(), "plain-ecdsa");
+
+        // Oversized file: rejected even with a valid-looking header
+        let big = dir.path().join("id_big");
+        let mut contents = OPENSSH_HEADER.to_string();
+        contents.push_str(&"A".repeat(MAX_KEY_FILE_SIZE as usize));
+        std::fs::write(&big, contents).unwrap();
+        assert!(read_private_key(&big).is_err());
+
+        // Directory: not a regular file
+        assert!(read_private_key(dir.path()).is_err());
     }
 
     #[test]
