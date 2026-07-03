@@ -46,8 +46,9 @@ pub fn ssh_dir() -> Option<PathBuf> {
 /// Scan a directory for OpenSSH private keys.
 ///
 /// Non-key files (pubkeys, known_hosts, config, sockets) are skipped
-/// by the PEM-header check; unreadable or unparsable files are logged
-/// at debug level and ignored so one bad file never hides the rest.
+/// by the PEM-header check; symlinks are skipped entirely; unreadable
+/// or unparsable files are logged at debug level and ignored so one
+/// bad file never hides the rest.
 pub fn scan(dir: &Path) -> Vec<DiskKey> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -80,7 +81,11 @@ pub fn scan(dir: &Path) -> Vec<DiskKey> {
 }
 
 fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    // symlink_metadata: a symlink in ~/.ssh could point anywhere,
+    // including procfs pseudo-files where len() is unreliable and a
+    // read can block the agent. is_file() is false for symlinks here,
+    // so they are skipped along with sockets, FIFOs and directories.
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > MAX_KEY_FILE_SIZE {
         return Ok(None);
     }
@@ -134,13 +139,16 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
 }
 
 /// Read and parse an OpenSSH private key file, enforcing the same
-/// regular-file and size guards as scanning.
+/// regular-file, no-symlink and size guards as scanning.
 ///
 /// Used at sign time as well: the file can change between scan and
-/// sign, so a replaced socket/FIFO or oversized file must be rejected
-/// again here, not just during discovery.
+/// sign, so a replaced symlink, socket/FIFO or oversized file must be
+/// rejected again here, not just during discovery.
 pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if meta.is_symlink() {
+        return Err("symlinks are not followed for key files".to_string());
+    }
     if !meta.is_file() {
         return Err("not a regular file".to_string());
     }
@@ -162,7 +170,7 @@ fn pub_file_comment(path: &Path) -> Option<String> {
     pub_os.push(".pub");
     let pub_path = PathBuf::from(pub_os);
 
-    let meta = std::fs::metadata(&pub_path).ok()?;
+    let meta = std::fs::symlink_metadata(&pub_path).ok()?;
     if !meta.is_file() || meta.len() > MAX_KEY_FILE_SIZE {
         return None;
     }
@@ -352,6 +360,22 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
 
         // Directory: not a regular file
         assert!(read_private_key(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_skipped() {
+        let dir = write_test_dir();
+        let link = dir.path().join("id_link");
+        std::os::unix::fs::symlink(dir.path().join("id_ecdsa"), &link).unwrap();
+
+        // scan: the symlink does not add a third identity
+        let keys = scan(dir.path());
+        assert_eq!(keys.len(), 2);
+        assert!(keys.iter().all(|k| k.path != link));
+
+        // sign-time read: rejected outright
+        assert!(read_private_key(&link).is_err());
     }
 
     #[test]

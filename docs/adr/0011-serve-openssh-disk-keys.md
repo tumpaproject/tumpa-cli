@@ -29,8 +29,11 @@ discovered on disk (`src/ssh/disk_keys.rs`).
 - No registration step (`ssh-add` is not needed and not implemented):
   every file in the directory whose contents start with the
   `-----BEGIN OPENSSH PRIVATE KEY-----` header is parsed. Everything
-  else (`*.pub`, `known_hosts`, `config`, sockets, oversized files)
-  is skipped, and one unparsable file never hides the rest.
+  else (`*.pub`, `known_hosts`, `config`, sockets, symlinks,
+  oversized files) is skipped, and one unparsable file never hides
+  the rest. Symlinks are never followed: one inside `~/.ssh` could
+  point at an arbitrary path, including procfs pseudo-files where
+  the reported size is unreliable and a read can block the agent.
 - The directory is rescanned on each `request_identities` call and on
   a sign-request cache miss. The scan is a handful of small file
   reads, and it makes newly created keys visible without restarting
