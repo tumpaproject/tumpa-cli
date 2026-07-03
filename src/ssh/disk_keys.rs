@@ -156,7 +156,7 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
 /// rejected again here, not just during discovery.
 pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if meta.is_symlink() {
+    if meta.file_type().is_symlink() {
         return Err("symlinks are not followed for key files".to_string());
     }
     if !meta.is_file() {
@@ -224,22 +224,26 @@ pub fn sign(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, Stri
     match key.key_data() {
         KeypairData::Rsa(keypair) => {
             let private = rsa_private_key(keypair)?;
-            if flags & SSH_AGENT_RSA_SHA2_512 != 0 {
-                let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private);
-                let sig = signer.try_sign(data).map_err(|e| e.to_string())?;
-                Signature::new(
-                    Algorithm::Rsa {
-                        hash: Some(HashAlg::Sha512),
-                    },
-                    sig.to_vec(),
-                )
-                .map_err(|e| e.to_string())
-            } else if flags & SSH_AGENT_RSA_SHA2_256 != 0 {
+            // SHA-256 checked first when both flags are set, matching
+            // prepare_sign_data() in agent.rs and OpenSSH's own
+            // agent_decode_alg(), so every key source picks the same
+            // algorithm for the same request.
+            if flags & SSH_AGENT_RSA_SHA2_256 != 0 {
                 let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(private);
                 let sig = signer.try_sign(data).map_err(|e| e.to_string())?;
                 Signature::new(
                     Algorithm::Rsa {
                         hash: Some(HashAlg::Sha256),
+                    },
+                    sig.to_vec(),
+                )
+                .map_err(|e| e.to_string())
+            } else if flags & SSH_AGENT_RSA_SHA2_512 != 0 {
+                let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha512>::new(private);
+                let sig = signer.try_sign(data).map_err(|e| e.to_string())?;
+                Signature::new(
+                    Algorithm::Rsa {
+                        hash: Some(HashAlg::Sha512),
                     },
                     sig.to_vec(),
                 )
@@ -475,6 +479,16 @@ mod tests {
             }
         );
         key.public_key().key_data().verify(data, &sig512).unwrap();
+
+        // Both flags set: SHA-256 wins, same as prepare_sign_data()
+        // and OpenSSH's agent_decode_alg()
+        let sig_both = sign(key, data, SSH_AGENT_RSA_SHA2_256 | SSH_AGENT_RSA_SHA2_512).unwrap();
+        assert_eq!(
+            sig_both.algorithm(),
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha256)
+            }
+        );
 
         // flags == 0 would mean legacy ssh-rsa (SHA-1): rejected
         assert!(sign(key, data, 0).is_err());
