@@ -249,68 +249,62 @@ fn rsa_private_key(keypair: &ssh_key::private::RsaKeypair) -> Result<rsa::RsaPri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::OsRng;
     use signature::Verifier;
+    use ssh_key::{EcdsaCurve, LineEnding};
+    use std::sync::LazyLock;
 
-    /// ed25519 key encrypted with passphrase "test-passphrase",
-    /// generated with `ssh-keygen -t ed25519 -N test-passphrase -C ""`.
-    const ENC_ED25519: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABD/vf2Qcy
-2ywzhpgK7HUBOLAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIO0g1ilex9fUv+3V
-5IJtKziUjLrJp2cAXkgybUI1S4CvAAAAkGwL+c/loUJhSLpHmjKHRxRG1Fyo/iY5w8AvMH
-qvy7TTYi7uvKPBZtt0UZ6IC4p16rPn2E1qSXlXTNb0B2ui8zxa7cFBL8K160NMyia6RBCx
-yjejCqilbgfjEkvTZwzSgy5Spkb2AxpEZ7aq9/u0E/lkdpC0yA6/0J6DJsj5iVJeHCvuew
-BI/vU/iZX7UGKihg==
------END OPENSSH PRIVATE KEY-----
-";
-    const ENC_ED25519_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO0g1ilex9fUv+3V5IJtKziUjLrJp2cAXkgybUI1S4Cv pubfile-comment\n";
+    const TEST_PASSPHRASE: &str = "test-passphrase";
+
+    // Fixture keys are generated at runtime, not embedded in the
+    // source: even throwaway test keys trip secret scanners and risk
+    // being copied somewhere real. LazyLock so each is generated once
+    // per test binary run (RSA keygen is slow in debug builds).
+
+    /// ed25519 key encrypted with TEST_PASSPHRASE, empty comment.
+    static ENC_ED25519: LazyLock<PrivateKey> = LazyLock::new(|| {
+        let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        key.encrypt(&mut OsRng, TEST_PASSPHRASE).unwrap()
+    });
 
     /// Unencrypted ecdsa-p256 key with comment "plain-ecdsa".
-    const PLAIN_ECDSA: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
-1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQRrIAKnfk0833ZKto7RC2hZ9I4Ddyb/
-vBWp1xB6PL9j7e41vcA4HlemNn3lkxc1zIVMZOiBoiZ0WTmooynuGeNaAAAAqGxAZzlsQG
-c5AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGsgAqd+TTzfdkq2
-jtELaFn0jgN3Jv+8FanXEHo8v2Pt7jW9wDgeV6Y2feWTFzXMhUxk6IGiJnRZOaijKe4Z41
-oAAAAgJGkvYQB8WKU6gHsnd1aTV8MQ64fww4H22SThKhJDN1cAAAALcGxhaW4tZWNkc2EB
-AgMEBQ==
------END OPENSSH PRIVATE KEY-----
-";
+    static PLAIN_ECDSA: LazyLock<PrivateKey> = LazyLock::new(|| {
+        let key = PrivateKey::random(
+            &mut OsRng,
+            Algorithm::Ecdsa {
+                curve: EcdsaCurve::NistP256,
+            },
+        )
+        .unwrap();
+        PrivateKey::new(key.key_data().clone(), "plain-ecdsa").unwrap()
+    });
 
     /// Unencrypted rsa-2048 key with comment "plain-rsa".
-    const PLAIN_RSA: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
-NhAAAAAwEAAQAAAQEAqWlr0nGLEs9eUuhL+Jk4giZJLQ2dKS5BhWHVPLTIt+lovwgiozBx
-risoSHD212vDbVyy3K6s6+CPUh+19QTb6Xxg2k2SttDgELg67xv84uyGya9q8qwjjNZgub
-qsYDiTtux7C8wUOsLLAQ/mSGluwbIbYwQ3XJWtg1jTGaAf6gphjOGglBgMV46T8UcKLMDH
-tGBwaGOlmrg6dUfH7U2t+8QuwS/DldCYTV5DmBk2DD+9hhTnTHX7++8xcQD8N88z8z9Ppt
-HAN8PI3rqv8Ml940q+y7WPoIkdIOV95EIq0XmkMr2oF1mHZyeBk8hzP2NZSeoMedW7CDdZ
-G4j2Sqmv1QAAA8B3mP+Dd5j/gwAAAAdzc2gtcnNhAAABAQCpaWvScYsSz15S6Ev4mTiCJk
-ktDZ0pLkGFYdU8tMi36Wi/CCKjMHGuKyhIcPbXa8NtXLLcrqzr4I9SH7X1BNvpfGDaTZK2
-0OAQuDrvG/zi7IbJr2ryrCOM1mC5uqxgOJO27HsLzBQ6wssBD+ZIaW7BshtjBDdcla2DWN
-MZoB/qCmGM4aCUGAxXjpPxRwoswMe0YHBoY6WauDp1R8ftTa37xC7BL8OV0JhNXkOYGTYM
-P72GFOdMdfv77zFxAPw3zzPzP0+m0cA3w8jeuq/wyX3jSr7LtY+giR0g5X3kQirReaQyva
-gXWYdnJ4GTyHM/Y1lJ6gx51bsIN1kbiPZKqa/VAAAAAwEAAQAAAQAHGdceJAo7SJvgh8If
-cnSu5+HrVIXA4yJ178rbV4yOQOdWEoY5Jt+s+DwhBTMjhm3TmK4al+vBm1EGlTOwSHrbR4
-5buCKtLQYnTUGTIi4waM+hhovKDjMTRS0au9tb0SNH6JOjw/MZH28Y5Uy2vkyZK9kABn43
-kEKMnd2DVnXf/mvoI0HUugLrYeK9PtR5/xJt0RUMg244mQUbgE+1vOm0PveTyLXols/FO1
-v+0yb9AhXmHahW62CTqsTtyGXG8ixgSBA343h3Rb2gbaLR6xqZx3GvyZDUT9rU+ySmn8rc
-W7qjblA/14kvpV3bf7+0QVccu2aABTvd5qOzX8jfCz+hAAAAgQCcTdoCWqxXa/fpsdK6s3
-jnalxtJsrOHELB+kRN1rSZp/RyCiObwLLIrdwOYhrGOsAaQKe8td2XLGP46hfFI1R35sDG
-9NSveAKtPC4Q9/8hSKxzLZTNTApqX5dxnJ5Ql+l8Tj4pmR8Z+I4z4EywkOBxt7iKcL0NO+
-Ujq0xC2T/fcQAAAIEA3c9nM70ZfgGZFboedf6Nh0qKY4S6S+Yh9bpiVI9ZNf8X6nGY5Cz9
-oXIeGZP1ViHohsv206GMlTzIDFxrghbttIzV8QMUQIomueiB40ekHELEPUqLAzgqr29z68
-yx7+uwEPimCNtC+KIqaRiIfwGIykAcuV48V9Bj9qckAwaDb40AAACBAMOGYtmwtPeDdIDQ
-CNN5ctzNCeDA8v9OVQ+nqNsV88ZwunLWUajFTBTEaAeEi7VnlalVyljy+dmmJSHcQ+GiJM
-Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
-19ZMX8UNF3v+5WtpAAAACXBsYWluLXJzYQE=
------END OPENSSH PRIVATE KEY-----
-";
+    static PLAIN_RSA: LazyLock<PrivateKey> = LazyLock::new(|| {
+        let keypair = ssh_key::private::RsaKeypair::random(&mut OsRng, 2048).unwrap();
+        PrivateKey::new(KeypairData::Rsa(keypair), "plain-rsa").unwrap()
+    });
 
     fn write_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("id_ed25519"), ENC_ED25519).unwrap();
-        std::fs::write(dir.path().join("id_ed25519.pub"), ENC_ED25519_PUB).unwrap();
-        std::fs::write(dir.path().join("id_ecdsa"), PLAIN_ECDSA).unwrap();
+        std::fs::write(
+            dir.path().join("id_ed25519"),
+            ENC_ED25519.to_openssh(LineEnding::LF).unwrap().as_str(),
+        )
+        .unwrap();
+        // Sibling .pub carries the comment (the encrypted blob hides it)
+        let mut public = ENC_ED25519.public_key().clone();
+        public.set_comment("pubfile-comment");
+        std::fs::write(
+            dir.path().join("id_ed25519.pub"),
+            format!("{}\n", public.to_openssh().unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("id_ecdsa"),
+            PLAIN_ECDSA.to_openssh(LineEnding::LF).unwrap().as_str(),
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join("known_hosts"),
             "example.com ssh-ed25519 AAAA\n",
@@ -380,11 +374,11 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
 
     #[test]
     fn decrypt_sign_verify_ed25519() {
-        let key = PrivateKey::from_openssh(ENC_ED25519).unwrap();
+        let key = &*ENC_ED25519;
         assert!(key.is_encrypted());
         assert!(key.decrypt(b"wrong-passphrase").is_err());
 
-        let key = key.decrypt(b"test-passphrase").unwrap();
+        let key = key.decrypt(TEST_PASSPHRASE).unwrap();
         let data = b"ssh session data";
         let sig = sign(&key, data, 0).unwrap();
         key.public_key().key_data().verify(data, &sig).unwrap();
@@ -392,18 +386,18 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
 
     #[test]
     fn sign_verify_ecdsa() {
-        let key = PrivateKey::from_openssh(PLAIN_ECDSA).unwrap();
+        let key = &*PLAIN_ECDSA;
         let data = b"ssh session data";
-        let sig = sign(&key, data, 0).unwrap();
+        let sig = sign(key, data, 0).unwrap();
         key.public_key().key_data().verify(data, &sig).unwrap();
     }
 
     #[test]
     fn sign_rsa_honors_hash_flags() {
-        let key = PrivateKey::from_openssh(PLAIN_RSA).unwrap();
+        let key = &*PLAIN_RSA;
         let data = b"ssh session data";
 
-        let sig256 = sign(&key, data, 2).unwrap();
+        let sig256 = sign(key, data, 2).unwrap();
         assert_eq!(
             sig256.algorithm(),
             Algorithm::Rsa {
@@ -412,7 +406,7 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
         );
         key.public_key().key_data().verify(data, &sig256).unwrap();
 
-        let sig512 = sign(&key, data, 4).unwrap();
+        let sig512 = sign(key, data, 4).unwrap();
         assert_eq!(
             sig512.algorithm(),
             Algorithm::Rsa {
@@ -422,6 +416,6 @@ Cvht16q9oxLqJ4S1JXJMYZfDYXFuupclu45r9/nkHHoZiGJFN0ZX07emSKAs0B1WYeuPyt
         key.public_key().key_data().verify(data, &sig512).unwrap();
 
         // flags == 0 would mean legacy ssh-rsa (SHA-1): rejected
-        assert!(sign(&key, data, 0).is_err());
+        assert!(sign(key, data, 0).is_err());
     }
 }

@@ -3970,6 +3970,7 @@ dependencies = [
  "p384",
  "p521",
  "pgp",
+ "rand_core 0.6.4",
  "rpassword",
  "rsa",
  "sha2",

@@ -137,12 +137,19 @@ impl TumpaBackend {
     ///
     /// Rescans on every call: the scan is a handful of small file
     /// reads, and it means keys added or removed while the agent runs
-    /// are picked up immediately.
-    fn scan_disk_keys(&self) -> Vec<DiskKey> {
-        match disk_keys::ssh_dir() {
-            Some(dir) => disk_keys::scan(&dir),
-            None => Vec::new(),
-        }
+    /// are picked up immediately. The synchronous filesystem walk runs
+    /// on the blocking pool so it cannot stall other sessions sharing
+    /// the async worker threads.
+    async fn scan_disk_keys(&self) -> Vec<DiskKey> {
+        let Some(dir) = disk_keys::ssh_dir() else {
+            return Vec::new();
+        };
+        tokio::task::spawn_blocking(move || disk_keys::scan(&dir))
+            .await
+            .unwrap_or_else(|e| {
+                log::error!("Disk key scan task failed: {}", e);
+                Vec::new()
+            })
     }
 
     /// Quick check: has the set of connected cards changed?
@@ -236,7 +243,7 @@ impl Session for TumpaBackend {
 
         // 3. On-disk OpenSSH keys from ~/.ssh (rescanned every call so
         // newly created keys appear without restarting the agent)
-        for disk_key in self.scan_disk_keys() {
+        for disk_key in self.scan_disk_keys().await {
             if identities.iter().any(|i| i.pubkey == disk_key.public) {
                 continue;
             }
@@ -336,6 +343,7 @@ impl Session for TumpaBackend {
         // No keystore match -- try on-disk OpenSSH keys from ~/.ssh
         if let Some(disk_key) = self
             .scan_disk_keys()
+            .await
             .into_iter()
             .find(|k| k.public == request.pubkey)
         {
@@ -644,10 +652,18 @@ impl TumpaBackend {
     ) -> Result<Signature, AgentError> {
         log::info!("Signing with on-disk key {}", disk_key.path.display());
 
-        let key = disk_keys::read_private_key(&disk_key.path).map_err(|e| {
-            log::error!("Failed to read {}: {}", disk_key.path.display(), e);
-            AgentError::Failure
-        })?;
+        // File I/O on the blocking pool, like scan_disk_keys()
+        let path = disk_key.path.clone();
+        let key = tokio::task::spawn_blocking(move || disk_keys::read_private_key(&path))
+            .await
+            .map_err(|e| {
+                log::error!("Disk key read task failed: {}", e);
+                AgentError::Failure
+            })?
+            .map_err(|e| {
+                log::error!("Failed to read {}: {}", disk_key.path.display(), e);
+                AgentError::Failure
+            })?;
 
         let key = if key.is_encrypted() {
             self.decrypt_disk_key(disk_key, &key)?
