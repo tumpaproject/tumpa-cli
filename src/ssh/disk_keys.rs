@@ -5,6 +5,7 @@
 //! in cleartext, so identities can be listed without prompting -- the
 //! passphrase is only needed (and cached) when a sign request arrives.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use signature::{SignatureEncoding, Signer};
@@ -81,23 +82,32 @@ pub fn scan(dir: &Path) -> Vec<DiskKey> {
 }
 
 fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
-    // symlink_metadata: a symlink in ~/.ssh could point anywhere,
-    // including procfs pseudo-files where len() is unreliable and a
-    // read can block the agent. is_file() is false for symlinks here,
-    // so they are skipped along with sockets, FIFOs and directories.
-    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    // Open first, fstat the handle, read from the handle: a stat on
+    // the path followed by a fresh open would leave a window to swap
+    // in a symlink or FIFO between the two. A symlink in ~/.ssh could
+    // point anywhere, including procfs pseudo-files where len() is
+    // unreliable and a read can block the agent; it is skipped along
+    // with sockets, FIFOs and directories.
+    let file = match open_key_file(path) {
+        Ok(file) => file,
+        Err(e) if is_symlink_error(&e) => return Ok(None),
+        // Permission denied or transient I/O could be hiding a real
+        // key, so bubble it up for scan() to log.
+        Err(e) => return Err(e.to_string()),
+    };
+    let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > MAX_KEY_FILE_SIZE {
         return Ok(None);
     }
 
     // Zeroizing: an unencrypted file holds private key material, and
     // this buffer must not outlive the parse.
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => Zeroizing::new(c),
+    let mut contents = Zeroizing::new(String::new());
+    // take(): the fstat length can go stale if the file grows
+    match std::io::Read::take(&file, MAX_KEY_FILE_SIZE).read_to_string(&mut contents) {
+        Ok(_) => {}
         // Non-UTF-8 means a binary file (host key blob, etc.), which
-        // is genuinely not an OpenSSH key. Anything else (permission
-        // denied, transient I/O) could be hiding a real key, so bubble
-        // it up for scan() to log.
+        // is genuinely not an OpenSSH key.
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
@@ -149,16 +159,22 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
 }
 
 /// Read and parse an OpenSSH private key file, enforcing the same
-/// regular-file, no-symlink and size guards as scanning.
+/// regular-file, no-symlink, size and permission guards as scanning.
 ///
 /// Used at sign time as well: the file can change between scan and
 /// sign, so a replaced symlink, socket/FIFO or oversized file must be
-/// rejected again here, not just during discovery.
+/// rejected again here, not just during discovery. The file is opened
+/// exactly once and every guard runs on that open handle, so nothing
+/// can be swapped in between a check and the read.
 pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
-    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if meta.file_type().is_symlink() {
-        return Err("symlinks are not followed for key files".to_string());
-    }
+    let file = open_key_file(path).map_err(|e| {
+        if is_symlink_error(&e) {
+            "symlinks are not followed for key files".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a regular file".to_string());
     }
@@ -171,8 +187,40 @@ pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
     if !permissions_ok(&meta) {
         return Err("permissions are too open (readable or writable by group/other)".to_string());
     }
-    let contents = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| e.to_string())?);
+    let mut contents = Zeroizing::new(String::new());
+    std::io::Read::take(&file, MAX_KEY_FILE_SIZE)
+        .read_to_string(&mut contents)
+        .map_err(|e| e.to_string())?;
     PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())
+}
+
+/// Open a key file for reading without following symlinks.
+///
+/// `O_NOFOLLOW` makes the open itself fail (`ELOOP`) when the path is
+/// a symlink, and `O_NONBLOCK` keeps a FIFO placed at the path from
+/// blocking the open; neither flag affects reads from a regular file.
+/// Callers fstat the returned handle, so every guard and the read
+/// apply to the same inode -- there is no window between a path-based
+/// check and a separate open.
+fn open_key_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn is_symlink_error(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+fn is_symlink_error(_e: &std::io::Error) -> bool {
+    false
 }
 
 /// OpenSSH-style strict mode check (`sshkey_perm_ok`): a private key
@@ -198,11 +246,15 @@ fn pub_file_comment(path: &Path) -> Option<String> {
     pub_os.push(".pub");
     let pub_path = PathBuf::from(pub_os);
 
-    let meta = std::fs::symlink_metadata(&pub_path).ok()?;
+    let file = open_key_file(&pub_path).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_KEY_FILE_SIZE {
         return None;
     }
-    let line = std::fs::read_to_string(pub_path).ok()?;
+    let mut line = String::new();
+    std::io::Read::take(&file, MAX_KEY_FILE_SIZE)
+        .read_to_string(&mut line)
+        .ok()?;
     let public = ssh_key::PublicKey::from_openssh(line.trim()).ok()?;
     let comment = public.comment().trim();
     if comment.is_empty() {
