@@ -453,10 +453,12 @@ mod tests {
 
     #[test]
     fn sign_rsa_honors_hash_flags() {
+        use crate::ssh::{SSH_AGENT_RSA_SHA2_256, SSH_AGENT_RSA_SHA2_512};
+
         let key = &*PLAIN_RSA;
         let data = b"ssh session data";
 
-        let sig256 = sign(key, data, 2).unwrap();
+        let sig256 = sign(key, data, SSH_AGENT_RSA_SHA2_256).unwrap();
         assert_eq!(
             sig256.algorithm(),
             Algorithm::Rsa {
@@ -465,7 +467,7 @@ mod tests {
         );
         key.public_key().key_data().verify(data, &sig256).unwrap();
 
-        let sig512 = sign(key, data, 4).unwrap();
+        let sig512 = sign(key, data, SSH_AGENT_RSA_SHA2_512).unwrap();
         assert_eq!(
             sig512.algorithm(),
             Algorithm::Rsa {
