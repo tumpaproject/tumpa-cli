@@ -679,7 +679,17 @@ impl TumpaBackend {
         }
 
         let key = if key.is_encrypted() {
-            self.decrypt_disk_key(disk_key, &key)?
+            // Blocking pool again: pinentry waits on the user and the
+            // OpenSSH passphrase KDF is bcrypt, neither of which
+            // belongs on an async worker thread.
+            let cache = Arc::clone(&self.cache);
+            let disk_key = disk_key.clone();
+            tokio::task::spawn_blocking(move || Self::decrypt_disk_key(&cache, &disk_key, &key))
+                .await
+                .map_err(|e| {
+                    log::error!("Disk key decrypt task failed: {}", e);
+                    AgentError::Failure
+                })??
         } else {
             key
         };
@@ -692,8 +702,11 @@ impl TumpaBackend {
 
     /// Decrypt an encrypted on-disk key, prompting via pinentry with
     /// up to 3 attempts. Mirrors the card PIN retry flow.
+    ///
+    /// An associated function rather than a method so the caller can
+    /// move it onto the blocking pool without capturing `self`.
     fn decrypt_disk_key(
-        &self,
+        cache: &Mutex<CredentialCache>,
         disk_key: &DiskKey,
         key: &ssh_key::PrivateKey,
     ) -> Result<ssh_key::PrivateKey, AgentError> {
@@ -708,7 +721,7 @@ impl TumpaBackend {
         for attempt in 0..MAX_RETRIES {
             let passphrase = if attempt == 0 {
                 let cached = {
-                    let cache = self.cache.lock().map_err(|_| AgentError::Failure)?;
+                    let cache = cache.lock().map_err(|_| AgentError::Failure)?;
                     cache.get(&cache_key).cloned()
                 };
                 match cached {
@@ -725,7 +738,7 @@ impl TumpaBackend {
                     }
                 }
             } else {
-                if let Ok(mut cache) = self.cache.lock() {
+                if let Ok(mut cache) = cache.lock() {
                     cache.remove(&cache_key);
                 }
                 let desc = format!(
@@ -742,7 +755,7 @@ impl TumpaBackend {
 
             match key.decrypt(passphrase.as_bytes()) {
                 Ok(decrypted) => {
-                    if let Ok(mut cache) = self.cache.lock() {
+                    if let Ok(mut cache) = cache.lock() {
                         cache.store(&cache_key, passphrase);
                     }
                     return Ok(decrypted);
@@ -759,7 +772,7 @@ impl TumpaBackend {
             }
         }
 
-        if let Ok(mut cache) = self.cache.lock() {
+        if let Ok(mut cache) = cache.lock() {
             cache.remove(&cache_key);
         }
         log::error!(

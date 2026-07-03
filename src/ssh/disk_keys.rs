@@ -111,7 +111,11 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
-    if !contents.trim_start().starts_with(OPENSSH_HEADER) {
+    // The parse below gets the same trimmed slice the header was
+    // matched on, so a key file with stray leading whitespace is
+    // served, not silently skipped by the parser.
+    let pem = contents.trim();
+    if !pem.starts_with(OPENSSH_HEADER) {
         return Ok(None);
     }
 
@@ -125,7 +129,7 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
         return Ok(None);
     }
 
-    let key = PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())?;
+    let key = PrivateKey::from_openssh(pem).map_err(|e| e.to_string())?;
     let public = key.public_key().key_data().clone();
 
     // Only key types the agent can actually sign with. This excludes
@@ -191,7 +195,9 @@ pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
     std::io::Read::take(&file, MAX_KEY_FILE_SIZE)
         .read_to_string(&mut contents)
         .map_err(|e| e.to_string())?;
-    PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())
+    // Trimmed like load_key(), so leading whitespace that passed
+    // discovery cannot fail the sign-time parse.
+    PrivateKey::from_openssh(contents.trim()).map_err(|e| e.to_string())
 }
 
 /// Open a key file for reading without following symlinks.
@@ -464,6 +470,21 @@ mod tests {
 
         // Directory: not a regular file
         assert!(read_private_key(dir.path()).is_err());
+    }
+
+    #[test]
+    fn leading_whitespace_is_tolerated() {
+        let dir = write_test_dir();
+        let padded = dir.path().join("id_padded");
+        let mut contents = String::from("\n\n  ");
+        contents.push_str(PLAIN_ECDSA.to_openssh(LineEnding::LF).unwrap().as_str());
+        write_key_file(&padded, &contents);
+
+        // Found by scan and readable at sign time, not just
+        // header-matched and then dropped by the parser
+        let keys = scan(dir.path());
+        assert!(keys.iter().any(|k| k.path == padded));
+        read_private_key(&padded).unwrap();
     }
 
     #[cfg(unix)]
