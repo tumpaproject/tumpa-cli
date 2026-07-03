@@ -105,6 +105,16 @@ fn load_key(path: &Path) -> Result<Option<DiskKey>, String> {
         return Ok(None);
     }
 
+    // Checked only after the header match so a world-readable
+    // known_hosts or config never triggers the warning.
+    if !permissions_ok(&meta) {
+        log::warn!(
+            "Ignoring {}: permissions are too open (readable or writable by group/other)",
+            path.display()
+        );
+        return Ok(None);
+    }
+
     let key = PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())?;
     let public = key.public_key().key_data().clone();
 
@@ -158,8 +168,26 @@ pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
             MAX_KEY_FILE_SIZE
         ));
     }
+    if !permissions_ok(&meta) {
+        return Err("permissions are too open (readable or writable by group/other)".to_string());
+    }
     let contents = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| e.to_string())?);
     PrivateKey::from_openssh(contents.as_str()).map_err(|e| e.to_string())
+}
+
+/// OpenSSH-style strict mode check (`sshkey_perm_ok`): a private key
+/// readable or writable by group/other is refused. An agent client
+/// never sees the file, so this is the last place the check can
+/// happen.
+#[cfg(unix)]
+fn permissions_ok(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.mode() & 0o077 == 0
+}
+
+#[cfg(not(unix))]
+fn permissions_ok(_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// Read the comment from the sibling `<key>.pub` file, if any.
@@ -191,8 +219,7 @@ fn pub_file_comment(path: &Path) -> Option<String> {
 /// RSA goes through the rsa crate directly to respect a client that
 /// negotiated rsa-sha2-256. Legacy ssh-rsa (SHA-1) is rejected.
 pub fn sign(key: &PrivateKey, data: &[u8], flags: u32) -> Result<Signature, String> {
-    const SSH_AGENT_RSA_SHA2_256: u32 = 2;
-    const SSH_AGENT_RSA_SHA2_512: u32 = 4;
+    use super::{SSH_AGENT_RSA_SHA2_256, SSH_AGENT_RSA_SHA2_512};
 
     match key.key_data() {
         KeypairData::Rsa(keypair) => {
@@ -285,13 +312,24 @@ mod tests {
         PrivateKey::new(KeypairData::Rsa(keypair), "plain-rsa").unwrap()
     });
 
+    /// Write a private key file with 0600, like ssh-keygen does.
+    /// A plain fs::write would land on 0644 under the usual umask and
+    /// trip the strict permission check.
+    fn write_key_file(path: &Path, contents: &str) {
+        std::fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     fn write_test_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("id_ed25519"),
+        write_key_file(
+            &dir.path().join("id_ed25519"),
             ENC_ED25519.to_openssh(LineEnding::LF).unwrap().as_str(),
-        )
-        .unwrap();
+        );
         // Sibling .pub carries the comment (the encrypted blob hides it)
         let mut public = ENC_ED25519.public_key().clone();
         public.set_comment("pubfile-comment");
@@ -300,11 +338,10 @@ mod tests {
             format!("{}\n", public.to_openssh().unwrap()),
         )
         .unwrap();
-        std::fs::write(
-            dir.path().join("id_ecdsa"),
+        write_key_file(
+            &dir.path().join("id_ecdsa"),
             PLAIN_ECDSA.to_openssh(LineEnding::LF).unwrap().as_str(),
-        )
-        .unwrap();
+        );
         std::fs::write(
             dir.path().join("known_hosts"),
             "example.com ssh-ed25519 AAAA\n",
@@ -354,6 +391,28 @@ mod tests {
 
         // Directory: not a regular file
         assert!(read_private_key(dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_other_readable_keys_are_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = write_test_dir();
+        let loose = dir.path().join("id_loose");
+        write_key_file(
+            &loose,
+            PLAIN_ECDSA.to_openssh(LineEnding::LF).unwrap().as_str(),
+        );
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // scan: the world-readable copy does not add a third identity
+        let keys = scan(dir.path());
+        assert_eq!(keys.len(), 2);
+        assert!(keys.iter().all(|k| k.path != loose));
+
+        // sign-time read: rejected outright
+        assert!(read_private_key(&loose).is_err());
     }
 
     #[cfg(unix)]

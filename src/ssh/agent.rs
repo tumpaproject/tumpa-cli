@@ -665,6 +665,19 @@ impl TumpaBackend {
                 AgentError::Failure
             })?;
 
+        // The file can change between scan and sign; a swapped key
+        // must fail fast here, not after prompting for a passphrase
+        // or handing the client a signature it will reject. The
+        // public half of an encrypted key is cleartext, so the check
+        // works before any decrypt.
+        if key.public_key().key_data() != &request.pubkey {
+            log::error!(
+                "{} no longer matches the requested public key",
+                disk_key.path.display()
+            );
+            return Err(AgentError::Failure);
+        }
+
         let key = if key.is_encrypted() {
             self.decrypt_disk_key(disk_key, &key)?
         } else {
@@ -766,8 +779,7 @@ struct SignData {
 }
 
 fn prepare_sign_data(request: &SignRequest) -> Option<SignData> {
-    const SSH_AGENT_RSA_SHA2_256: u32 = 2;
-    const SSH_AGENT_RSA_SHA2_512: u32 = 4;
+    use super::{SSH_AGENT_RSA_SHA2_256, SSH_AGENT_RSA_SHA2_512};
 
     match &request.pubkey {
         KeyData::Ed25519(_) => Some(SignData {

@@ -1102,7 +1102,9 @@ restarting the agent.
 
 - Any file in OpenSSH private key format is picked up; `*.pub`,
   `known_hosts`, `config`, and other non-key files are ignored.
-  Symlinks are not followed — only regular files are served.
+  Symlinks are not followed — only regular files are served. Like
+  OpenSSH, a key file that is readable or writable by group/other
+  (e.g. mode 0644) is refused; `chmod 600` it to serve it.
 - Encrypted keys are listed without prompting (the public half of an
   OpenSSH key file is stored in cleartext). The passphrase is only
   requested — via pinentry, up to 3 attempts — when the key is first

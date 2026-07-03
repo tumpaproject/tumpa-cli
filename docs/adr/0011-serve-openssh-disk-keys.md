@@ -34,6 +34,10 @@ discovered on disk (`src/ssh/disk_keys.rs`).
   the rest. Symlinks are never followed: one inside `~/.ssh` could
   point at an arbitrary path, including procfs pseudo-files where
   the reported size is unreliable and a read can block the agent.
+  Key files readable or writable by group/other are refused, both
+  at scan and at sign time, mirroring OpenSSH's `sshkey_perm_ok`
+  strict mode check -- an agent client never sees the file, so the
+  agent is the last place the check can happen.
 - The directory is rescanned on each `request_identities` call and on
   a sign-request cache miss. The scan is a handful of small file
   reads, and it makes newly created keys visible without restarting
