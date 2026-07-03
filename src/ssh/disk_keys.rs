@@ -196,12 +196,16 @@ pub fn read_private_key(path: &Path) -> Result<PrivateKey, String> {
 
 /// Open a key file for reading without following symlinks.
 ///
-/// `O_NOFOLLOW` makes the open itself fail (`ELOOP`) when the path is
-/// a symlink, and `O_NONBLOCK` keeps a FIFO placed at the path from
-/// blocking the open; neither flag affects reads from a regular file.
-/// Callers fstat the returned handle, so every guard and the read
-/// apply to the same inode -- there is no window between a path-based
-/// check and a separate open.
+/// Unix: `O_NOFOLLOW` makes the open itself fail (`ELOOP`) when the
+/// path is a symlink, and `O_NONBLOCK` keeps a FIFO placed at the
+/// path from blocking the open; neither flag affects reads from a
+/// regular file. Callers fstat the returned handle, so every guard
+/// and the read apply to the same inode -- there is no window between
+/// a path-based check and a separate open.
+///
+/// Non-Unix: std exposes no `O_NOFOLLOW` equivalent, so symlinks are
+/// rejected with a check before the open. Best effort only -- the
+/// race-free same-inode guarantee is Unix-specific.
 fn open_key_file(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -210,23 +214,36 @@ fn open_key_file(path: &Path) -> std::io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    #[cfg(not(unix))]
+    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "symlinks are not followed for key files",
+        ));
+    }
     options.open(path)
 }
 
+/// Did `open_key_file` refuse the path because it is a symlink?
 #[cfg(unix)]
 fn is_symlink_error(e: &std::io::Error) -> bool {
+    // open(2) with O_NOFOLLOW fails with ELOOP on a symlink
     e.raw_os_error() == Some(libc::ELOOP)
 }
 
+/// Did `open_key_file` refuse the path because it is a symlink?
 #[cfg(not(unix))]
-fn is_symlink_error(_e: &std::io::Error) -> bool {
-    false
+fn is_symlink_error(e: &std::io::Error) -> bool {
+    // The marker kind from open_key_file's pre-open symlink check;
+    // a real open never produces Unsupported for a file path.
+    e.kind() == std::io::ErrorKind::Unsupported
 }
 
 /// OpenSSH-style strict mode check (`sshkey_perm_ok`): a private key
 /// readable or writable by group/other is refused. An agent client
 /// never sees the file, so this is the last place the check can
-/// happen.
+/// happen. Unix only -- other platforms have no Unix mode bits, so
+/// the check passes there.
 #[cfg(unix)]
 fn permissions_ok(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;

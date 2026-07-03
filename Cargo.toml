@@ -109,11 +109,6 @@ talktosc = "0.3.0"
 # identity (the exact problem the macOS comment in notify.rs documents).
 # Other Unixes / Windows: `notify::touch_prompt` is a compile-time no-op,
 # so no dep is needed.
-# O_NOFOLLOW / O_NONBLOCK for opening ~/.ssh key files: the guards
-# and the read must apply to one open handle, not a stat-then-reopen.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 

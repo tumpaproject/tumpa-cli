@@ -1104,7 +1104,9 @@ restarting the agent.
   `known_hosts`, `config`, and other non-key files are ignored.
   Symlinks are not followed — only regular files are served. Like
   OpenSSH, a key file that is readable or writable by group/other
-  (e.g. mode 0644) is refused; `chmod 600` it to serve it.
+  (e.g. mode 0644) is refused; `chmod 600` it to serve it. The
+  permission check applies on Unix only — other platforms have no
+  Unix mode bits.
 - Encrypted keys are listed without prompting (the public half of an
   OpenSSH key file is stored in cleartext). The passphrase is only
   requested — via pinentry, up to 3 attempts — when the key is first
