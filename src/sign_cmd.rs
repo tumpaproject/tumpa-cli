@@ -12,8 +12,9 @@
 //! - `-o`/`--output` overrides the destination. `-` writes to stdout.
 //! - `FILE = -` reads from stdin (caller must also pass `-o`).
 //!
-//! Card-first dispatch (for detached) is handled by `libtumpa::sign`.
-//! Cleartext signing is software-only — card-only keys are rejected.
+//! Card-first dispatch for detached and cleartext signing is handled by
+//! `libtumpa::sign`; a matching card is tried before the software-key
+//! fallback.
 
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -49,6 +50,7 @@ pub fn cmd_sign(
     store::ensure_key_usable_for_signing(&key_info)?;
 
     let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
+    let card_pin_rejected: RefCell<Option<String>> = RefCell::new(None);
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
     let result = libtumpa_sign_detached(&key_data, &key_info, &data, |req| match req {
@@ -59,13 +61,24 @@ pub fn cmd_sign(
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            verify_card_pin(card_ident, &pin, &key_info.fingerprint)
-                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
+            if let Err(e) = verify_card_pin(card_ident, &pin, &key_info.fingerprint) {
+                // A wrong PIN already cost the card one retry; do NOT let
+                // libtumpa silently fall back to the software key, or repeated
+                // runs would keep burning retries while appearing to succeed.
+                let msg = format!("{e}");
+                *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                return Err(libtumpa::Error::Sign(msg));
+            }
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
             *last_secret.borrow_mut() = Some(pin);
             Ok(Secret::Pin(pin_bytes))
         }
         SecretRequest::KeyPassphrase { key_info } => {
+            if let Some(msg) = card_pin_rejected.borrow().as_ref() {
+                return Err(libtumpa::Error::Sign(format!(
+                    "card PIN was rejected; refusing software-key fallback ({msg})"
+                )));
+            }
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
@@ -114,6 +127,12 @@ pub fn cmd_sign(
             );
         }
         SignBackend::Software => {
+            if let Some(ident) = card_ident_used.borrow().as_ref() {
+                eprintln!(
+                    "tcli: warning: signing with card {ident} failed; \
+                     fell back to the software key",
+                );
+            }
             eprintln!("tcli: Signed with software key {}", key_info.fingerprint);
         }
     }
@@ -137,6 +156,7 @@ pub fn cmd_sign_inline(
     store::ensure_key_usable_for_signing(&key_info)?;
 
     let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
+    let card_pin_rejected: RefCell<Option<String>> = RefCell::new(None);
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
     let result = libtumpa_sign_cleartext(&key_data, &key_info, &data, |req| match req {
@@ -147,13 +167,22 @@ pub fn cmd_sign_inline(
             *card_ident_used.borrow_mut() = Some(card_ident.to_string());
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            verify_card_pin(card_ident, &pin, &key_info.fingerprint)
-                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
+            if let Err(e) = verify_card_pin(card_ident, &pin, &key_info.fingerprint) {
+                // See cmd_sign: a rejected PIN aborts instead of falling back.
+                let msg = format!("{e}");
+                *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                return Err(libtumpa::Error::Sign(msg));
+            }
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
             *last_secret.borrow_mut() = Some(pin);
             Ok(Secret::Pin(pin_bytes))
         }
         SecretRequest::KeyPassphrase { key_info } => {
+            if let Some(msg) = card_pin_rejected.borrow().as_ref() {
+                return Err(libtumpa::Error::Sign(format!(
+                    "card PIN was rejected; refusing software-key fallback ({msg})"
+                )));
+            }
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
@@ -197,6 +226,12 @@ pub fn cmd_sign_inline(
             );
         }
         SignBackend::Software => {
+            if let Some(ident) = card_ident_used.borrow().as_ref() {
+                eprintln!(
+                    "tcli: warning: signing with card {ident} failed; \
+                     fell back to the software key",
+                );
+            }
             eprintln!(
                 "tcli: Signed inline with software key {}",
                 key_info.fingerprint
