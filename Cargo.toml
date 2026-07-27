@@ -51,7 +51,7 @@ experimental = []
 # encrypt / decrypt surface backs the human-facing `tcli encrypt` /
 # `tcli decrypt` subcommands (see ADR 0010).
 wecanencrypt = { version = "0.16.3", features = ["keystore", "card-pcsc", "network"] }
-libtumpa = { version = "0.4.4", features = ["card", "network"] }
+libtumpa = { version = "0.4.5", features = ["card", "network"] }
 # Must match wecanencrypt's pgp dependency exactly -- both crates parse
 # detached signatures using pgp::composed::DetachedSignature, and a version
 # mismatch could cause parser disagreement (see verify.rs dual-parse note).
@@ -118,7 +118,3 @@ tempfile = "3"
 # private key fixtures in the source. Must stay on the same 0.6.x
 # line as ssh-key's rand_core dependency.
 rand_core = { version = "0.6", features = ["getrandom"] }
-
-# Temporary local override for development. Remove before publishing.
-[patch.crates-io]
-libtumpa = { path = "../libtumpa" }
