@@ -187,7 +187,8 @@ fn sign_and_encrypt_dispatch(
             // we capture into `card_attempt` so the existing
             // software-fallback path runs (parallel to the
             // sign_and_encrypt_on_card Err arm just below);
-            // verify_card_pin already clears the cached PIN.
+            // verify_card_pin clears the cached PIN when the card
+            // rejected it, keeps it on transport errors.
             match verify_card_pin(&card_ident, &pin, &key_info.fingerprint) {
                 Ok(()) => {
                     let pin_obj: Pin = Zeroizing::new(pin.as_bytes().to_vec());
@@ -209,7 +210,7 @@ fn sign_and_encrypt_dispatch(
                         }
                     }
                 }
-                Err(e) => Some(e),
+                Err(e) => Some(anyhow!(e)),
             }
         }
         Ok(None) => None,

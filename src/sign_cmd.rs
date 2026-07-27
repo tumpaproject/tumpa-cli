@@ -32,6 +32,7 @@ use libtumpa::{Passphrase, Pin};
 use crate::cli::is_stdio;
 use crate::gpg::sign::{
     prompt_card_pin, prompt_key_passphrase, verify_card_pin, verify_software_passphrase,
+    CardPinError,
 };
 use crate::pinentry;
 use crate::store;
@@ -62,11 +63,17 @@ pub fn cmd_sign(
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             if let Err(e) = verify_card_pin(card_ident, &pin, &key_info.fingerprint) {
-                // A wrong PIN already cost the card one retry; do NOT let
-                // libtumpa silently fall back to the software key, or repeated
-                // runs would keep burning retries while appearing to succeed.
                 let msg = format!("{e}");
-                *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                if matches!(e, CardPinError::Rejected(_)) {
+                    // The card judged the PIN and spent a retry; do NOT
+                    // let libtumpa silently fall back to the software key,
+                    // or repeated runs would keep burning retries while
+                    // appearing to succeed.
+                    *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                }
+                // CardPinError::Other (I/O, card pulled, applet error):
+                // the PIN was never evaluated, so software-key fallback
+                // is safe -- libtumpa will request the passphrase next.
                 return Err(libtumpa::Error::Sign(msg));
             }
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
@@ -168,9 +175,11 @@ pub fn cmd_sign_inline(
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             if let Err(e) = verify_card_pin(card_ident, &pin, &key_info.fingerprint) {
-                // See cmd_sign: a rejected PIN aborts instead of falling back.
+                // See cmd_sign: only a rejected PIN blocks fallback.
                 let msg = format!("{e}");
-                *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                if matches!(e, CardPinError::Rejected(_)) {
+                    *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                }
                 return Err(libtumpa::Error::Sign(msg));
             }
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());

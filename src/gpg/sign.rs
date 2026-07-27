@@ -248,24 +248,64 @@ pub(crate) fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<
     pinentry::get_passphrase(&desc, "Passphrase", Some(&key_info.fingerprint))
 }
 
+/// Why [`verify_card_pin`] failed.
+///
+/// The distinction matters for callers with a software-key fallback:
+/// a [`Rejected`](CardPinError::Rejected) means the card judged the
+/// PIN itself (and spent a retry), so falling back silently would hide
+/// that failure; an [`Other`](CardPinError::Other) means the PIN was
+/// never evaluated (card I/O, applet select, transport), so falling
+/// back is safe and correct.
+#[derive(Debug)]
+pub(crate) enum CardPinError {
+    /// The card rejected the PIN (wrong PIN or PIN blocked). The
+    /// retry counter was decremented / the card may be blocked.
+    Rejected(String),
+    /// Card communication or state failure; the PIN was never
+    /// evaluated by the card.
+    Other(String),
+}
+
+impl std::fmt::Display for CardPinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CardPinError::Rejected(m) | CardPinError::Other(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for CardPinError {}
+
 /// Run the bare `wecanencrypt::card::verify_user_pin` APDU to check
 /// that the PIN string is correct against the connected card BEFORE
 /// libtumpa spends a sign or decrypt round-trip on it.
 ///
-/// On Err, clears the agent's cached PIN for `fingerprint` so a stale
-/// (or freshly-typed-but-wrong) value doesn't replay on the next op.
+/// On `CardPinError::Rejected`, clears the agent's cached PIN for
+/// `fingerprint` so a stale (or freshly-typed-but-wrong) value doesn't
+/// replay on the next op. On `CardPinError::Other` the cached PIN is
+/// kept — it was never evaluated, so it may still be correct.
 /// On Ok, the PIN is known correct — caller may proceed and (after
 /// the real op succeeds) cache it via [`pinentry::cache_pin`].
 pub(crate) fn verify_card_pin(
     card_ident: &str,
     pin: &Zeroizing<String>,
     fingerprint: &str,
-) -> Result<()> {
+) -> std::result::Result<(), CardPinError> {
+    use wecanencrypt::card::CardError;
+
     match wecanencrypt::card::verify_user_pin(pin.as_bytes(), Some(card_ident)) {
         Ok(_) => Ok(()),
         Err(e) => {
-            pinentry::clear_cached_pin(fingerprint);
-            Err(anyhow!("Card PIN verification failed: {e}"))
+            let msg = format!("Card PIN verification failed: {e}");
+            match e {
+                wecanencrypt::Error::Card(
+                    CardError::PinIncorrect { .. } | CardError::PinBlocked,
+                ) => {
+                    pinentry::clear_cached_pin(fingerprint);
+                    Err(CardPinError::Rejected(msg))
+                }
+                _ => Err(CardPinError::Other(msg)),
+            }
         }
     }
 }
