@@ -325,7 +325,7 @@ tcli sign report.pdf --signer alice@example.com
 # Binary detached (.sig instead of .asc).
 tcli sign report.pdf --signer alice@example.com --binary
 
-# Inline cleartext (matching smartcard first, software-key fallback).
+# Inline cleartext (matching smartcard first, software-key fallback; aborts if the card PIN is rejected).
 tcli sign-inline notice.txt --signer alice@example.com
 
 # Verify a detached signature against the keystore.
