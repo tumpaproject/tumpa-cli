@@ -4,6 +4,65 @@ All notable changes to tumpa-cli are documented in this file.
 Older releases (before 0.6.1) are documented by their git tags and
 commit history.
 
+## [0.6.4] - 2026-07-28
+
+### Added
+
+- `tcli sign-inline` now supports OpenPGP smart cards: card-first
+  dispatch tries a connected card holding the signing key (prompting
+  for the card PIN) before falling back to the software secret key in
+  the keystore. Card-only keys can therefore produce cleartext
+  signatures while their card is connected. Detached `tcli sign`
+  already worked this way.
+- When card signing fails and the command falls back to the software
+  key, a warning naming the card is printed to stderr, so the
+  downgrade from hardware to software is never silent.
+
+### Security
+
+- A wrong card PIN no longer falls through to the software-key
+  fallback. Previously a mistyped PIN spent one of the card's retry
+  attempts (typically 3 before the card blocks) while the command
+  silently succeeded with the software key, so repeated runs could
+  block the card without the user ever noticing. All card-first
+  paths now abort with the PIN error instead: `tcli sign`,
+  `tcli sign-inline`, `tclig` (git signing, including clearsign),
+  `tcli encrypt --sign`, decrypt (`tclig -d`, `tcli decrypt`), and
+  `tpass` (which now also pre-verifies the card PIN before the
+  decrypt round-trip, like the other paths).
+- Fallback is blocked only on a *typed* PIN rejection
+  (`PinIncorrect`/`PinBlocked` from the card). Transport and card
+  state errors (reader unplugged, applet errors) still fall back to
+  the software key, and no longer clear the agent's cached PIN since
+  it was never evaluated.
+- Rejection classification no longer trusts wecanencrypt's
+  `PinIncorrect` variant alone: with wecanencrypt 0.16.3 +
+  openpgp-card 0.6.1 a wrong PIN (status word 63CX) surfaces as an
+  unclassified card error whose text is "Password not checked, N
+  allowed retries", which would have been treated as a transport
+  error — silently re-enabling the fallback and keeping the wrong
+  PIN cached. tumpa-cli now recognizes the rejection texts directly,
+  and the classification unit test drives real `openpgp_card` errors
+  through wecanencrypt's conversion end-to-end so a future change in
+  either crate's error strings fails the test instead of silently
+  reopening the hole.
+- The card-to-software fallback warning is printed by `tclig` as
+  well (both detached and clearsign), not just `tcli sign` /
+  `tcli sign-inline` — git signing was the path where a silent
+  downgrade would accumulate unnoticed.
+
+### Changed
+
+- Dependencies updated: libtumpa 0.4.3 -> 0.4.5, wecanencrypt
+  0.16.2 -> 0.16.3, pgp 0.19 -> 0.20. pgp stays exactly in lockstep
+  with wecanencrypt's own pgp dependency, as required for consistent
+  signature parsing in `verify`.
+
+### Fixed
+
+- Homebrew formula: fixed the `tclig` symlink so git can invoke the
+  GPG drop-in.
+
 ## [0.6.3] - 2026-07-03
 
 ### Added

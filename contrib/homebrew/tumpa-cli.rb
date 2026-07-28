@@ -39,7 +39,7 @@ class TumpaCli < Formula
         tcli --import /path/to/your/secret-key.asc
 
       Configure git:
-        git config --global gpg.program tcli
+        git config --global gpg.program tclig
         git config --global user.signingkey <FINGERPRINT>
         git config --global commit.gpgsign true
     EOS

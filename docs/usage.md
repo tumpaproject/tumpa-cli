@@ -911,7 +911,7 @@ script-friendly exit codes.
 | Command              | What it produces                                            |
 |----------------------|-------------------------------------------------------------|
 | `tcli sign`          | Detached signature (`<file>.asc` armored, `<file>.sig` binary). |
-| `tcli sign-inline`   | Cleartext-signed message (`-----BEGIN PGP SIGNED MESSAGE-----`, software keys only). |
+| `tcli sign-inline`   | Cleartext-signed message; matching smartcard first, software-key fallback. |
 | `tcli verify`        | Verifies a detached or cleartext signature; exits 0/1/2.    |
 
 ### Detached signatures
@@ -962,10 +962,18 @@ tcli sign-inline notice.txt --signer alice@example.com
 # writes notice.txt.asc
 ```
 
-Inline signing is **software-only** in this release — there is no
-card-based cleartext-signing primitive. If the chosen key has no
-software secret key in the keystore (card-only), `tcli` errors out
-with a clear message; use `tcli sign` (detached) for card-only keys.
+Inline signing uses card-first dispatch. If a connected OpenPGP card
+holds the selected signing key, `tcli` prompts for the card PIN and the
+card produces the signature. Otherwise, `tcli` uses the software secret
+key from the keystore and prompts for its passphrase. A card-only key
+therefore works while its matching card is connected; if the card is
+unavailable or signing fails and no software secret key exists, the
+command returns an error. When both backends are available, a failed
+card attempt falls back to the software key and `tcli` prints a
+warning to stderr naming the card. One exception: if the card rejects
+the PIN, the command aborts instead of falling back — silently using
+the software key after a wrong PIN would hide the fact that the card's
+retry counter was spent, and repeated runs could block the card.
 
 `--binary` is rejected on `tcli sign-inline` (cleartext is text by
 definition).
@@ -1052,8 +1060,6 @@ email-based key selection, sane defaults, sensible exit codes.
   <PUB_FILE>`. Keystore lookup on that path is not implemented; use
   cleartext (`--sign-inline`) if you want the keystore-lookup
   experience.
-- Card-based cleartext signing is not available; use detached
-  (`--sign`) for keys held only on a card.
 
 ---
 

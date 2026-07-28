@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 use crate::card_touch::{self, Op as TouchOp};
 use crate::gpg::sign::{
     prompt_card_pin, prompt_key_passphrase, verify_card_pin, verify_software_passphrase,
+    CardPinError,
 };
 use crate::pinentry;
 use crate::store;
@@ -183,11 +184,13 @@ fn sign_and_encrypt_dispatch(
             let pin: Zeroizing<String> =
                 prompt_card_pin(&card_ident, &key_info).map_err(|e| anyhow!("pinentry: {e}"))?;
             // Pre-op verify catches a wrong PIN cleanly before we
-            // spend a real sign-then-encrypt round-trip. On failure
-            // we capture into `card_attempt` so the existing
+            // spend a real sign-then-encrypt round-trip. A rejected
+            // PIN aborts the command (retry already spent); transport
+            // errors are captured into `card_attempt` so the existing
             // software-fallback path runs (parallel to the
             // sign_and_encrypt_on_card Err arm just below);
-            // verify_card_pin already clears the cached PIN.
+            // verify_card_pin clears the cached PIN when the card
+            // rejected it, keeps it on transport errors.
             match verify_card_pin(&card_ident, &pin, &key_info.fingerprint) {
                 Ok(()) => {
                     let pin_obj: Pin = Zeroizing::new(pin.as_bytes().to_vec());
@@ -209,7 +212,16 @@ fn sign_and_encrypt_dispatch(
                         }
                     }
                 }
-                Err(e) => Some(e),
+                Err(e) => match e {
+                    // The card judged the PIN and spent a retry:
+                    // abort instead of silently falling back to the
+                    // software key, or repeated runs would keep
+                    // burning retries while appearing to succeed.
+                    CardPinError::Rejected(msg) => return Err(anyhow!(msg)),
+                    // Transport/state failure: the PIN was never
+                    // evaluated, so software fallback is fine.
+                    CardPinError::Other(msg) => Some(anyhow!(msg)),
+                },
             }
         }
         Ok(None) => None,

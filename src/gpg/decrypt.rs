@@ -17,9 +17,23 @@ use zeroize::Zeroizing;
 
 use crate::card_touch::{self, Op as TouchOp};
 use crate::gpg::primary_uid;
-use crate::gpg::sign::{verify_card_pin, verify_software_passphrase};
+use crate::gpg::sign::{verify_card_pin, verify_software_passphrase, CardPinError};
 use crate::pinentry;
 use crate::store;
+
+/// Did this card attempt fail because the card judged and rejected the
+/// PIN (propagated from [`verify_card_pin`])?
+///
+/// Same rule as the signing paths: a rejected PIN already spent a card
+/// retry, so the software fallback must not run — repeated decrypts
+/// would keep burning retries while appearing to succeed. Transport
+/// and state errors keep falling back.
+fn rejected_card_pin(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<CardPinError>(),
+        Some(CardPinError::Rejected(_))
+    )
+}
 
 /// Read ciphertext from a file, or from stdin if `input` is `-`.
 fn read_ciphertext(input: &Path) -> Result<Vec<u8>> {
@@ -89,6 +103,7 @@ pub fn decrypt(
     // Try card first, then software (matches signing priority)
     let plaintext = match try_decrypt_on_card(&ciphertext, &keystore) {
         Ok(pt) => pt,
+        Err(card_err) if rejected_card_pin(&card_err) => return Err(card_err),
         Err(card_err) => {
             log::info!(
                 "Card decryption not available ({}), trying software key",
@@ -228,6 +243,7 @@ pub fn decrypt_and_verify(
 
     let result = match try_decrypt_and_verify_on_card(&ciphertext, &keystore) {
         Ok(r) => r,
+        Err(card_err) if rejected_card_pin(&card_err) => return Err(card_err),
         Err(card_err) => {
             log::info!(
                 "Card decrypt+verify not available ({}), trying software key",
