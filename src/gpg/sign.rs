@@ -181,6 +181,13 @@ pub fn sign(
             )?;
         }
         SignBackend::Software => {
+            if let Some(ident) = card_ident_used.borrow().as_ref() {
+                writeln!(
+                    err,
+                    "tcli: warning: signing with card {ident} failed; \
+                     fell back to the software key"
+                )?;
+            }
             writeln!(
                 err,
                 "tcli: Signed with software key {}",
@@ -276,7 +283,7 @@ pub(crate) fn prompt_key_passphrase(key_info: &wecanencrypt::KeyInfo) -> Result<
 /// never evaluated (card I/O, applet select, transport), so falling
 /// back is safe and correct.
 #[derive(Debug)]
-pub(crate) enum CardPinError {
+pub enum CardPinError {
     /// The card rejected the PIN (wrong PIN or PIN blocked). The
     /// retry counter was decremented / the card may be blocked.
     Rejected(String),
@@ -299,8 +306,9 @@ impl std::error::Error for CardPinError {}
 /// [`CardPinError`].
 ///
 /// Pure function (no cache side effects) so the classification rules
-/// stay unit-testable: only `PinIncorrect` and `PinBlocked` mean the
-/// card actually judged the PIN; everything else is transport/state.
+/// stay unit-testable: only `PinIncorrect`/`PinBlocked` and the
+/// message texts in [`is_pin_rejection_text`] mean the card actually
+/// judged the PIN; everything else is transport/state.
 pub(crate) fn classify_card_pin_error(e: &wecanencrypt::Error) -> CardPinError {
     use wecanencrypt::card::CardError;
 
@@ -309,8 +317,31 @@ pub(crate) fn classify_card_pin_error(e: &wecanencrypt::Error) -> CardPinError {
         wecanencrypt::Error::Card(CardError::PinIncorrect { .. } | CardError::PinBlocked) => {
             CardPinError::Rejected(msg)
         }
+        wecanencrypt::Error::Card(CardError::CardError(inner)) if is_pin_rejection_text(inner) => {
+            CardPinError::Rejected(msg)
+        }
         _ => CardPinError::Other(msg),
     }
+}
+
+/// Does this unclassified card-error text describe the card judging
+/// (and rejecting) a PIN, as opposed to a transport/state failure?
+///
+/// wecanencrypt 0.16.3 builds `CardError::PinIncorrect`/`PinBlocked`
+/// by substring-matching the openpgp-card error text for "63C" /
+/// "6983" / "blocked" — but openpgp-card 0.6.1 renders a wrong PIN
+/// (SW 63CX) as "Password not checked, N allowed retries", so the
+/// wrong-PIN case reaches us as `CardError::CardError`. Without this
+/// text check a judged-and-rejected PIN classifies as a transport
+/// error, silently re-enabling the software fallback (and keeping the
+/// wrong PIN cached) — the exact bug the Rejected/Other split exists
+/// to prevent. Remove only after wecanencrypt classifies on
+/// `StatusBytes` structurally instead of Display text.
+fn is_pin_rejection_text(msg: &str) -> bool {
+    msg.contains("Password not checked") // openpgp-card StatusBytes::PasswordNotChecked (SW 63CX)
+        || msg.contains("Authentication method blocked") // StatusBytes for SW 6983
+        || msg.contains("63C") // raw wrong-PIN status word
+        || msg.contains("6983") // raw blocked status word
 }
 
 /// Run the bare `wecanencrypt::card::verify_user_pin` APDU to check
@@ -323,7 +354,7 @@ pub(crate) fn classify_card_pin_error(e: &wecanencrypt::Error) -> CardPinError {
 /// kept — it was never evaluated, so it may still be correct.
 /// On Ok, the PIN is known correct — caller may proceed and (after
 /// the real op succeeds) cache it via [`pinentry::cache_pin`].
-pub(crate) fn verify_card_pin(
+pub fn verify_card_pin(
     card_ident: &str,
     pin: &Zeroizing<String>,
     fingerprint: &str,
@@ -332,7 +363,7 @@ pub(crate) fn verify_card_pin(
         Ok(_) => Ok(()),
         Err(e) => {
             let err = classify_card_pin_error(&e);
-            if matches!(err, CardPinError::Rejected(_)) {
+            if matches!(&err, CardPinError::Rejected(_)) {
                 pinentry::clear_cached_pin(fingerprint);
             }
             Err(err)
@@ -467,6 +498,13 @@ pub fn clearsign(
             )?;
         }
         SignBackend::Software => {
+            if let Some(ident) = card_ident_used.borrow().as_ref() {
+                writeln!(
+                    err,
+                    "tcli: warning: signing with card {ident} failed; \
+                     fell back to the software key"
+                )?;
+            }
             writeln!(
                 err,
                 "tcli: Cleartext-signed with software key {}",
@@ -577,28 +615,68 @@ mod tests {
     }
 
     /// The Rejected/Other split decides whether a wrong PIN blocks
-    /// software-key fallback (and clears the agent cache). Only
-    /// `PinIncorrect` and `PinBlocked` may classify as Rejected;
-    /// transport/state failures must stay Other so fallback still
-    /// works when the card was never asked to judge the PIN.
+    /// software-key fallback (and clears the agent cache).
+    ///
+    /// The wrong-PIN and PIN-blocked cases are driven end-to-end from
+    /// the `openpgp_card::Error` values the card stack actually
+    /// produces (SW 63CX / 6983), through wecanencrypt's
+    /// `From<openpgp_card::Error>` conversion, into
+    /// `classify_card_pin_error`. That conversion matches on the
+    /// error's *Display text*, so constructing `PinIncorrect` directly
+    /// would pass even when the real chain never produces it — which
+    /// is exactly the bug this test exists to catch (openpgp-card
+    /// 0.6.1 renders SW 63CX as "Password not checked, N allowed
+    /// retries", which wecanencrypt 0.16.3 does not recognize).
     #[test]
     fn card_pin_error_classification() {
+        use openpgp_card::ocard::StatusBytes;
         use wecanencrypt::card::CardError;
 
-        let wrong_pin = wecanencrypt::Error::Card(CardError::PinIncorrect {
-            retries_remaining: 2,
-        });
+        // Wrong PIN, end-to-end: SW 63C2 -> PasswordNotChecked(2).
+        let wrong_pin = wecanencrypt::Error::Card(CardError::from(
+            openpgp_card::Error::CardStatus(StatusBytes::PasswordNotChecked(2)),
+        ));
         assert!(matches!(
             classify_card_pin_error(&wrong_pin),
             CardPinError::Rejected(_)
         ));
 
-        let blocked = wecanencrypt::Error::Card(CardError::PinBlocked);
+        // Zero retries left still counts as the card judging the PIN.
+        let wrong_pin_last = wecanencrypt::Error::Card(CardError::from(
+            openpgp_card::Error::CardStatus(StatusBytes::PasswordNotChecked(0)),
+        ));
+        assert!(matches!(
+            classify_card_pin_error(&wrong_pin_last),
+            CardPinError::Rejected(_)
+        ));
+
+        // PIN blocked, end-to-end: SW 6983 -> AuthenticationMethodBlocked.
+        let blocked = wecanencrypt::Error::Card(CardError::from(openpgp_card::Error::CardStatus(
+            StatusBytes::AuthenticationMethodBlocked,
+        )));
         assert!(matches!(
             classify_card_pin_error(&blocked),
             CardPinError::Rejected(_)
         ));
 
+        // wecanencrypt's structured variants must keep classifying as
+        // Rejected for when upstream starts producing them directly.
+        let wrong_pin_structured = wecanencrypt::Error::Card(CardError::PinIncorrect {
+            retries_remaining: 2,
+        });
+        assert!(matches!(
+            classify_card_pin_error(&wrong_pin_structured),
+            CardPinError::Rejected(_)
+        ));
+
+        let blocked_structured = wecanencrypt::Error::Card(CardError::PinBlocked);
+        assert!(matches!(
+            classify_card_pin_error(&blocked_structured),
+            CardPinError::Rejected(_)
+        ));
+
+        // Transport/state failures must stay Other so fallback still
+        // works when the card was never asked to judge the PIN.
         let io = wecanencrypt::Error::Card(CardError::CommunicationError("reader gone".into()));
         assert!(matches!(
             classify_card_pin_error(&io),
@@ -608,6 +686,16 @@ mod tests {
         let not_connected = wecanencrypt::Error::Card(CardError::NotConnected);
         assert!(matches!(
             classify_card_pin_error(&not_connected),
+            CardPinError::Other(_)
+        ));
+
+        // An unrelated card status the PIN was never judged under
+        // stays Other, end-to-end.
+        let memory = wecanencrypt::Error::Card(CardError::from(openpgp_card::Error::CardStatus(
+            StatusBytes::MemoryFailure,
+        )));
+        assert!(matches!(
+            classify_card_pin_error(&memory),
             CardPinError::Other(_)
         ));
 

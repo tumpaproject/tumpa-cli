@@ -13,7 +13,20 @@ use zeroize::Zeroizing;
 
 use tumpa_cli::card_touch::{self, Op as TouchOp};
 use tumpa_cli::gpg::primary_uid;
+use tumpa_cli::gpg::sign::{verify_card_pin, CardPinError};
 use tumpa_cli::{pinentry, store};
+
+/// Did this card attempt fail because the card judged and rejected the
+/// PIN? Same rule as the gpg sign/decrypt paths: a rejected PIN spent
+/// a card retry, so the software fallback must not run — repeated
+/// `tpass show` calls would keep burning retries while appearing to
+/// succeed. Transport and state errors keep falling back.
+fn rejected_card_pin(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<CardPinError>(),
+        Some(CardPinError::Rejected(_))
+    )
+}
 
 /// Encrypt plaintext bytes to multiple recipients, writing to output file.
 /// Recipients are GPG IDs from .gpg-id files.
@@ -55,6 +68,7 @@ pub fn decrypt_file(
 
     match try_decrypt_on_card(&ciphertext, &keystore) {
         Ok(pt) => Ok(pt),
+        Err(card_err) if rejected_card_pin(&card_err) => Err(card_err),
         Err(card_err) => {
             log::info!(
                 "Card decryption not available ({}), trying software key",
@@ -92,6 +106,11 @@ fn try_decrypt_on_card(
 
     card_touch::maybe_notify_touch(TouchOp::Decrypt, Some(&card.card.ident));
     let pin = pinentry::get_passphrase(&desc, "PIN", Some(&card.key_info.fingerprint))?;
+    // Pre-op verify, same as the gpg decrypt path: a wrong PIN is
+    // surfaced (and classified Rejected/Other) before the decrypt
+    // round-trip, and verify_card_pin clears the cached PIN when the
+    // card rejected it.
+    verify_card_pin(&card.card.ident, &pin, &card.key_info.fingerprint)?;
     let pin_obj = Pin::new(pin.as_bytes().to_vec());
 
     match ltd::decrypt_on_card(&card.key_data, ciphertext, &pin_obj, Some(&card.card.ident)) {

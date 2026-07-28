@@ -124,8 +124,9 @@ pub fn cmd_sign(
 
     let secrets = SignSecrets::new();
 
-    let result =
-        libtumpa_sign_detached(&key_data, &key_info, &data, |req| secrets.handle(&key_data, req));
+    let result = libtumpa_sign_detached(&key_data, &key_info, &data, |req| {
+        secrets.handle(&key_data, req)
+    });
 
     let (armored_signature, backend) = match result {
         Ok(ok) => {
@@ -197,8 +198,9 @@ pub fn cmd_sign_inline(
 
     let secrets = SignSecrets::new();
 
-    let result =
-        libtumpa_sign_cleartext(&key_data, &key_info, &data, |req| secrets.handle(&key_data, req));
+    let result = libtumpa_sign_cleartext(&key_data, &key_info, &data, |req| {
+        secrets.handle(&key_data, req)
+    });
 
     let (signed, backend) = match result {
         Ok((bytes, backend)) => {

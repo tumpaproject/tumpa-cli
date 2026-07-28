@@ -118,3 +118,10 @@ tempfile = "3"
 # private key fixtures in the source. Must stay on the same 0.6.x
 # line as ssh-key's rand_core dependency.
 rand_core = { version = "0.6", features = ["getrandom"] }
+# Must resolve to the same version wecanencrypt uses: the
+# card_pin_error_classification test drives real openpgp-card errors
+# through wecanencrypt's From<openpgp_card::Error> conversion to prove
+# a wrong PIN classifies as Rejected end-to-end (wecanencrypt matches
+# on the error's Display text, so a version skew would test the wrong
+# strings).
+openpgp-card = "0.6.1"

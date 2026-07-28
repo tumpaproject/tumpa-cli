@@ -25,14 +25,31 @@ commit history.
   attempts (typically 3 before the card blocks) while the command
   silently succeeded with the software key, so repeated runs could
   block the card without the user ever noticing. All card-first
-  signing paths now abort with the PIN error instead: `tcli sign`,
+  paths now abort with the PIN error instead: `tcli sign`,
   `tcli sign-inline`, `tclig` (git signing, including clearsign),
-  and `tcli encrypt --sign`.
+  `tcli encrypt --sign`, decrypt (`tclig -d`, `tcli decrypt`), and
+  `tpass` (which now also pre-verifies the card PIN before the
+  decrypt round-trip, like the other paths).
 - Fallback is blocked only on a *typed* PIN rejection
   (`PinIncorrect`/`PinBlocked` from the card). Transport and card
   state errors (reader unplugged, applet errors) still fall back to
   the software key, and no longer clear the agent's cached PIN since
   it was never evaluated.
+- Rejection classification no longer trusts wecanencrypt's
+  `PinIncorrect` variant alone: with wecanencrypt 0.16.3 +
+  openpgp-card 0.6.1 a wrong PIN (status word 63CX) surfaces as an
+  unclassified card error whose text is "Password not checked, N
+  allowed retries", which would have been treated as a transport
+  error — silently re-enabling the fallback and keeping the wrong
+  PIN cached. tumpa-cli now recognizes the rejection texts directly,
+  and the classification unit test drives real `openpgp_card` errors
+  through wecanencrypt's conversion end-to-end so a future change in
+  either crate's error strings fails the test instead of silently
+  reopening the hole.
+- The card-to-software fallback warning is printed by `tclig` as
+  well (both detached and clearsign), not just `tcli sign` /
+  `tcli sign-inline` — git signing was the path where a silent
+  downgrade would accumulate unnoticed.
 
 ### Changed
 
