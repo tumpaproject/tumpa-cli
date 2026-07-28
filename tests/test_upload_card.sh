@@ -269,6 +269,16 @@ else
 fi
 
 # B4: tclig signs a commit (it should use the card now).
+#
+# The card-first sign path prompts for the card's USER PIN, which
+# after `card upload` (factory reset included) is the OpenPGP default
+# 123456 — NOT $TUMPA_PASSPHRASE, which is the software key's
+# passphrase. Before 0.6.4 the wrong value here was masked: the PIN
+# rejection classified as a transport error and tclig silently signed
+# with the software key (burning a card retry per run), so this case
+# never actually exercised card signing. 0.6.4 aborts on a rejected
+# PIN, which is exactly what this env override avoids.
+CARD_USER_PIN="123456"
 REPO_DIR="$TEST_DIR/repo"
 mkdir -p "$REPO_DIR"
 cd "$REPO_DIR"
@@ -287,7 +297,8 @@ git config i18n.commitEncoding iso-8859-1
 printf 'commit with non-ASCII byte \xa7\n' > "$TEST_DIR/msg.txt"
 echo "hello" > file1.txt
 git add file1.txt
-if git commit -F "$TEST_DIR/msg.txt" --quiet 2>"$TEST_DIR/commit.err"; then
+if TUMPA_PASSPHRASE="$CARD_USER_PIN" \
+        git commit -F "$TEST_DIR/msg.txt" --quiet 2>"$TEST_DIR/commit.err"; then
     C1=$(git rev-parse HEAD)
     ok "tclig signs via card: $C1"
 else
