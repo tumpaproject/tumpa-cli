@@ -24,8 +24,10 @@ commit history.
   fallback. Previously a mistyped PIN spent one of the card's retry
   attempts (typically 3 before the card blocks) while the command
   silently succeeded with the software key, so repeated runs could
-  block the card without the user ever noticing. `tcli sign` and
-  `tcli sign-inline` now abort with the PIN error instead.
+  block the card without the user ever noticing. All card-first
+  signing paths now abort with the PIN error instead: `tcli sign`,
+  `tcli sign-inline`, `tclig` (git signing, including clearsign),
+  and `tcli encrypt --sign`.
 - Fallback is blocked only on a *typed* PIN rejection
   (`PinIncorrect`/`PinBlocked` from the card). Transport and card
   state errors (reader unplugged, applet errors) still fall back to

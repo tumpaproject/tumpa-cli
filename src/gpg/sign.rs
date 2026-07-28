@@ -86,6 +86,12 @@ pub fn sign(
     // `tcli: Signed with card <ident> ...` message after libtumpa returns.
     let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
 
+    // Set when the card rejected the PIN. A rejected PIN already spent
+    // a retry, so the KeyPassphrase arm must refuse the software-key
+    // fallback instead of silently signing with software while the
+    // user keeps burning card retries on every `git commit`.
+    let card_pin_rejected: RefCell<Option<String>> = RefCell::new(None);
+
     // Capture the secret value produced by the latest closure call so
     // we can write it into the agent cache only after libtumpa
     // confirms the sign succeeded. libtumpa may call the closure twice
@@ -110,14 +116,27 @@ pub fn sign(
                     // PIN against the card before libtumpa starts the
                     // signing transaction. Costs one round-trip but
                     // surfaces "wrong PIN" cleanly without conflating
-                    // it with PCSC / signing-key errors.
-                    verify_card_pin(card_ident, &pin, &key_info.fingerprint)
-                        .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
+                    // it with PCSC / signing-key errors. A rejected PIN
+                    // blocks the software-key fallback (see
+                    // card_pin_rejected above); transport errors still
+                    // fall back.
+                    if let Err(e) = verify_card_pin(card_ident, &pin, &key_info.fingerprint) {
+                        let msg = format!("{e}");
+                        if matches!(e, CardPinError::Rejected(_)) {
+                            *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                        }
+                        return Err(libtumpa::Error::Sign(msg));
+                    }
                     let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
                     *last_secret.borrow_mut() = Some(pin);
                     Ok(Secret::Pin(pin_bytes))
                 }
                 SecretRequest::KeyPassphrase { key_info } => {
+                    if let Some(msg) = card_pin_rejected.borrow().as_ref() {
+                        return Err(libtumpa::Error::Sign(format!(
+                            "card PIN was rejected; refusing software-key fallback ({msg})"
+                        )));
+                    }
                     let pass: Passphrase = prompt_key_passphrase(key_info)
                         .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
                     // Pre-op verify for software keys: try to unlock
@@ -276,6 +295,24 @@ impl std::fmt::Display for CardPinError {
 
 impl std::error::Error for CardPinError {}
 
+/// Map an error from `wecanencrypt::card::verify_user_pin` onto
+/// [`CardPinError`].
+///
+/// Pure function (no cache side effects) so the classification rules
+/// stay unit-testable: only `PinIncorrect` and `PinBlocked` mean the
+/// card actually judged the PIN; everything else is transport/state.
+pub(crate) fn classify_card_pin_error(e: &wecanencrypt::Error) -> CardPinError {
+    use wecanencrypt::card::CardError;
+
+    let msg = format!("Card PIN verification failed: {e}");
+    match e {
+        wecanencrypt::Error::Card(CardError::PinIncorrect { .. } | CardError::PinBlocked) => {
+            CardPinError::Rejected(msg)
+        }
+        _ => CardPinError::Other(msg),
+    }
+}
+
 /// Run the bare `wecanencrypt::card::verify_user_pin` APDU to check
 /// that the PIN string is correct against the connected card BEFORE
 /// libtumpa spends a sign or decrypt round-trip on it.
@@ -291,21 +328,14 @@ pub(crate) fn verify_card_pin(
     pin: &Zeroizing<String>,
     fingerprint: &str,
 ) -> std::result::Result<(), CardPinError> {
-    use wecanencrypt::card::CardError;
-
     match wecanencrypt::card::verify_user_pin(pin.as_bytes(), Some(card_ident)) {
         Ok(_) => Ok(()),
         Err(e) => {
-            let msg = format!("Card PIN verification failed: {e}");
-            match e {
-                wecanencrypt::Error::Card(
-                    CardError::PinIncorrect { .. } | CardError::PinBlocked,
-                ) => {
-                    pinentry::clear_cached_pin(fingerprint);
-                    Err(CardPinError::Rejected(msg))
-                }
-                _ => Err(CardPinError::Other(msg)),
+            let err = classify_card_pin_error(&e);
+            if matches!(err, CardPinError::Rejected(_)) {
+                pinentry::clear_cached_pin(fingerprint);
             }
+            Err(err)
         }
     }
 }
@@ -366,6 +396,7 @@ pub fn clearsign(
     store::ensure_key_usable_for_signing(&key_info)?;
 
     let card_ident_used: RefCell<Option<String>> = RefCell::new(None);
+    let card_pin_rejected: RefCell<Option<String>> = RefCell::new(None);
     let last_secret: RefCell<Option<Zeroizing<String>>> = RefCell::new(None);
 
     let result = libtumpa_sign_cleartext(&key_data, &key_info, &buffer, |req| match req {
@@ -377,13 +408,25 @@ pub fn clearsign(
             card_touch::maybe_notify_touch(TouchOp::Sign, Some(card_ident));
             let pin: Zeroizing<String> = prompt_card_pin(card_ident, key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
-            verify_card_pin(card_ident, &pin, &key_info.fingerprint)
-                .map_err(|e| libtumpa::Error::Sign(format!("{e}")))?;
+            if let Err(e) = verify_card_pin(card_ident, &pin, &key_info.fingerprint) {
+                // Same rule as sign(): only a card-rejected PIN blocks
+                // the software-key fallback.
+                let msg = format!("{e}");
+                if matches!(e, CardPinError::Rejected(_)) {
+                    *card_pin_rejected.borrow_mut() = Some(msg.clone());
+                }
+                return Err(libtumpa::Error::Sign(msg));
+            }
             let pin_bytes: Pin = Zeroizing::new(pin.as_bytes().to_vec());
             *last_secret.borrow_mut() = Some(pin);
             Ok(Secret::Pin(pin_bytes))
         }
         SecretRequest::KeyPassphrase { key_info } => {
+            if let Some(msg) = card_pin_rejected.borrow().as_ref() {
+                return Err(libtumpa::Error::Sign(format!(
+                    "card PIN was rejected; refusing software-key fallback ({msg})"
+                )));
+            }
             let pass: Passphrase = prompt_key_passphrase(key_info)
                 .map_err(|e| libtumpa::Error::Sign(format!("pinentry: {e}")))?;
             verify_software_passphrase(&key_data, &pass, &key_info.fingerprint)
@@ -531,5 +574,47 @@ mod tests {
         assert_eq!(gpg_hash_algo_id(HashAlgorithm::Md5), Some(1));
         assert_eq!(gpg_hash_algo_id(HashAlgorithm::Sha1), Some(2));
         assert_eq!(gpg_hash_algo_id(HashAlgorithm::Ripemd160), Some(3));
+    }
+
+    /// The Rejected/Other split decides whether a wrong PIN blocks
+    /// software-key fallback (and clears the agent cache). Only
+    /// `PinIncorrect` and `PinBlocked` may classify as Rejected;
+    /// transport/state failures must stay Other so fallback still
+    /// works when the card was never asked to judge the PIN.
+    #[test]
+    fn card_pin_error_classification() {
+        use wecanencrypt::card::CardError;
+
+        let wrong_pin = wecanencrypt::Error::Card(CardError::PinIncorrect {
+            retries_remaining: 2,
+        });
+        assert!(matches!(
+            classify_card_pin_error(&wrong_pin),
+            CardPinError::Rejected(_)
+        ));
+
+        let blocked = wecanencrypt::Error::Card(CardError::PinBlocked);
+        assert!(matches!(
+            classify_card_pin_error(&blocked),
+            CardPinError::Rejected(_)
+        ));
+
+        let io = wecanencrypt::Error::Card(CardError::CommunicationError("reader gone".into()));
+        assert!(matches!(
+            classify_card_pin_error(&io),
+            CardPinError::Other(_)
+        ));
+
+        let not_connected = wecanencrypt::Error::Card(CardError::NotConnected);
+        assert!(matches!(
+            classify_card_pin_error(&not_connected),
+            CardPinError::Other(_)
+        ));
+
+        let non_card = wecanencrypt::Error::Crypto("unrelated".into());
+        assert!(matches!(
+            classify_card_pin_error(&non_card),
+            CardPinError::Other(_)
+        ));
     }
 }
