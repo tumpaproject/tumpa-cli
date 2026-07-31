@@ -4,7 +4,7 @@ All notable changes to tumpa-cli are documented in this file.
 Older releases (before 0.6.1) are documented by their git tags and
 commit history.
 
-## [0.6.4] - 2026-07-28
+## [0.6.4] - 2026-07-31
 
 ### Added
 
