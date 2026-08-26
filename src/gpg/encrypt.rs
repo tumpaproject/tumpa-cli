@@ -40,7 +40,7 @@ use crate::store;
 /// in the compose UI.
 pub fn encrypt(
     input: Option<&PathBuf>,
-    output: &PathBuf,
+    output: &Path,
     recipients: &[String],
     armor: bool,
     signer_id: Option<&str>,
@@ -60,7 +60,7 @@ pub fn encrypt(
 /// Like [`encrypt`] but with an injectable status sink, for testability.
 pub fn encrypt_with_status(
     input: Option<&PathBuf>,
-    output: &PathBuf,
+    output: &Path,
     recipients: &[String],
     armor: bool,
     signer_id: Option<&str>,

@@ -197,6 +197,15 @@ pub fn list_secret_keys_colon(keystore_path: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Output empty config (GPG --list-config --with-colons).
+///
+/// `pass` uses this to expand GPG groups. We don't support groups,
+/// so return empty output.
+pub fn list_config() -> Result<()> {
+    // No groups defined -- pass will treat recipient IDs as literal key IDs
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,13 +263,4 @@ mod tests {
         assert_eq!(subkey_validity(false, Some(past)), "e");
         assert_eq!(subkey_validity(true, Some(past)), "r");
     }
-}
-
-/// Output empty config (GPG --list-config --with-colons).
-///
-/// `pass` uses this to expand GPG groups. We don't support groups,
-/// so return empty output.
-pub fn list_config() -> Result<()> {
-    // No groups defined -- pass will treat recipient IDs as literal key IDs
-    Ok(())
 }

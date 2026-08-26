@@ -31,19 +31,15 @@ pub fn cmd_edit(path: &str) -> Result<()> {
     let tmp_file = create_secure_tmpfile(&tmpdir, path)?;
 
     // Decrypt existing file to temp if it exists
-    let action;
-    let old_content;
-    if passfile.is_file() {
+    let (old_content, action) = if passfile.is_file() {
         let plaintext = crypto::decrypt_file(&passfile, None)?;
         std::fs::write(&tmp_file, plaintext.as_slice())?;
-        old_content = Some(plaintext);
-        action = "Edit";
+        (Some(plaintext), "Edit")
     } else {
         // Create empty temp file
         std::fs::write(&tmp_file, b"")?;
-        old_content = None;
-        action = "Add";
-    }
+        (None, "Add")
+    };
 
     // Launch editor
     let editor = config::editor();
