@@ -73,7 +73,7 @@ pub struct Args {
     #[clap(long, short = 'a')]
     pub armor: bool,
 
-    /// Output file (for encrypt: required, for decrypt: optional, stdout if omitted).
+    /// Output file (`-` and an omitted value write to stdout).
     #[clap(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
 
@@ -130,6 +130,12 @@ pub struct Args {
 
     #[clap(long, hide = true)]
     pub no_encrypt_to: bool,
+
+    #[clap(long, hide = true)]
+    pub no_default_recipient: bool,
+
+    #[clap(long, hide = true)]
+    pub trusted_key: Option<String>,
 
     #[clap(long, hide = true)]
     pub batch: bool,
@@ -283,7 +289,7 @@ impl TryFrom<Args> for Mode {
                      it only locks the digest for detached signatures (-b)"
                     .into());
             }
-            let output = value.output.ok_or("Encryption requires -o/--output")?;
+            let output = value.output.unwrap_or_else(|| PathBuf::from("-"));
             let input = value.input_files.first().map(PathBuf::from);
 
             // If --sign or --detach-sign accompanies --encrypt, the
@@ -317,7 +323,7 @@ impl TryFrom<Args> for Mode {
                 .input_files
                 .first()
                 .map(PathBuf::from)
-                .ok_or("Decryption requires an input file")?;
+                .unwrap_or_else(|| PathBuf::from("-"));
             return Ok(Mode::Decrypt {
                 input,
                 output: value.output,
@@ -421,6 +427,47 @@ mod tests {
                 assert!(armor);
             }
             _ => panic!("expected Mode::Encrypt"),
+        }
+    }
+
+    /// SOPS invokes GnuPG with no positional input or output path and
+    /// compatibility flags that do not affect explicit recipients.
+    #[test]
+    fn sops_encrypt_argv_uses_stdio_and_accepts_compatibility_flags() {
+        let m = mode_from_args(&[
+            "tclig",
+            "--no-default-recipient",
+            "--yes",
+            "--encrypt",
+            "-a",
+            "-r",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+            "--trusted-key",
+            "89ABCDEF",
+            "--no-encrypt-to",
+        ])
+        .unwrap();
+
+        match m {
+            Mode::Encrypt { input, output, .. } => {
+                assert_eq!(input, None, "no positional input reads stdin");
+                assert_eq!(output, PathBuf::from("-"), "no output writes stdout");
+            }
+            _ => panic!("expected Mode::Encrypt"),
+        }
+    }
+
+    /// SOPS invokes its configured GPG executable as `-d` and supplies the
+    /// armored ciphertext on stdin.
+    #[test]
+    fn sops_decrypt_argv_uses_stdin() {
+        let m = mode_from_args(&["tclig", "-d"]).unwrap();
+        match m {
+            Mode::Decrypt { input, output, .. } => {
+                assert_eq!(input, PathBuf::from("-"));
+                assert_eq!(output, None, "omitted output writes stdout");
+            }
+            _ => panic!("expected Mode::Decrypt"),
         }
     }
 
