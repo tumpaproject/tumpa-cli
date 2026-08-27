@@ -7,7 +7,7 @@
 //! matching connected card, the inner signature is produced on the card;
 //! otherwise the software secret key (with passphrase) is used.
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use libtumpa::store as ltstore;
@@ -25,7 +25,7 @@ use crate::store;
 /// Encrypt data to one or more recipients, optionally with an inner
 /// signature.
 ///
-/// Reads plaintext from `input` (file path or stdin if None), encrypts
+/// Reads plaintext from `input` (file path or stdin if absent / `-`), encrypts
 /// to all recipients, and writes ciphertext to `output`. When
 /// `signer_id` is provided, sign-then-encrypts (producing a single
 /// OpenPGP message containing one-pass-signature + literal +
@@ -40,7 +40,7 @@ use crate::store;
 /// in the compose UI.
 pub fn encrypt(
     input: Option<&PathBuf>,
-    output: &PathBuf,
+    output: &Path,
     recipients: &[String],
     armor: bool,
     signer_id: Option<&str>,
@@ -60,7 +60,7 @@ pub fn encrypt(
 /// Like [`encrypt`] but with an injectable status sink, for testability.
 pub fn encrypt_with_status(
     input: Option<&PathBuf>,
-    output: &PathBuf,
+    output: &Path,
     recipients: &[String],
     armor: bool,
     signer_id: Option<&str>,
@@ -71,7 +71,15 @@ pub fn encrypt_with_status(
 
     let plaintext = match input {
         Some(path) => {
-            std::fs::read(path).context(format!("Failed to read input file {:?}", path))?
+            if path.as_os_str() == "-" {
+                let mut buf = Vec::new();
+                std::io::stdin()
+                    .read_to_end(&mut buf)
+                    .context("Failed to read from stdin")?;
+                buf
+            } else {
+                std::fs::read(path).context(format!("Failed to read input file {:?}", path))?
+            }
         }
         None => {
             let mut buf = Vec::new();
@@ -84,9 +92,21 @@ pub fn encrypt_with_status(
 
     let ciphertext = encrypt_bytes_prepared(&plaintext, &prepared, armor, signer_id)?;
 
-    std::fs::write(output, &ciphertext)
-        .context(format!("Failed to write output file {:?}", output))?;
+    write_ciphertext(output, &ciphertext, std::io::stdout())?;
 
+    Ok(())
+}
+
+/// Write ciphertext to `output`, where `-` is the GnuPG stdout sentinel.
+fn write_ciphertext(output: &Path, ciphertext: &[u8], mut stdout: impl Write) -> Result<()> {
+    if output.as_os_str() == "-" {
+        stdout
+            .write_all(ciphertext)
+            .context("Failed to write ciphertext to stdout")?;
+    } else {
+        std::fs::write(output, ciphertext)
+            .context(format!("Failed to write output file {:?}", output))?;
+    }
     Ok(())
 }
 
@@ -424,6 +444,15 @@ mod tests {
             !s.contains("INV_RECP"),
             "no INV_RECP expected on success: {s}"
         );
+    }
+
+    /// The GnuPG output sentinel must stream ciphertext instead of creating a
+    /// file named `-`; SOPS relies on this when it supplies no `--output`.
+    #[test]
+    fn dash_output_writes_ciphertext_to_stdout() {
+        let mut stdout = Vec::new();
+        write_ciphertext(Path::new("-"), b"ciphertext", &mut stdout).unwrap();
+        assert_eq!(stdout, b"ciphertext");
     }
 
     /// Sign+encrypt without `-u` is a usage error caught at the CLI

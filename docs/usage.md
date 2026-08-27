@@ -12,6 +12,7 @@ and direct encryption/decryption.
 - [Key management](#key-management)
 - [Git signing](#git-signing)
 - [Password store (pass)](#password-store-pass)
+- [SOPS](#sops)
 - [tpass — native password store](#tpass--native-password-store)
 - [Encryption and decryption](#encryption-and-decryption)
 - [Signing and verifying with `tcli`](#signing-and-verifying-with-tcli)
@@ -551,6 +552,26 @@ work against the `gpg2 -> tclig` symlink, too:
 
 No configuration beyond the standard `gpg2 -> tclig` symlink is
 needed for either extension.
+
+---
+
+## SOPS
+
+Use `tclig` as SOPS' PGP backend by setting `SOPS_GPG_EXEC`:
+
+```bash
+export SOPS_GPG_EXEC="$(command -v tclig)"
+```
+
+SOPS can then decrypt files encrypted to a secret key in the Tumpa
+keystore:
+
+```bash
+sops --decrypt secrets.yaml
+```
+
+`tclig` accepts SOPS' GnuPG compatibility flags and streams encrypted
+and decrypted data over stdin/stdout.
 
 ---
 
