@@ -89,7 +89,7 @@ sudo systemctl enable --now pcscd.socket
 **Arch Linux:**
 
 ```
-sudo pacman -S pkg-config pcsclite
+sudo pacman -S pkg-config pcsclite ccid
 sudo systemctl enable --now pcscd.socket
 ```
 

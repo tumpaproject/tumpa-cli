@@ -173,7 +173,7 @@ On Linux, card support requires PC/SC libraries:
 
 - **Debian/Ubuntu**: `sudo apt install pkg-config libpcsclite-dev pcscd`
 - **Fedora/RHEL**: `sudo dnf install pkg-config pcsc-lite-devel pcsc-lite`
-- **Arch**: `sudo pacman -S pkg-config pcsclite`
+- **Arch**: `sudo pacman -S pkg-config pcsclite ccid`
 
 The `pcscd` service must be running: `sudo systemctl start pcscd.socket`
 
